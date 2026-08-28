@@ -1,8 +1,5 @@
-import {
-  appendOlderChannelWindow,
-  type ChannelWindowPage,
-} from "./lib/channelWindowStore";
 import { revalidateChannelWindow } from "./lib/revalidateChannelWindow";
+import { consumeChannelWindowRefreshIntent } from "./lib/channelWindowRefreshIntent";
 import { useEffect, useEffectEvent } from "react";
 import {
   type QueryClient,
@@ -66,6 +63,8 @@ import type { Channel, Identity, RelayEvent } from "@/shared/api/types";
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
 import {
+  appendOlderChannelWindow,
+  type ChannelWindowPage,
   emptyChannelWindowStore,
   mapChannelWindowEvents,
   mergeLiveChannelWindowEvent,
@@ -314,11 +313,17 @@ export function useChannelMessagesQuery(channel: Channel | null) {
     queryKey,
     queryFn: async ({ signal }) => {
       if (!channel) throw new Error("No channel selected.");
+      const latestOnly = consumeChannelWindowRefreshIntent(
+        queryClient,
+        channel.id,
+        signal,
+      );
       // Persisted heads seed asynchronously; wait for that seed so a channel
       // opened during boot takes the hydrated path instead of racing it with
       // a cold relay fetch.
       await channelHeadHydration(queryClient);
-      if (consumeHydratedChannel(queryClient, channel.id)) {
+      signal.throwIfAborted();
+      if (consumeHydratedChannel(queryClient, channel.id) && !latestOnly) {
         return queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
       }
       const previousMessages =
@@ -331,11 +336,9 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         const events = await getChannelWindowEvents(channel.id);
         return await revalidateChannelWindow({
           head: parseChannelWindowResponse(events, channel.id, null),
-          retained: retained.refreshLatestOnly
-            ? emptyChannelWindowStore()
-            : retained,
+          retained: latestOnly ? emptyChannelWindowStore() : retained,
           readCurrent: () =>
-            retained.refreshLatestOnly
+            latestOnly
               ? emptyChannelWindowStore()
               : (queryClient.getQueryData<ChannelWindowStore>(
                   channelWindowKey(channel.id),
@@ -365,7 +368,6 @@ export function useChannelMessagesQuery(channel: Channel | null) {
             channelWindowKey(channel.id),
             (current) => ({
               ...(current ?? retained),
-              refreshLatestOnly: false,
               refreshError: (current ?? retained).pages.length
                 ? "Couldn’t refresh messages. Your loaded history is still available."
                 : "Couldn’t load messages. Try again.",
@@ -882,6 +884,15 @@ export function useDeleteMessageMutation(channel: Channel | null) {
     },
     onSuccess: (_data, { eventId }) => {
       if (!channel) return;
+      queryClient.setQueryData<ChannelWindowStore>(
+        channelWindowKey(channel.id),
+        (current) =>
+          current
+            ? mapChannelWindowEvents(current, (event) =>
+                event.id === eventId ? null : event,
+              )
+            : current,
+      );
       queryClient.setQueryData<RelayEvent[]>(
         channelMessagesKey(channel.id),
         (current = []) => current.filter((message) => message.id !== eventId),

@@ -31,8 +31,8 @@ export type ChannelWindowStore = {
   pages: ChannelWindowPage[];
   /** A recoverable head refresh failure; retained history remains readable. */
   refreshError?: string;
-  /** Explicit recovery request; retire retained history only after a new head succeeds. */
-  refreshLatestOnly?: boolean;
+  /** Unclaimed explicit recovery token; consumed at fetch start, never by later refreshes. */
+  refreshLatestOnly?: string;
   /** Top-level live events not represented in an authoritative relay page. */
   liveOverlay: RelayEvent[];
   /** Live structural events retained independently from frozen page closure. */
@@ -218,11 +218,7 @@ export function mergeLiveChannelWindowEvent(
   }
   const oldestPage = current.pages[current.pages.length - 1];
   const oldest = oldestPage?.rows[oldestPage.rows.length - 1]?.event;
-  if (
-    oldest &&
-    (event.created_at < oldest.created_at ||
-      (oldestPage.hasMore && compareRelayOrder(event, oldest) >= 0))
-  ) {
+  if (oldest && oldestPage.hasMore && compareRelayOrder(event, oldest) >= 0) {
     return current;
   }
   return {
@@ -237,7 +233,7 @@ export function mergeLiveChannelWindowEvent(
 /**
  * Apply a per-event transform across every event the store holds (page rows,
  * page aux, live overlay, live aux), returning the same store reference when
- * nothing changed.
+ * nothing changed. Return null to remove an event without changing page cursors.
  *
  * Local writes MUST go through this rather than patching the flattened
  * `channelMessagesKey` array alone: the window store is the source of truth,
@@ -251,7 +247,7 @@ export function mergeLiveChannelWindowEvent(
  */
 export function mapChannelWindowEvents(
   store: ChannelWindowStore,
-  map: (event: RelayEvent) => RelayEvent,
+  map: (event: RelayEvent) => RelayEvent | null,
 ): ChannelWindowStore {
   let changed = false;
   const mapEvent = (event: RelayEvent) => {
@@ -260,18 +256,24 @@ export function mapChannelWindowEvents(
     return next;
   };
   const pages = store.pages.map((page) => {
-    const rows = page.rows.map((row) => {
+    const rows = page.rows.flatMap((row) => {
       const event = mapEvent(row.event);
-      return event === row.event ? row : { ...row, event };
+      return event === null
+        ? []
+        : [event === row.event ? row : { ...row, event }];
     });
-    const aux = page.aux.map(mapEvent);
-    return rows.every((row, index) => row === page.rows[index]) &&
+    const aux = page.aux.map(mapEvent).filter((event) => event !== null);
+    return rows.length === page.rows.length &&
+      rows.every((row, index) => row === page.rows[index]) &&
+      aux.length === page.aux.length &&
       aux.every((event, index) => event === page.aux[index])
       ? page
       : { ...page, rows, aux };
   });
-  const liveOverlay = store.liveOverlay.map(mapEvent);
-  const liveAux = store.liveAux.map(mapEvent);
+  const liveOverlay = store.liveOverlay
+    .map(mapEvent)
+    .filter((event) => event !== null);
+  const liveAux = store.liveAux.map(mapEvent).filter((event) => event !== null);
   return changed ? { ...store, pages, liveOverlay, liveAux } : store;
 }
 

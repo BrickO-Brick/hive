@@ -826,3 +826,108 @@ test("failed send removes only its optimistic row, retaining concurrent history 
     ["older", "head", "live", "other-pending"],
   );
 });
+
+const { useDeleteMessageMutation } = await import("../hooks.ts");
+
+test("accepted deletion changes the authoritative window even without a live deletion echo", async (t) => {
+  const env = await setup(t);
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { gcTime: Infinity },
+      mutations: { retry: false, gcTime: Infinity },
+    },
+  });
+  t.after(() => client.clear());
+  let acceptDelete;
+  let deleteStarted;
+  const started = new Promise((resolve) => {
+    deleteStarted = resolve;
+  });
+  window.__TAURI_INTERNALS__ = {
+    invoke: async (command) => {
+      assert.equal(command, "delete_message");
+      deleteStarted();
+      await new Promise((resolve) => {
+        acceptDelete = resolve;
+      });
+    },
+  };
+  const event = (id, created_at) => ({
+    id,
+    created_at,
+    kind: 9,
+    pubkey: "p",
+    content: id,
+    tags: [["h", "a"]],
+    sig: "",
+  });
+  const target = event("target", 100);
+  const key = channelWindowKey("a");
+  client.setQueryData(
+    key,
+    replaceNewestChannelWindow(emptyChannelWindowStore(), {
+      startCursor: null,
+      rows: [{ event: target, thread: null }],
+      aux: [],
+      nextCursor: { createdAt: 100, eventId: target.id },
+      hasMore: true,
+    }),
+  );
+  projectChannelWindowMessages(client, "a");
+  let mutation;
+  function Harness() {
+    mutation = useDeleteMessageMutation({ id: "a", channelType: "stream" });
+    return null;
+  }
+  await act(async () =>
+    env.root.render(
+      React.createElement(
+        QueryClientProvider,
+        { client },
+        React.createElement(Harness),
+      ),
+    ),
+  );
+  let result;
+  await act(async () => {
+    result = mutation.mutateAsync({ eventId: target.id });
+    await started;
+  });
+  const before = client.getQueryData(key);
+  let current = appendOlderChannelWindow(before, {
+    startCursor: before.pages[0].nextCursor,
+    rows: [{ event: event("older", 90), thread: null }],
+    aux: [],
+    nextCursor: null,
+    hasMore: false,
+  });
+  current = mergeLiveChannelWindowEvent(current, event("concurrent-live", 110));
+  client.setQueryData(key, current);
+  projectChannelWindowMessages(client, "a");
+  await act(async () => {
+    acceptDelete();
+    await result;
+  });
+  const after = client.getQueryData(key);
+  assert.equal(
+    after.pages.length,
+    2,
+    "deletion retains a concurrent older page",
+  );
+  assert.equal(after.revision, current.revision);
+  assert.equal(after.pages[0].rows.length, 0);
+  assert.equal(
+    after.pages[0].nextCursor.eventId,
+    target.id,
+    "removing a boundary row must not invalidate its cursor",
+  );
+  client.setQueryData(
+    key,
+    mergeLiveChannelWindowEvent(after, event("live", 120)),
+  );
+  projectChannelWindowMessages(client, "a");
+  assert.deepEqual(
+    client.getQueryData(channelMessagesKey("a")).map((e) => e.id),
+    ["older", "concurrent-live", "live"],
+  );
+});

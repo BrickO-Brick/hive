@@ -41,14 +41,28 @@ export function HistoryRefreshNotice({
   }, [scope]);
   if (!channelId || !window?.refreshError) return null;
   const retry = async (latest: boolean) => {
+    const token = latest ? crypto.randomUUID() : undefined;
     client.setQueryData<ChannelWindowStore>(
       channelWindowKey(channelId),
       (current) => ({
         ...(current ?? emptyChannelWindowStore()),
-        refreshLatestOnly: latest,
+        refreshLatestOnly: token,
       }),
     );
-    await refreshChannelWindowMessages(client, channelId);
+    try {
+      await refreshChannelWindowMessages(client, channelId);
+    } finally {
+      // The observer can unmount before hydration/invalidation starts a fetch.
+      // Retire an unclaimed token too, without clearing a newer button click.
+      if (token)
+        client.setQueryData<ChannelWindowStore>(
+          channelWindowKey(channelId),
+          (current) =>
+            current?.refreshLatestOnly === token
+              ? { ...current, refreshLatestOnly: undefined }
+              : current,
+        );
+    }
     const refreshed = client.getQueryData<ChannelWindowStore>(
       channelWindowKey(channelId),
     );
