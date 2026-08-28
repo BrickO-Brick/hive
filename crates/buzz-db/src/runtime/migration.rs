@@ -699,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 40);
+        assert_eq!(migrations.len(), 42);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1240,6 +1240,45 @@ mod tests {
         assert!(
             operator_audit.contains("_operator_global_tables"),
             "migration 39 must register relay_operator_audit in _operator_global_tables"
+        );
+
+        // NIP-FI core identity + base-lifecycle foundation (migration 0041) and
+        // final-admission foundation (0042). Both widen the single SQL source of
+        // truth `community_write_fence_excluded_table` so their durable,
+        // immutable ledger relations are never fence-attached, purged, or
+        // counted as tenant-scoped drift. schema.sql keeps one consolidated
+        // definition of that function whose body must match 0042's exactly.
+        assert_eq!(migrations[40].version, 41);
+        let identity_foundation = migrations[40].sql.as_str();
+        assert!(identity_foundation.contains("CREATE TABLE identity_bindings"));
+        assert!(identity_foundation.contains("CREATE TABLE identity_lifecycle_history"));
+        assert!(identity_foundation
+            .contains("CREATE OR REPLACE FUNCTION community_write_fence_excluded_table"));
+        assert!(identity_foundation.contains("'identity_bindings'"));
+
+        assert_eq!(migrations[41].version, 42);
+        let authorization_foundation = migrations[41].sql.as_str();
+        assert!(authorization_foundation.contains("CREATE TABLE authorization_events"));
+        assert!(authorization_foundation.contains("CREATE TABLE protected_object_authority"));
+        assert!(authorization_foundation.contains("CREATE TABLE authorization_admission_results"));
+
+        // The consolidated desired-state exclusion function must byte-match
+        // migration 0042's CREATE OR REPLACE body, or a future schema
+        // consolidation would silently drop NIP-FI relations from the ledger.
+        fn extract_excluded_table_array(sql: &str) -> &str {
+            let anchor = "community_write_fence_excluded_table(target NAME) RETURNS BOOLEAN";
+            let start = sql.find(anchor).expect("exclusion function definition");
+            let array_start = sql[start..].find("ARRAY[").expect("exclusion array") + start;
+            let array_end = sql[array_start..]
+                .find("]::TEXT[]")
+                .expect("exclusion array end")
+                + array_start;
+            &sql[array_start..array_end]
+        }
+        assert_eq!(
+            extract_excluded_table_array(authorization_foundation),
+            extract_excluded_table_array(desired_schema),
+            "schema.sql exclusion list drifted from migration 0042"
         );
     }
 
@@ -2617,5 +2656,195 @@ mod tests {
             .execute(&pool)
             .await
             .expect("drop late-table fixtures");
+    }
+
+    /// NIP-FI intermediate state: migration 0041 (identity + base lifecycle)
+    /// alone must present a coherent catalog. Its five community-scoped ledger
+    /// relations are immutable and durable, so they are registered in the
+    /// write-fence exclusion — never counted as tenant-scoped drift, never
+    /// fence-attached — and the exact deletion catalog must still validate.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn migration_0041_identity_foundation_is_durable_ledger_after_migration_a() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(41, &pool)
+            .await
+            .expect("apply migrations 1-41");
+
+        // The five identity relations exist.
+        let identity_tables = [
+            "authorization_operation_receipts",
+            "identity_enrollment_policies",
+            "identity_bindings",
+            "identity_lifecycle_history",
+            "identity_lifecycle_selectors",
+        ];
+        for table in identity_tables {
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1)",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|err| panic!("check table {table}: {err}"));
+            assert!(exists, "migration 0041 must create {table}");
+        }
+
+        // Migration B's relations must NOT exist yet.
+        for table in ["authorization_events", "protected_object_authority"] {
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = 'public' AND table_name = $1)",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|err| panic!("check table {table}: {err}"));
+            assert!(!exists, "{table} belongs to migration 0042, not 0041");
+        }
+
+        // Every identity relation is excluded from the write fence: none may
+        // appear as tenant-scoped drift or carry the fence trigger.
+        let scoped_or_fenced: Vec<String> = sqlx::query_scalar(
+            "WITH scoped AS ( \
+                 SELECT c.relname FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 JOIN pg_attribute a ON a.attrelid = c.oid \
+                 WHERE n.nspname = 'public' AND c.relkind IN ('r','p') \
+                   AND NOT c.relispartition AND a.attname = 'community_id' \
+                   AND NOT a.attisdropped \
+                   AND NOT community_write_fence_excluded_table(c.relname) \
+             ) \
+             SELECT relname FROM scoped \
+             WHERE relname = ANY($1) ORDER BY relname",
+        )
+        .bind(&identity_tables[..])
+        .fetch_all(&pool)
+        .await
+        .expect("read scoped identity relations");
+        assert!(
+            scoped_or_fenced.is_empty(),
+            "identity ledger relations must be write-fence excluded, not scoped: {scoped_or_fenced:?}"
+        );
+
+        // The exact deletion catalog validates: the excluded ledger relations
+        // do not perturb the scoped-table/fence equality check.
+        crate::deletion::DeletionStore::new(pool.clone())
+            .validate_catalog()
+            .await
+            .expect("deletion catalog validates after migration 0041");
+
+        // The immutability contract is enforced, not merely declared. TRUNCATE
+        // fires the statement-level guard unconditionally, so this proves the
+        // rejection without constructing a fully valid ledger row.
+        let rejected = sqlx::query("TRUNCATE identity_lifecycle_selectors")
+            .execute(&pool)
+            .await
+            .expect_err("identity_lifecycle_selectors truncation must be rejected");
+        assert!(
+            rejected.to_string().contains("cannot be truncated"),
+            "expected immutability rejection, got: {rejected}"
+        );
+    }
+
+    /// NIP-FI full state: migrations 0041 + 0042 together must present a
+    /// coherent 15-relation catalog with zero dangling foreign keys, all
+    /// relations write-fence excluded, and an intact exact deletion catalog.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn nip_fi_foundation_is_a_closed_durable_ledger_after_migrations_a_and_b() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let nip_fi_tables = [
+            "authorization_admission_results",
+            "authorization_authentication_denial_attempts",
+            "authorization_authority_epochs",
+            "authorization_event_capacity",
+            "authorization_events",
+            "authorization_invalidation_domains",
+            "authorization_invalidation_floors",
+            "authorization_operation_receipts",
+            "authorization_operation_version_delta_manifests",
+            "authorization_operation_version_deltas",
+            "identity_bindings",
+            "identity_enrollment_policies",
+            "identity_lifecycle_history",
+            "identity_lifecycle_selectors",
+            "protected_object_authority",
+        ];
+
+        // All fifteen relations exist.
+        let present: Vec<String> = sqlx::query_scalar(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = 'public' AND table_name = ANY($1) ORDER BY table_name",
+        )
+        .bind(&nip_fi_tables[..])
+        .fetch_all(&pool)
+        .await
+        .expect("read NIP-FI table catalog");
+        let mut expected: Vec<String> = nip_fi_tables.iter().map(|t| t.to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            present, expected,
+            "all NIP-FI relations must exist after 0042"
+        );
+
+        // Zero dangling foreign keys: every FK target is a live relation.
+        let invalid_fks: i64 = sqlx::query_scalar(
+            "SELECT count(*)::BIGINT FROM pg_constraint \
+             WHERE contype = 'f' AND NOT convalidated",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read FK validity");
+        assert_eq!(
+            invalid_fks, 0,
+            "no NIP-FI foreign key may be left unvalidated"
+        );
+
+        // None of the fifteen appear as tenant-scoped drift; all are excluded.
+        let scoped: Vec<String> = sqlx::query_scalar(
+            "SELECT c.relname FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_attribute a ON a.attrelid = c.oid \
+             WHERE n.nspname = 'public' AND c.relkind IN ('r','p') \
+               AND NOT c.relispartition AND a.attname = 'community_id' \
+               AND NOT a.attisdropped \
+               AND NOT community_write_fence_excluded_table(c.relname) \
+               AND c.relname = ANY($1) ORDER BY c.relname",
+        )
+        .bind(&nip_fi_tables[..])
+        .fetch_all(&pool)
+        .await
+        .expect("read scoped NIP-FI relations");
+        assert!(
+            scoped.is_empty(),
+            "all NIP-FI ledger relations must be write-fence excluded: {scoped:?}"
+        );
+
+        // The exact deletion catalog validates with the full ledger present.
+        crate::deletion::DeletionStore::new(pool.clone())
+            .validate_catalog()
+            .await
+            .expect("deletion catalog validates after migrations 0041 + 0042");
+
+        // A migration-B relation is immutable too. TRUNCATE fires the
+        // statement-level guard unconditionally.
+        let rejected = sqlx::query("TRUNCATE authorization_admission_results")
+            .execute(&pool)
+            .await
+            .expect_err("authorization_admission_results truncation must be rejected");
+        assert!(
+            rejected.to_string().contains("cannot be truncated"),
+            "expected immutability rejection, got: {rejected}"
+        );
     }
 }
