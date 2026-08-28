@@ -506,6 +506,9 @@ test("embedded create keeps its draft when discard is cancelled", async ({
 test("an ACP-only edit publishes the selected transport", async ({ page }) => {
   const personaId = "custom:acp-only";
   await installMockBridge(page, {
+    globalAgentConfig: {
+      env_vars: { ANTHROPIC_API_KEY: "sk-ant-test" },
+    },
     acpCommands: [
       { command: "buzz-janet-acp", binaryPath: "/opt/buzz-janet-acp" },
     ],
@@ -544,11 +547,11 @@ test("an ACP-only edit publishes the selected transport", async ({ page }) => {
     await countCommandInvocations(page, "update_persona_and_publish"),
   ).toBe(1);
   const personas = await invokeTauri<
-    Array<{ id: string; acpCommand?: string }>
+    Array<{ id: string; acp_command?: string }>
   >(page, "list_personas");
-  expect(personas.find((persona) => persona.id === personaId)?.acpCommand).toBe(
-    "buzz-janet-acp",
-  );
+  expect(
+    personas.find((persona) => persona.id === personaId)?.acp_command,
+  ).toBe("buzz-janet-acp");
 });
 
 test("the new team card offers create and import", async ({ page }) => {
