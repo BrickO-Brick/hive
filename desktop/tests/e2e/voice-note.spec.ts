@@ -351,3 +351,96 @@ test("records from the composer and renders an inline waveform card", async ({
     path: "test-results/voice-note/voice-note-card.png",
   });
 });
+
+test("keeps emoji available but blocks GIFs beside a queued voice note", async ({
+  page,
+}) => {
+  await page.route("http://localhost:3000/info", (route) =>
+    route.fulfill({
+      body: JSON.stringify({
+        gif: {
+          provider: "klipy",
+          search: "/gifs/search",
+          share: "/gifs/share",
+        },
+        supported_extensions: ["buzz-gif"],
+      }),
+      contentType: "application/nostr+json",
+    }),
+  );
+
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await page.getByRole("button", { name: "Record voice note" }).click();
+  await page.waitForTimeout(100);
+  await page.getByRole("button", { name: "Finish voice note" }).click();
+  await expect(page.getByTestId("composer-voice-note-card")).toBeVisible();
+
+  const pickerButton = page.getByTestId("composer-emoji-button");
+  await expect(pickerButton).toBeEnabled();
+  await expect(pickerButton).toHaveAccessibleName("Insert emoji or GIF");
+  await pickerButton.click();
+  await expect(page.getByRole("tab", { name: "Emoji" })).toBeEnabled();
+  await expect(page.getByRole("tab", { name: "GIFs" })).toBeDisabled();
+});
+
+test("starting a duplicate voice-note player pauses the other instance", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          typeof (
+            window as Window & {
+              __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: unknown;
+            }
+          ).__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
+      ),
+    )
+    .toBe(true);
+
+  await page.evaluate(
+    ({ audioUrl }) => {
+      const emit = (
+        window as Window & {
+          __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: (input: {
+            channelName: string;
+            content: string;
+            extraTags: string[][];
+          }) => unknown;
+        }
+      ).__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      const input = {
+        channelName: "general",
+        content: `[voice-note-123.mp4](${audioUrl})`,
+        extraTags: [
+          [
+            "imeta",
+            `url ${audioUrl}`,
+            "m video/mp4",
+            "duration 9.4",
+            "filename voice-note-123.mp4",
+          ],
+        ],
+      };
+      emit(input);
+      emit(input);
+    },
+    { audioUrl: AUDIO_URL },
+  );
+
+  const cards = page.getByTestId("audio-message-attachment");
+  await expect(cards).toHaveCount(2);
+  const firstAudio = cards.nth(0).locator("audio");
+  const secondAudio = cards.nth(1).locator("audio");
+
+  await cards.nth(0).getByRole("button", { name: "Play voice note" }).click();
+  await expect(firstAudio).toHaveJSProperty("paused", false);
+  await cards.nth(1).getByRole("button", { name: "Play voice note" }).click();
+  await expect(firstAudio).toHaveJSProperty("paused", true);
+  await expect(secondAudio).toHaveJSProperty("paused", false);
+});

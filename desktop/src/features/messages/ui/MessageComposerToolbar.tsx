@@ -279,6 +279,7 @@ export const MessageComposerToolbar = React.memo(
                 ) : null}
                 <ComposerEmojiPicker
                   disabled={composerDisabled || isVoiceNoteRecording}
+                  gifsDisabled={hasVoiceNoteAttachment}
                   gifMediaController={gifMediaController}
                   onClose={() => editor?.commands.focus()}
                   onEmojiSelect={onEmojiSelect}

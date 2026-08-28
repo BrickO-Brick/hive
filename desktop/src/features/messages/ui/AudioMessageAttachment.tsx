@@ -83,6 +83,7 @@ export function AudioMessageAttachment({
   onRemove?: () => void;
 }) {
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const playbackId = React.useId();
   const mediaRef = React.useRef<HTMLDivElement | null>(null);
   const playbackRateRef = React.useRef<HTMLButtonElement | null>(null);
   const waveformRef = React.useRef<HTMLDivElement | null>(null);
@@ -164,11 +165,11 @@ export function AudioMessageAttachment({
   React.useEffect(() => {
     const handleOtherPlayback = (event: Event) => {
       const detail = (event as CustomEvent<string>).detail;
-      if (detail !== href) audioRef.current?.pause();
+      if (detail !== playbackId) audioRef.current?.pause();
     };
     window.addEventListener(PLAY_EVENT, handleOtherPlayback);
     return () => window.removeEventListener(PLAY_EVENT, handleOtherPlayback);
-  }, [href]);
+  }, [playbackId]);
 
   const paintProgress = React.useCallback((time: number, knownDuration = 0) => {
     const audio = audioRef.current;
@@ -216,12 +217,12 @@ export function AudioMessageAttachment({
     const audio = audioRef.current;
     if (!audio) return;
     if (audio.paused) {
-      window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: href }));
+      window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: playbackId }));
       void audio.play();
     } else {
       audio.pause();
     }
-  }, [href]);
+  }, [playbackId]);
 
   const timeLabel = isPlaying
     ? formatVoiceNoteDuration(Math.max(0, duration - currentTime))
