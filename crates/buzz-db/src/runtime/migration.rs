@@ -3120,5 +3120,102 @@ mod tests {
             stored_provenance, stored_mode,
             "provenance and mode are independent: they must differ here"
         );
+
+        // --- Negative half: absent policy revision ---
+        //
+        // Two-sided mutation sensitivity requires that a FK dropped or neutered
+        // entirely is also detected.  A second otherwise-valid deferred
+        // transaction uses a nonexistent policy_revision (999) and must fail
+        // with SQLSTATE 23503 — the narrowed FK
+        // identity_bindings(community_id, policy_revision)
+        //   → identity_enrollment_policies(community_id, policy_revision)
+        // rejects the row.  This FK is not deferred, so it fires at INSERT
+        // time; a `COMMIT` is unnecessary and not reached.  If the FK were
+        // absent the INSERT would succeed and this assertion would catch the
+        // regression.
+        let absent_binding_id = uuid::Uuid::new_v4();
+        let absent_history_id = uuid::Uuid::new_v4();
+        let absent_operation_id = uuid::Uuid::new_v4();
+        let absent_fp = vec![0xC0_u8; 32];
+        let nonexistent_policy_revision: i64 = 999;
+
+        let mut conn2 = pool.acquire().await.expect("acquire second connection");
+
+        sqlx::query("BEGIN")
+            .execute(&mut *conn2)
+            .await
+            .expect("begin absent-policy transaction");
+
+        // History first (receipt_history_cardinality guard fires on receipt
+        // insert and requires the history row to already exist).
+        sqlx::query(
+            "INSERT INTO identity_lifecycle_history \
+             (community_id, history_id, transition_kind, outcome_code, \
+              successor_binding_id, successor_binding_version, \
+              successor_lifecycle_revision, successor_state, \
+              operation_id, request_fingerprint, transition_digest) \
+             VALUES ($1, $2, 1, 1, $3, 2, 1, 1, $4, $5, $6)",
+        )
+        .bind(community_id)
+        .bind(absent_history_id)
+        .bind(absent_binding_id)
+        .bind(absent_operation_id)
+        .bind(&absent_fp)
+        .bind(vec![0xC1_u8; 32])
+        .execute(&mut *conn2)
+        .await
+        .expect("insert absent-policy lifecycle history");
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(absent_operation_id)
+        .bind(&absent_fp)
+        .bind(vec![0xC2_u8; 32])
+        .bind(vec![0xC3_u8; 32])
+        .execute(&mut *conn2)
+        .await
+        .expect("insert absent-policy operation receipt");
+
+        // The policy FK is not deferred; it fires at INSERT, not COMMIT.
+        let absent_policy_err = sqlx::query(
+            "INSERT INTO identity_bindings \
+             (community_id, binding_id, issuer, subject, \
+              principal_fingerprint, event_author_pubkey, \
+              binding_state, lifecycle_revision, binding_provenance, \
+              policy_revision, enrollment_evidence_digest, \
+              birth_history_id, creation_operation_id, \
+              creation_request_fingerprint) \
+             VALUES ($1, $2, 'https://issuer.example', 'sub-02', \
+                     $3, $4, 1, 1, 1, $5, $6, $7, $8, $9)",
+        )
+        .bind(community_id)
+        .bind(absent_binding_id)
+        .bind(vec![0xC4_u8; 32]) // principal_fingerprint (unique, different from first binding)
+        .bind(vec![0xC5_u8; 32]) // event_author_pubkey (unique, different from first binding)
+        .bind(nonexistent_policy_revision)
+        .bind(vec![0xC6_u8; 32]) // enrollment_evidence_digest
+        .bind(absent_history_id)
+        .bind(absent_operation_id)
+        .bind(&absent_fp)
+        .execute(&mut *conn2)
+        .await
+        .expect_err("binding with nonexistent policy_revision must be rejected by the FK");
+        assert!(
+            absent_policy_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23503"))
+                .unwrap_or(false),
+            "expected FK violation (23503) for absent policy_revision, got: {absent_policy_err}"
+        );
+
+        sqlx::query("ROLLBACK")
+            .execute(&mut *conn2)
+            .await
+            .expect("rollback absent-policy transaction");
     }
 }
