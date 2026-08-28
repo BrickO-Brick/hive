@@ -1009,6 +1009,102 @@ function MessageComposer({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function BestieChat({ onClose }: { onClose: () => void }) {
+  const [detached, setDetached] = useState(false);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const panelRef = useRef<HTMLElement>(null);
+  const dragRef = useRef({
+    pointerId: -1,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+    x: 0,
+    y: 0,
+    beganDetached: false,
+  });
+
+  const beginDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if ((event.target as Element).closest("button, input")) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: rect.left,
+      originY: rect.top,
+      x: rect.left,
+      y: rect.top,
+      beganDetached: detached,
+    };
+    panel.style.setProperty("--bestie-x", `${rect.left}px`);
+    panel.style.setProperty("--bestie-y", `${rect.top}px`);
+    panel.classList.add("is-dragging");
+  };
+
+  const updateDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    const panel = panelRef.current;
+    if (!panel || drag.pointerId !== event.pointerId) return;
+    const pullDistance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    drag.x = Math.max(16, Math.min(window.innerWidth - panel.offsetWidth - 16, drag.originX + event.clientX - drag.startX));
+    drag.y = Math.max(74, Math.min(window.innerHeight - panel.offsetHeight - 16, drag.originY + event.clientY - drag.startY));
+    panel.style.setProperty("--bestie-x", `${drag.x}px`);
+    panel.style.setProperty("--bestie-y", `${drag.y}px`);
+    panel.classList.toggle("is-tearing", !drag.beganDetached && pullDistance > 48);
+  };
+
+  const endDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    const panel = panelRef.current;
+    if (!panel || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const shouldDetach = drag.beganDetached || Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 84;
+    panel.classList.remove("is-dragging", "is-tearing");
+    if (shouldDetach) {
+      panel.classList.add("is-detached");
+      setDetached(true);
+      setPosition({ x: drag.x, y: drag.y });
+    } else {
+      panel.style.removeProperty("--bestie-x");
+      panel.style.removeProperty("--bestie-y");
+    }
+    drag.pointerId = -1;
+  };
+
+  return (
+    <aside
+      ref={panelRef}
+      className={`bestie-chat${detached ? " is-detached" : ""}`}
+      role="dialog"
+      aria-label="Chat with Bestie"
+      style={detached ? ({ "--bestie-x": `${position.x}px`, "--bestie-y": `${position.y}px` } as CSSProperties) : undefined}
+    >
+      <header
+        className="bestie-chat-header"
+        onPointerDown={beginDrag}
+        onPointerMove={updateDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <div><img src="/snek.png" alt="" /><strong>Bestie</strong></div>
+        <button type="button" aria-label="Close Bestie chat" onClick={onClose}><X aria-hidden="true" size={18} strokeWidth={1.7} /></button>
+      </header>
+      <div className="bestie-chat-content">
+        <div className="bestie-message is-bestie"><img src="/snek.png" alt="" /><p>Hi! What are you working through?</p></div>
+        <div className="bestie-message is-user"><p>I want to make these panels feel more composable.</p></div>
+        <div className="bestie-message is-bestie"><img src="/snek.png" alt="" /><p>I can help with that. Drag me into the workspace when you want to keep this chat around.</p></div>
+      </div>
+      <div className="bestie-composer"><input aria-label="Message Bestie" placeholder="How can Bestie help?" /><button type="button" aria-label="Send to Bestie"><ArrowUp aria-hidden="true" size={18} strokeWidth={1.8} /></button></div>
+    </aside>
+  );
+}
+
 function MessagesView() {
   const [layouts, setLayouts] = useState(INITIAL_MESSAGE_LAYOUT);
   const [connections, setConnections] = useState(INITIAL_MESSAGE_CONNECTIONS);
@@ -1304,6 +1400,7 @@ function MessagesView() {
 export function BuzzProjectPrototype() {
   const [activeTab, setActiveTab] = useState<"me" | "messages" | "projects">("me");
   const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
+  const [bestieOpen, setBestieOpen] = useState(false);
   const appShellRef = useRef<HTMLElement>(null);
   const projectWorldRef = useRef<HTMLDivElement>(null);
   const canvasPanRef = useRef({
@@ -1389,8 +1486,10 @@ export function BuzzProjectPrototype() {
         <nav className="segmented" aria-label="Primary navigation">
           <button type="button" className={activeTab === "me" ? "selected" : ""} onClick={() => showTab("me")}>Me</button><button type="button" className={activeTab === "messages" ? "selected" : ""} onClick={() => showTab("messages")}>Messages</button><button type="button" className={activeTab === "projects" ? "selected" : ""} onClick={() => showTab("projects")}>Projects</button><button type="button" className="add-button" aria-label="Create new"><Plus aria-hidden="true" size={18} strokeWidth={1.75} /></button>
         </nav>
-        <div className="utilities"><button type="button" className="round-button" aria-label="Search"><Search className="search-icon" aria-hidden="true" size={18} strokeWidth={1.75} /></button><div className="avatar" aria-label="Cynthia"><span>C</span></div></div>
+        <div className="utilities"><button type="button" className={`round-button snake-button${bestieOpen ? " is-active" : ""}`} aria-label="Chat with Bestie" aria-expanded={bestieOpen} onClick={() => setBestieOpen((open) => !open)}><img src="/snek.png" alt="" /></button><button type="button" className="round-button" aria-label="Search"><Search className="search-icon" aria-hidden="true" size={18} strokeWidth={1.75} /></button><div className="avatar" aria-label="Cynthia"><span>C</span></div></div>
       </header>
+
+      {bestieOpen ? <BestieChat onClose={() => setBestieOpen(false)} /> : null}
 
       {activeTab === "projects" ? (
         <ProjectsView />
