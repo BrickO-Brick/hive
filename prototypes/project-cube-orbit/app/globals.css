@@ -82,8 +82,10 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
   animation: none;
   will-change: transform;
 }
-.bestie-chat.is-detached { z-index: 10; background: rgba(255,255,255,.9); transition: transform 240ms cubic-bezier(.455,.03,.515,.955), box-shadow 180ms ease; }
+.bestie-chat.is-detached { z-index: 10; border: 1px solid rgba(255,255,255,.96); border-radius: 28px; background: rgba(255,255,255,.94); box-shadow: 0 18px 44px rgba(53,76,86,.16), inset 0 1px 0 rgba(255,255,255,.9); transition: transform 240ms cubic-bezier(.455,.03,.515,.955), width 240ms cubic-bezier(.455,.03,.515,.955), height 240ms cubic-bezier(.455,.03,.515,.955), border-radius 240ms cubic-bezier(.455,.03,.515,.955), box-shadow 180ms ease; }
 .bestie-chat.is-detached.is-dragging { z-index: 45; }
+.bestie-chat.is-detached.is-connected { box-shadow: none; }
+.bestie-chat.is-slotted { width: var(--bestie-slot-width); height: var(--bestie-slot-height); }
 .bestie-chat.is-dragging { transition: none; }
 .bestie-chat.is-tearing { transform: translate3d(calc(var(--bestie-x) + var(--messages-pan-x)), calc(var(--bestie-y) + var(--messages-pan-y)), 0) scale(1.018); box-shadow: 0 24px 64px rgba(53,76,86,.22), inset 0 1px 0 rgba(255,255,255,.9); }
 .bestie-chat.is-merged-sticky { transform: translate3d(var(--bestie-x), var(--bestie-y), 0) scale(1); }
@@ -314,6 +316,11 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 .bestie-merge-target-right .message-panel { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .bestie-merge-target-top .message-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
 .bestie-merge-target-bottom .message-panel { border-bottom-right-radius: 0; border-bottom-left-radius: 0; }
+.bestie-is-slotted.bestie-merge-target-left .message-panel { width: calc(100% - var(--bestie-slot-width)); margin-left: var(--bestie-slot-width); }
+.bestie-is-slotted.bestie-merge-target-right .message-panel { width: calc(100% - var(--bestie-slot-width)); }
+.bestie-is-slotted.bestie-merge-target-top .message-panel { height: calc(100% - var(--bestie-slot-height)); margin-top: var(--bestie-slot-height); }
+.bestie-is-slotted.bestie-merge-target-bottom .message-panel { height: calc(100% - var(--bestie-slot-height)); }
+.bestie-is-slotted .message-panel { transition: transform 240ms cubic-bezier(.455,.03,.515,.955), width 240ms cubic-bezier(.455,.03,.515,.955), height 240ms cubic-bezier(.455,.03,.515,.955), margin 240ms cubic-bezier(.455,.03,.515,.955), border-radius 240ms cubic-bezier(.455,.03,.515,.955), box-shadow 180ms ease; }
 .panel-drag-handle { cursor: grab; touch-action: none; user-select: none; }
 .message-panel-cell.is-pulling .panel-drag-handle { cursor: grabbing; }
 .channel-panel { padding: 10px; }

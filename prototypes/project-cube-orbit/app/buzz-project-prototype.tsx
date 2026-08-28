@@ -1014,8 +1014,9 @@ function BestieChat({ onClose }: { onClose: () => void }) {
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [mergedEdge, setMergedEdge] = useState<MessagePanelEdge | null>(null);
   const [mergedToStickyPanel, setMergedToStickyPanel] = useState(false);
+  const [slotSize, setSlotSize] = useState<{ width: number; height: number } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
-  const mergedTargetRef = useRef<{ cell: HTMLElement; edge: MessagePanelEdge } | null>(null);
+  const mergedTargetRef = useRef<{ cell: HTMLElement; edge: MessagePanelEdge; slotted: boolean } | null>(null);
   const dragRef = useRef<{
     pointerId: number;
     startX: number;
@@ -1046,6 +1047,9 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     const merged = mergedTargetRef.current;
     if (!merged) return;
     merged.cell.classList.remove(`bestie-merge-target-${merged.edge}`);
+    merged.cell.classList.remove("bestie-is-slotted");
+    merged.cell.style.removeProperty("--bestie-slot-width");
+    merged.cell.style.removeProperty("--bestie-slot-height");
     mergedTargetRef.current = null;
   };
 
@@ -1058,28 +1062,30 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     const panel = panelRef.current;
     if (!panel) return null;
     const dragged = panel.getBoundingClientRect();
-    const candidates: Array<{ cell: HTMLElement; edge: MessagePanelEdge; distance: number; x: number; y: number }> = [];
+    const candidates: Array<{ cell: HTMLElement; edge: MessagePanelEdge; distance: number; x: number; y: number; targetRect: { left: number; right: number; top: number; bottom: number; width: number; height: number } }> = [];
     document.querySelectorAll<HTMLElement>(".message-panel-cell[data-panel-id]").forEach((cell) => {
       const target = cell.querySelector<HTMLElement>(".message-panel");
       if (!target) return;
       const rect = target.getBoundingClientRect();
-      const rowAlignment = Math.abs(dragged.top - rect.top);
-      const columnAlignment = Math.abs(dragged.left - rect.left);
+      const targetRect = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+      const rowAlignment = Math.min(Math.abs(dragged.top - rect.top), Math.abs(dragged.bottom - rect.bottom));
+      const columnAlignment = Math.min(Math.abs(dragged.left - rect.left), Math.abs(dragged.right - rect.right));
       const draggedCenterX = (dragged.left + dragged.right) / 2;
       const draggedCenterY = (dragged.top + dragged.bottom) / 2;
       const targetCenterX = (rect.left + rect.right) / 2;
       const targetCenterY = (rect.top + rect.bottom) / 2;
+      const canSlotInside = cell.dataset.panelId !== "sidebar";
       if (rowAlignment <= 68) {
         const edge: MessagePanelEdge = draggedCenterX < targetCenterX ? "left" : "right";
         candidates.push(edge === "left"
-          ? { cell, edge, distance: Math.abs(dragged.right - rect.left), x: rect.left - dragged.width, y: rect.top }
-          : { cell, edge, distance: Math.abs(dragged.left - rect.right), x: rect.right, y: rect.top });
+          ? { cell, edge, distance: Math.min(Math.abs(dragged.right - rect.left), canSlotInside ? Math.abs(dragged.left - rect.left) : Number.POSITIVE_INFINITY), x: rect.left - dragged.width, y: rect.top, targetRect }
+          : { cell, edge, distance: Math.min(Math.abs(dragged.left - rect.right), canSlotInside ? Math.abs(dragged.right - rect.right) : Number.POSITIVE_INFINITY), x: rect.right, y: rect.top, targetRect });
       }
       if (columnAlignment <= 68) {
         const edge: MessagePanelEdge = draggedCenterY < targetCenterY ? "top" : "bottom";
         candidates.push(edge === "top"
-          ? { cell, edge, distance: Math.abs(dragged.bottom - rect.top), x: rect.left, y: rect.top - dragged.height }
-          : { cell, edge, distance: Math.abs(dragged.top - rect.bottom), x: rect.left, y: rect.bottom });
+          ? { cell, edge, distance: Math.min(Math.abs(dragged.bottom - rect.top), canSlotInside ? Math.abs(dragged.top - rect.top) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.top - dragged.height, targetRect }
+          : { cell, edge, distance: Math.min(Math.abs(dragged.top - rect.bottom), canSlotInside ? Math.abs(dragged.bottom - rect.bottom) : Number.POSITIVE_INFINITY), x: rect.left, y: rect.bottom, targetRect });
       }
     });
     const best = candidates.sort((a, b) => a.distance - b.distance)[0];
@@ -1135,11 +1141,16 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     const drag = dragRef.current;
     const panel = panelRef.current;
     if (!panel || drag.pointerId !== event.pointerId) return;
+    if (event.buttons === 0) {
+      endDrag(event);
+      return;
+    }
     const pullDistance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
     if (drag.connectedAtStart && pullDistance > 112) {
       drag.hasBroken = true;
       removeMergedTarget();
       setMergedEdge(null);
+      setSlotSize(null);
       if (mergedToStickyPanel) {
         drag.originX -= drag.shellPanX;
         drag.originY -= drag.shellPanY;
@@ -1181,17 +1192,39 @@ function BestieChat({ onClose }: { onClose: () => void }) {
       setDetached(true);
       if (snap) {
         removeMergedTarget();
+        const targetIsSidebar = snap.cell.dataset.panelId === "sidebar";
+        const horizontal = snap.edge === "left" || snap.edge === "right";
+        const slotted = !targetIsSidebar;
+        const nextSlotSize = slotted
+          ? horizontal
+            ? { width: Math.max(220, Math.min(300, snap.targetRect.width * .42)), height: Math.min(430, snap.targetRect.height) }
+            : { width: snap.targetRect.width, height: Math.max(220, Math.min(300, snap.targetRect.height * .36)) }
+          : null;
+        if (nextSlotSize) {
+          snap.cell.classList.add("bestie-is-slotted");
+          snap.cell.style.setProperty("--bestie-slot-width", `${nextSlotSize.width}px`);
+          snap.cell.style.setProperty("--bestie-slot-height", `${nextSlotSize.height}px`);
+        }
         snap.cell.classList.add(`bestie-merge-target-${snap.edge}`);
-        mergedTargetRef.current = { cell: snap.cell, edge: snap.edge };
+        mergedTargetRef.current = { cell: snap.cell, edge: snap.edge, slotted };
         setMergedEdge(snap.edge);
-        setMergedToStickyPanel(snap.cell.dataset.panelId === "sidebar");
+        setMergedToStickyPanel(targetIsSidebar);
+        setSlotSize(nextSlotSize);
       }
       const next = stayedConnected
         ? { x: drag.originX, y: drag.originY }
         : snap
           ? snap.cell.dataset.panelId === "sidebar"
             ? { x: snap.x, y: snap.y }
-            : { x: snap.x - drag.shellPanX, y: snap.y - drag.shellPanY }
+            : slotSize || snap.cell.classList.contains("bestie-is-slotted")
+              ? snap.edge === "left"
+                ? { x: snap.targetRect.left - drag.shellPanX, y: snap.targetRect.top - drag.shellPanY }
+                : snap.edge === "right"
+                  ? { x: snap.targetRect.right - (Number.parseFloat(snap.cell.style.getPropertyValue("--bestie-slot-width")) || panel.offsetWidth) - drag.shellPanX, y: snap.targetRect.top - drag.shellPanY }
+                  : snap.edge === "top"
+                    ? { x: snap.targetRect.left - drag.shellPanX, y: snap.targetRect.top - drag.shellPanY }
+                    : { x: snap.targetRect.left - drag.shellPanX, y: snap.targetRect.bottom - (Number.parseFloat(snap.cell.style.getPropertyValue("--bestie-slot-height")) || panel.offsetHeight) - drag.shellPanY }
+              : { x: snap.x - drag.shellPanX, y: snap.y - drag.shellPanY }
           : { x: drag.x, y: drag.y };
       panel.style.setProperty("--bestie-x", `${next.x}px`);
       panel.style.setProperty("--bestie-y", `${next.y}px`);
@@ -1208,16 +1241,17 @@ function BestieChat({ onClose }: { onClose: () => void }) {
     clearPreview();
     setMergedEdge(null);
     setMergedToStickyPanel(false);
+    setSlotSize(null);
     onClose();
   };
 
   return (
     <aside
       ref={panelRef}
-      className={`bestie-chat${detached ? " is-detached" : ""}${mergedEdge ? ` is-merged-${mergedEdge}` : ""}${mergedToStickyPanel ? " is-merged-sticky" : ""}`}
+      className={`bestie-chat${detached ? " is-detached" : ""}${mergedEdge ? ` is-connected is-merged-${mergedEdge}` : ""}${mergedToStickyPanel ? " is-merged-sticky" : ""}${slotSize ? " is-slotted" : ""}`}
       role="dialog"
       aria-label="Chat with Bestie"
-      style={detached ? ({ "--bestie-x": `${position.x}px`, "--bestie-y": `${position.y}px` } as CSSProperties) : undefined}
+      style={detached ? ({ "--bestie-x": `${position.x}px`, "--bestie-y": `${position.y}px`, ...(slotSize ? { "--bestie-slot-width": `${slotSize.width}px`, "--bestie-slot-height": `${slotSize.height}px` } : {}) } as CSSProperties) : undefined}
     >
       <header
         className="bestie-chat-header"
@@ -1225,6 +1259,7 @@ function BestieChat({ onClose }: { onClose: () => void }) {
         onPointerMove={updateDrag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
       >
         <div><img src="/snek.png" alt="" /><strong>Bestie</strong></div>
         <button type="button" aria-label="Close Bestie chat" onClick={closeChat}><X aria-hidden="true" size={18} strokeWidth={1.7} /></button>
