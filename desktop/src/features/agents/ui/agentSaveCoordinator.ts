@@ -359,8 +359,14 @@ export async function runAgentSaveCoordinator(
 
   if (!observedRemainder) {
     // Full success — every submitted write is reflected in observed state.
+    // Prefer the OBSERVED name from the final refetch over `latestAgent`.
+    // `latestAgent` only advances on a non-throwing `updateManagedAgent`; a
+    // rename that persisted but whose command threw after commit leaves it at
+    // the pre-save `inst`, so a committed Alice→Bob would report "Alice saved."
+    // The observed refetch reflects what is actually on disk (the stopped-state
+    // path below already prefers `observedAgent` for the same reason).
     const agentName =
-      latestAgent?.name ?? observedAgent?.name ?? def?.displayName ?? "Agent";
+      observedAgent?.name ?? latestAgent?.name ?? def?.displayName ?? "Agent";
 
     if (profileSyncError) {
       showAgentProfileSyncWarning(agentName, profileSyncError);

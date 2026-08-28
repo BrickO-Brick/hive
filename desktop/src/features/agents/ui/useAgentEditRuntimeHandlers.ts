@@ -209,8 +209,19 @@ export function useAgentEditRuntimeHandlers(input: RuntimeHandlersInput) {
   function handleProviderDropdownChange(nextValue: string) {
     const nextProvider =
       nextValue === AUTO_PROVIDER_DROPDOWN_VALUE ? "" : nextValue;
-    if (nextProvider === "relay-mesh" && selectedRuntimeId !== "buzz-agent") {
-      handleRuntimeDropdownChange("buzz-agent");
+    // Relay Mesh is only offered by the buzz-agent runtime, so selecting it
+    // forces that runtime. Route through the same layer the provider dropdown
+    // writes: in a definition-showing context switch the DEFINITION runtime
+    // (handleDefinitionRuntimeChange), never the instance handler — otherwise a
+    // linked edit silently pins the clicked instance to buzz-agent while the
+    // definition keeps its old runtime. Consult that same layer's runtime id.
+    const currentRuntimeId = showDef ? definitionRuntimeId : selectedRuntimeId;
+    if (nextProvider === "relay-mesh" && currentRuntimeId !== "buzz-agent") {
+      if (showDef) {
+        handleDefinitionRuntimeChange("buzz-agent");
+      } else {
+        handleRuntimeDropdownChange("buzz-agent");
+      }
     }
     const sel = showDef ? dSelection : iSelection;
     const applyFn = showDef ? applyDSelection : applyISelection;

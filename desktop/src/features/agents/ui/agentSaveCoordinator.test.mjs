@@ -1202,3 +1202,56 @@ test("test_drift_guard_inert_when_no_expected_updatedAt_supplied", async () => {
   assert.equal(result, true, "null expected updatedAt skips the guard");
   assert.equal(opts._calls.updatePersona, 1);
 });
+
+// ── Test family 9: success toast names the observed (persisted) agent (P2) ───
+//
+// `latestAgent` only advances on a NON-throwing updateManagedAgent. A rename
+// that commits to disk but whose command throws afterward leaves `latestAgent`
+// at the pre-save instance, so the success toast must read the name from the
+// observed refetch — not from `latestAgent` — or a committed Alice→Bob rename
+// falsely reports "Alice saved."
+
+test("test_success_toast_uses_observed_name_on_thrown_but_persisted_rename", async () => {
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "instance-only",
+        instance: makeInstance({ name: "Alice" }),
+      },
+      agentInput: makeAgentInput({ name: "Bob" }),
+      // The rename commits to disk, but the command throws after commit, so
+      // `latestAgent` is never reassigned and stays at the pre-save "Alice".
+      updateManagedAgent: async () => {
+        throw new Error("summary build failed after commit");
+      },
+      // The final refetch observes the persisted rename.
+      refetchStores: async () => ({
+        persona: null,
+        agent: makeInstance({ name: "Bob" }),
+      }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      true,
+      "a thrown-but-persisted write is a full success (observed state matches)",
+    );
+    const successes = cap.captured.filter((c) => c.kind === "success");
+    assert.equal(successes.length, 1, "exactly one success toast");
+    assert.match(
+      successes[0].message,
+      /^Bob saved\./,
+      "toast must name the observed (persisted) rename, not the stale pre-save name",
+    );
+    assert.doesNotMatch(
+      successes[0].message,
+      /Alice/,
+      "toast must not report the stale pre-save name",
+    );
+  } finally {
+    cap.restore();
+  }
+});
