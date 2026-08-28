@@ -35,13 +35,58 @@ import {
   useAsyncLoad,
 } from "./AdminConsolePanelHelpers";
 
+// ── Attachment budget ─────────────────────────────────────────────────────
+
+/**
+ * Per-item attachment display limits — defence against a hostile relay
+ * crafting a feedback entry with hundreds of large attachments to force
+ * unbounded concurrent fetches and memory pressure.
+ *
+ * MAX_FEEDBACK_ATTACHMENTS: maximum number of attachments rendered per item.
+ *   Extra entries are silently dropped and a notice is shown to the operator.
+ *
+ * MAX_FEEDBACK_ATTACHMENT_AGGREGATE_BYTES: aggregate byte ceiling across all
+ *   rendered attachments (sum of imeta `size` values). Attachments that would
+ *   push the running total over this limit are excluded; earlier entries in the
+ *   list take priority. Combined with the per-response 10 MiB cap enforced by
+ *   fetchAdminAttachmentBlobUrl, the worst case per item is:
+ *   min(MAX_FEEDBACK_ATTACHMENTS, floor(MAX_FEEDBACK_ATTACHMENT_AGGREGATE_BYTES / 1)) fetches
+ *   of at most 10 MiB each.
+ */
+const MAX_FEEDBACK_ATTACHMENTS = 5;
+const MAX_FEEDBACK_ATTACHMENT_AGGREGATE_BYTES = 50 * 1024 * 1024; // 50 MiB
+
+/**
+ * Apply count and aggregate-byte limits to a parsed attachment list.
+ * Returns `{ shown, truncated }` where `truncated` is the number of entries
+ * that were dropped. Attachment order is preserved; earlier entries win when
+ * the aggregate limit is hit.
+ */
+export function applyAttachmentBudget(
+  attachments: AttachmentMeta[],
+  maxCount = MAX_FEEDBACK_ATTACHMENTS,
+  maxBytes = MAX_FEEDBACK_ATTACHMENT_AGGREGATE_BYTES,
+): { shown: AttachmentMeta[]; truncated: number } {
+  const shown: AttachmentMeta[] = [];
+  let runningBytes = 0;
+  for (const a of attachments) {
+    if (shown.length >= maxCount) break;
+    if (runningBytes + a.size > maxBytes) break;
+    shown.push(a);
+    runningBytes += a.size;
+  }
+  return { shown, truncated: attachments.length - shown.length };
+}
+
 // ── Feedback tab ──────────────────────────────────────────────────────────
 
 export function FeedbackTab({
+  canMutate,
   origin,
   pubkey,
   generation,
 }: {
+  canMutate: boolean;
   origin: string;
   pubkey: string;
   generation: number;
@@ -61,6 +106,7 @@ export function FeedbackTab({
   if (selectedId) {
     return (
       <FeedbackDetail
+        canMutate={canMutate}
         feedbackId={selectedId}
         onBack={() => setSelectedId(null)}
         origin={origin}
@@ -358,6 +404,7 @@ function FeedbackStatusControl({
       <div className="flex gap-1.5">
         {statuses.map((s) => (
           <Button
+            aria-pressed={currentStatus === s}
             className={cn(
               "text-xs",
               currentStatus === s && "ring-2 ring-ring ring-offset-1",
@@ -381,6 +428,7 @@ function FeedbackStatusControl({
 // ── Feedback detail ───────────────────────────────────────────────────────
 
 export function FeedbackDetail({
+  canMutate,
   origin,
   pubkey,
   generation,
@@ -388,6 +436,7 @@ export function FeedbackDetail({
   onBack,
   onMutated,
 }: {
+  canMutate: boolean;
   origin: string;
   pubkey: string;
   generation: number;
@@ -419,10 +468,14 @@ export function FeedbackDetail({
 
   // Parse imeta attachment metadata from the relay's wire `tags: string[][]`.
   // AdminFeedback is serialised camelCase by the relay (serde rename_all).
-  const attachments: AttachmentMeta[] =
+  // Apply count and aggregate-byte limits before rendering — a hostile relay
+  // could craft an entry with many large attachments to force unbounded fetches.
+  const allAttachments: AttachmentMeta[] =
     detailState.status === "ok"
       ? parseImetaAttachments(detailState.data.tags)
       : [];
+  const { shown: attachments, truncated: truncatedCount } =
+    applyAttachmentBudget(allAttachments);
 
   return (
     <div className="space-y-4">
@@ -441,15 +494,17 @@ export function FeedbackDetail({
       {detailState.status === "ok" && (
         <>
           <FeedbackFields data={detailState.data} />
-          <FeedbackStatusControl
-            feedbackId={feedbackId}
-            currentStatus={localStatus}
-            origin={origin}
-            onStatusChanged={(newStatus) => {
-              setLocalStatus(newStatus);
-              onMutated();
-            }}
-          />
+          {canMutate && (
+            <FeedbackStatusControl
+              feedbackId={feedbackId}
+              currentStatus={localStatus}
+              origin={origin}
+              onStatusChanged={(newStatus) => {
+                setLocalStatus(newStatus);
+                onMutated();
+              }}
+            />
+          )}
           {attachments.length > 0 && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium">Attachments</h4>
@@ -463,6 +518,16 @@ export function FeedbackDetail({
                   panelGeneration={generation}
                 />
               ))}
+              {truncatedCount > 0 && (
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="attachment-truncated-notice"
+                >
+                  {truncatedCount} attachment
+                  {truncatedCount === 1 ? "" : "s"} not shown (display limit
+                  reached).
+                </p>
+              )}
             </div>
           )}
         </>

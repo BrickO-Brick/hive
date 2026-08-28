@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useRelayOrigin } from "@/shared/lib/useRelayOrigin";
-import { discoverAdminOrigin, getAdminOrigin, probeAdminOrigin } from "./api";
+import { discoverAdminOrigin, getAdminOrigin } from "./api";
 import type { ModerationNavResolution } from "./nav";
 
 export const moderationNavResolutionQueryKey = (
@@ -11,20 +11,21 @@ export const moderationNavResolutionQueryKey = (
 ) => ["moderationNavResolution", pubkeyHex, relayOrigin] as const;
 
 /**
- * Resolve the origin + probe state that decide whether the Moderation nav
- * entry is visible. Mirrors the settings card's mount resolution: a saved
- * manual origin wins outright (and short-circuits the probe, since the gate
- * shows the entry regardless); otherwise NIP-11 discovery is attempted and,
- * when it advertises an origin, probed so the gate can distinguish an
- * authorized relay from a definitive non-admin verdict.
+ * Resolve the origin source that decides whether the Moderation nav entry is
+ * visible. A saved manual origin wins outright; otherwise NIP-11 discovery is
+ * attempted and, when it advertises an origin, the entry is shown so the
+ * operator can open Moderation and confirm the pre-filled origin.
+ *
+ * The advertised origin is deliberately NOT probed here: it is untrusted
+ * relay-advertised input, and probing it would send a signed NIP-98 credential
+ * to an attacker-chosen destination. Nothing contacts the advertised origin
+ * until the operator explicitly saves it inside the settings surface.
  *
  * Keyed by pubkey **and the connected relay origin**: NIP-11 discovery is
  * relay-dependent, so a pubkey-only key would serve the previous relay's
  * verdict for up to `staleTime` after a workspace switch. Gating `enabled`
  * on the relay origin also defers resolution until the relay identity is
- * known, so no verdict is computed against an unresolved relay. Errors from
- * the probe resolve to a `"error"` outcome rather than rejecting — a
- * transport flake must keep the entry visible, not make the whole query fail.
+ * known, so no verdict is computed against an unresolved relay.
  */
 export function useModerationNavResolution():
   | ModerationNavResolution
@@ -40,7 +41,7 @@ export function useModerationNavResolution():
     queryFn: async (): Promise<ModerationNavResolution> => {
       const saved = await getAdminOrigin(pubkeyHex);
       if (saved) {
-        return { originSource: "saved", probe: null };
+        return { originSource: "saved" };
       }
       let discovered: string | null = null;
       try {
@@ -48,15 +49,7 @@ export function useModerationNavResolution():
       } catch {
         discovered = null;
       }
-      if (!discovered) {
-        return { originSource: "none", probe: null };
-      }
-      try {
-        const result = await probeAdminOrigin(discovered);
-        return { originSource: "advertised", probe: result.state };
-      } catch {
-        return { originSource: "advertised", probe: "error" };
-      }
+      return { originSource: discovered ? "advertised" : "none" };
     },
   });
 

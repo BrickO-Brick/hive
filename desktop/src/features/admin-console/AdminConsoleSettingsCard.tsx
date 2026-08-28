@@ -246,6 +246,10 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
     kind: "idle",
   });
   const [isSaving, setIsSaving] = useState(false);
+  // Whether the Advanced (origin entry) disclosure is open. Auto-opens when a
+  // relay-advertised origin pre-fills the input so the operator sees the value
+  // awaiting their explicit Save.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // In-flight probe abort controller. Does not cancel the Tauri native request
   // (not cancellable), but prevents a stale probe result from updating UI state.
@@ -284,7 +288,11 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
   // Load saved origin on mount (runs once per session because the component
   // is keyed by pubkeyHex — re-mount = new pubkey). When nothing is saved,
   // attempt NIP-11 auto-discovery of the admin origin from the connected
-  // relay so the operator never has to type a URL on the happy path.
+  // relay and PRE-FILL the input with it — but do NOT save or probe it. The
+  // advertised value is untrusted relay input; auto-probing it would send a
+  // signed NIP-98 credential to an attacker-chosen destination. The operator
+  // must explicitly Save to convert the pre-filled value into a manual origin,
+  // at which point the normal save→probe path validates and probes it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional mount-once effect; identity boundary is the key prop on this component — it unmounts/remounts on pubkey change, so [] is correct.
   useEffect(() => {
     let active = true;
@@ -294,7 +302,7 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
         if (!active) return;
         if (saved) {
           // A persisted origin (manual fallback) takes precedence over
-          // discovery — the operator explicitly chose it.
+          // discovery — the operator explicitly chose it, so probe it.
           setSavedOrigin(saved);
           setOriginInput(saved);
           runProbe(saved);
@@ -311,13 +319,13 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
         }
         if (!active) return;
         if (discovered) {
-          setSavedOrigin(discovered);
+          // PRE-FILL ONLY: seed the input and open Advanced so the operator
+          // can review and Save. savedOrigin stays null → no panel, no probe,
+          // nothing contacts the advertised origin until an explicit Save.
           setOriginInput(discovered);
-          runProbe(discovered);
-        } else {
-          setSavedOrigin(null);
-          setOriginInput("");
+          setAdvancedOpen(true);
         }
+        setSavedOrigin(null);
       } catch (e) {
         if (!active) return;
         // Surface storage/signing errors rather than silently degrading.
@@ -401,7 +409,11 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
   return (
     <>
       <div className="mb-6 space-y-3">
-        <details className="group/advanced rounded-md border border-border/60">
+        <details
+          className="group/advanced rounded-md border border-border/60"
+          open={advancedOpen}
+          onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}
+        >
           <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
             <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform group-open/advanced:rotate-90" />
             Advanced: admin origin
@@ -469,6 +481,7 @@ function AdminConsoleSettingsSession({ pubkeyHex }: { pubkeyHex: string }) {
 
       {isPanelVisible && savedOrigin && (
         <AdminConsolePanel
+          canMutate={probeUiState.kind === "authorized"}
           origin={savedOrigin}
           pubkey={pubkeyHex}
           role={

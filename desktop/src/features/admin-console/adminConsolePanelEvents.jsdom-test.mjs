@@ -175,14 +175,18 @@ function mountCard(qc) {
   return { container, doRender, unmount };
 }
 
-function mountPanel({ origin, pubkey }) {
+function mountPanel({ origin, pubkey, canMutate = true }) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   const doRender = async ({ origin: o, pubkey: p } = { origin, pubkey }) => {
     await act(async () => {
       root.render(
-        React.createElement(AdminConsolePanel, { origin: o, pubkey: p }),
+        React.createElement(AdminConsolePanel, {
+          canMutate,
+          origin: o,
+          pubkey: p,
+        }),
       );
     });
   };
@@ -1644,13 +1648,16 @@ test("contract-dto-mutation-evidence-nested-message: removing message block hide
 
 // ── NIP-11 auto-discovery ─────────────────────────────────────────────────
 
-test("discovery-success: no saved origin auto-discovers and probes without manual input", async () => {
-  // Verifies the mount effect: when get_admin_origin returns null, the card
-  // calls admin_discover_origin, and on a discovered origin it seeds the input
-  // and auto-probes — the operator types nothing.
+test("discovery-success: a discovered origin only pre-fills the input — it is never auto-probed", async () => {
+  // Verifies the advertised-origin hardening: when get_admin_origin returns
+  // null, the card calls admin_discover_origin and, on a discovered origin,
+  // seeds the input and opens the Advanced disclosure so the operator can
+  // review it — but it must NOT probe. The advertised value is untrusted relay
+  // input; auto-probing it would send a signed NIP-98 credential to an
+  // attacker-chosen destination. Nothing contacts the origin until Save.
   //
-  // Fails if the discovery branch is removed from the mount effect: no
-  // admin_discover_origin call, empty input, panel never renders.
+  // Fails if the mount effect reverts to auto-probing a discovered origin:
+  // admin_probe would fire and the panel would render without operator action.
 
   const pubkey = "1".repeat(64);
   const discovered = "http://127.0.0.1:3000";
@@ -1681,8 +1688,8 @@ test("discovery-success: no saved origin auto-discovers and probes without manua
   );
   assert.deepEqual(
     probeOrigins,
-    [discovered],
-    `discovered origin must be auto-probed; got: ${JSON.stringify(probeOrigins)}`,
+    [],
+    `a discovered origin must NOT be probed; got: ${JSON.stringify(probeOrigins)}`,
   );
 
   const input = container.querySelector("[data-testid='admin-origin-input']");
@@ -1693,9 +1700,10 @@ test("discovery-success: no saved origin auto-discovers and probes without manua
   );
 
   const panel = container.querySelector("[data-testid='admin-console-panel']");
-  assert.ok(
+  assert.equal(
     panel,
-    "admin-console-panel must render after auto-discovered origin authorizes",
+    null,
+    "admin-console-panel must NOT render — the discovered origin is unprobed until Save",
   );
 
   await unmount();
@@ -2072,6 +2080,20 @@ test("feedback-status-honest: a reviewed detail reports reviewed, never defaulti
   assert.ok(
     !(newBtn.className ?? "").includes("ring-2"),
     `the new button must NOT be active for a reviewed entry; got className: ${newBtn.className}`,
+  );
+
+  // P2-2: semantic contract — aria-pressed must reflect the selected status,
+  // not just the visual ring class. Fails if aria-pressed is removed from
+  // FeedbackStatusControl's Button props.
+  assert.equal(
+    reviewedBtn.getAttribute("aria-pressed"),
+    "true",
+    "the active status button must have aria-pressed=true",
+  );
+  assert.equal(
+    newBtn.getAttribute("aria-pressed"),
+    "false",
+    "an inactive status button must have aria-pressed=false",
   );
 
   await unmount();

@@ -95,6 +95,19 @@ impl AdminOrigin {
         &self.0
     }
 
+    /// The parsed host and effective port, used to SSRF-resolve an untrusted
+    /// relay-advertised origin before it is offered to the operator. Re-derived
+    /// from the validated canonical string, which is guaranteed to parse.
+    pub fn resolution_target(&self) -> (url::Host<String>, u16) {
+        let parsed = url::Url::parse(&self.0).expect("canonical AdminOrigin is always a valid URL");
+        let host = parsed
+            .host()
+            .expect("canonical AdminOrigin always has a host")
+            .to_owned();
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        (host, port)
+    }
+
     /// Build the full request URL for `route` with `query`.
     pub fn route_url(&self, route: &AdminRoute, query: &AdminQuery) -> String {
         let path = route.path();

@@ -926,67 +926,20 @@ fn validate_pubkey_hex(hex: String) -> Result<String, String> {
 
 // ── NIP-11 admin-origin discovery ─────────────────────────────────────────
 
-/// Minimal projection of the relay's NIP-11 information document — only the
-/// field needed to auto-discover the admin console origin. Unknown fields are
-/// ignored, so a full NIP-11 document deserializes cleanly.
-#[derive(serde::Deserialize)]
-struct AdminApiInfo {
-    #[serde(default)]
-    admin_api: Option<String>,
-}
-
-/// Validate a relay-advertised `admin_api` value into a canonical origin.
-///
-/// The value is untrusted relay input: it is accepted only if it passes the
-/// same `AdminOrigin` validation applied to operator-entered URLs (loopback
-/// `http` or any `https`, origin only — no path, query, fragment, or
-/// credentials). An absent or invalid value yields `None` so the desktop falls
-/// back to manual entry rather than probing a malformed origin.
-fn admin_origin_from_nip11(info: &AdminApiInfo) -> Option<String> {
-    let raw = info.admin_api.as_deref()?;
-    origin::AdminOrigin::parse(raw)
-        .ok()
-        .map(|origin| origin.as_str().to_string())
-}
-
-/// Fetch the relay's NIP-11 document and extract a validated admin origin.
-///
-/// Returns `Ok(Some(origin))` when the relay advertises a valid `admin_api`,
-/// `Ok(None)` when the field is absent or fails validation, and `Err` on a
-/// transport or non-2xx failure. Split from the Tauri command so it can be
-/// exercised against a live test server without constructing `AppState`.
-async fn discover_admin_origin_at(
-    client: &reqwest::Client,
-    relay_http_base: &str,
-) -> Result<Option<String>, String> {
-    use crate::relay::{classify_request_error, parse_json_response, relay_error_message};
-
-    let url = format!("{}/info", relay_http_base.trim_end_matches('/'));
-    let response = client
-        .get(url)
-        .header("Accept", "application/nostr+json")
-        .send()
-        .await
-        .map_err(|error| classify_request_error(&error))?;
-
-    if !response.status().is_success() {
-        return Err(relay_error_message(response).await);
-    }
-
-    let info = parse_json_response::<AdminApiInfo>(response).await?;
-    Ok(admin_origin_from_nip11(&info))
-}
+mod discovery;
 
 /// Auto-discover the admin console origin from the connected relay's NIP-11
 /// document. Returns the canonical origin when the relay advertises a valid
-/// `admin_api`, or `None` when it does not — the caller falls back to manual
-/// entry. Mirrors the native NIP-11 fetch used by `relay_requires_membership`.
+/// `admin_api` that does not resolve to a private/reserved target, or `None`
+/// otherwise. The returned origin only pre-fills the operator's origin field;
+/// nothing probes it until the operator explicitly saves. Mirrors the native
+/// NIP-11 fetch used by `relay_requires_membership`.
 #[tauri::command]
 pub async fn admin_discover_origin(
     state: tauri::State<'_, crate::app_state::AppState>,
 ) -> Result<Option<String>, String> {
     let base = crate::relay::relay_api_base_url_with_override(&state);
-    discover_admin_origin_at(&state.http_client, &base).await
+    discovery::discover_admin_origin_at(&state.http_client, &base).await
 }
 
 #[cfg(test)]

@@ -172,11 +172,14 @@ function actionVariant(
  */
 function EnforcementStateBlock({
   activeAction,
+  canMutate,
   origin,
   reportId,
   onActionComplete,
 }: {
   activeAction: NonNullable<AdminReportDto["activeAction"]>;
+  /** Whether mutation controls are enabled. `false` in disabled-auth mode. */
+  canMutate: boolean;
   origin: string;
   reportId: string;
   onActionComplete: () => void;
@@ -237,7 +240,7 @@ function EnforcementStateBlock({
           {activeAction.errorMessage}
         </p>
       )}
-      {actionStatus === "failed" && (
+      {actionStatus === "failed" && canMutate && (
         <Button
           data-testid="enforcement-cancel-btn"
           disabled={isWorking}
@@ -517,10 +520,12 @@ function ReopenReportForm({
 // ── Reports tab ───────────────────────────────────────────────────────────
 
 function ReportsTab({
+  canMutate,
   origin,
   pubkey,
   generation,
 }: {
+  canMutate: boolean;
   origin: string;
   pubkey: string;
   generation: number;
@@ -539,6 +544,7 @@ function ReportsTab({
   if (selectedId) {
     return (
       <ReportDetail
+        canMutate={canMutate}
         origin={origin}
         pubkey={pubkey}
         generation={generation}
@@ -644,6 +650,7 @@ function ReportFields({ data }: { data: AdminReportDetailDto }) {
 }
 
 function ReportDetail({
+  canMutate,
   origin,
   pubkey,
   generation,
@@ -651,6 +658,7 @@ function ReportDetail({
   onBack,
   onMutated,
 }: {
+  canMutate: boolean;
   origin: string;
   pubkey: string;
   generation: number;
@@ -710,6 +718,7 @@ function ReportDetail({
           {activeAction && (
             <EnforcementStateBlock
               activeAction={activeAction}
+              canMutate={canMutate}
               origin={origin}
               reportId={reportId}
               onActionComplete={handleMutated}
@@ -721,7 +730,7 @@ function ReportDetail({
               enforcement block above renders that history alongside it. Only a
               live/failed action keeps the report `processing` (not open), so
               `isOpen` alone never surfaces the form on an in-flight action. */}
-          {isOpen && (
+          {isOpen && canMutate && (
             <ResolveReportForm
               report={detailState.data}
               origin={origin}
@@ -729,7 +738,7 @@ function ReportDetail({
             />
           )}
           {/* Reopen form: only for terminal (resolved/dismissed/escalated) reports */}
-          {isReopenable && (
+          {isReopenable && canMutate && (
             <ReopenReportForm
               report={detailState.data}
               origin={origin}
@@ -792,11 +801,19 @@ function TabBar({
 // ── Panel root ────────────────────────────────────────────────────────────
 
 export function AdminConsolePanel({
+  canMutate,
   origin,
   pubkey,
   role,
   source,
 }: {
+  /**
+   * Whether mutation controls should be enabled. `false` when the relay probe
+   * returned `disabled` — the admin API is accessible without credentials, so
+   * the operator can read but must not be offered write affordances that could
+   * accidentally mutate the relay without authentication.
+   */
+  canMutate: boolean;
   origin: string;
   /** Active identity pubkey — all state is keyed on (pubkey, origin). */
   pubkey: string;
@@ -838,10 +855,20 @@ export function AdminConsolePanel({
         showStaffing={isOperator}
       />
       {activeTab === "reports" && (
-        <ReportsTab origin={origin} pubkey={pubkey} generation={generation} />
+        <ReportsTab
+          canMutate={canMutate}
+          origin={origin}
+          pubkey={pubkey}
+          generation={generation}
+        />
       )}
       {activeTab === "feedback" && (
-        <FeedbackTab origin={origin} pubkey={pubkey} generation={generation} />
+        <FeedbackTab
+          canMutate={canMutate}
+          origin={origin}
+          pubkey={pubkey}
+          generation={generation}
+        />
       )}
       {activeTab === "staffing" && isOperator && (
         <StaffingTab origin={origin} pubkey={pubkey} generation={generation} />
