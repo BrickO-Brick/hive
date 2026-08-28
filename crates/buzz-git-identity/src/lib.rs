@@ -312,14 +312,33 @@ pub fn nostr_credential_entries() -> Vec<(String, String)> {
 
 /// Flatten `(key, value)` git config entries into `GIT_CONFIG_COUNT`/`KEY_n`/
 /// `VALUE_n` env pairs, composing over any `GIT_CONFIG_COUNT` already present
-/// so a caller's existing config (e.g. the desktop's per-URL credential helper)
-/// is preserved rather than clobbered.
+/// **in this process's environment** so a caller's existing config is preserved
+/// rather than clobbered.
+///
+/// Use this only when the base config lives in the process env (e.g. the
+/// dev-mcp shim, which sets `GIT_CONFIG_*` as its own env for shell children).
+/// When the base is staged on a child `Command` instead — the Desktop-to-harness
+/// path, where the process env's count is 0 but the child already carries
+/// `GIT_CONFIG_COUNT=2` and indices 0–1 — read that count and call
+/// [`to_git_config_env_from_base`] with it, or the appended entries will
+/// overwrite the child's indices 0..n and orphan its per-relay credential
+/// helper.
 pub fn to_git_config_env(entries: &[(String, String)]) -> Vec<(String, String)> {
     let base: usize = std::env::var("GIT_CONFIG_COUNT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    to_git_config_env_from_base(entries, base)
+}
 
+/// Flatten `(key, value)` git config entries into `GIT_CONFIG_COUNT`/`KEY_n`/
+/// `VALUE_n` env pairs, composing over `base` existing entries: the new count is
+/// `base + entries.len()` and the new indices start at `base`, so entries
+/// already occupying indices `0..base` are preserved.
+pub fn to_git_config_env_from_base(
+    entries: &[(String, String)],
+    base: usize,
+) -> Vec<(String, String)> {
     let mut env = Vec::with_capacity(entries.len() * 2 + 1);
     env.push((
         "GIT_CONFIG_COUNT".into(),

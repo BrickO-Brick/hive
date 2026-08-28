@@ -537,9 +537,11 @@ fn install_git_identity(
             dir.path().join("git-credential-nostr"),
         )?;
         prepend_child_path(cmd, dir.path())?;
-        for (key, value) in
-            buzz_git_identity::to_git_config_env(&buzz_git_identity::nostr_credential_entries())
-        {
+        let base = child_git_config_count(cmd);
+        for (key, value) in buzz_git_identity::to_git_config_env_from_base(
+            &buzz_git_identity::nostr_credential_entries(),
+            base,
+        ) {
             cmd.env(key, value);
         }
         return Ok(Some(dir));
@@ -585,7 +587,8 @@ fn install_git_identity(
     if install_credential {
         entries.extend(buzz_git_identity::nostr_credential_entries());
     }
-    for (key, value) in buzz_git_identity::to_git_config_env(&entries) {
+    let base = child_git_config_count(cmd);
+    for (key, value) in buzz_git_identity::to_git_config_env_from_base(&entries, base) {
         cmd.env(key, value);
     }
 
@@ -663,6 +666,27 @@ fn child_env(cmd: &tokio::process::Command, key: &str) -> Option<std::ffi::OsStr
         .get_envs()
         .find(|(k, _)| *k == std::ffi::OsStr::new(key))
         .and_then(|(_, v)| v.map(|v| v.to_owned()))
+}
+
+/// The `GIT_CONFIG_COUNT` the child will actually see. Agent identity config
+/// must be appended STARTING at this index so it never overwrites config the
+/// child already carries.
+///
+/// This mirrors git's own env resolution: a value staged on `cmd` overrides the
+/// process env, and the child otherwise inherits the process env's count. In the
+/// Desktop path the child carries `GIT_CONFIG_COUNT=2` and its per-relay
+/// credential helper at indices 0–1 while the process env's count is 0, so we
+/// must read the child-staged count; in a harness whose own env carries
+/// `GIT_CONFIG_*` and stages nothing on the child, the child inherits that
+/// count, so we fall back to it. Composing at a lower base would restart the
+/// indices and orphan whichever set the child would have seen.
+#[cfg(unix)]
+fn child_git_config_count(cmd: &tokio::process::Command) -> usize {
+    child_env(cmd, "GIT_CONFIG_COUNT")
+        .and_then(|v| v.into_string().ok())
+        .or_else(|| std::env::var("GIT_CONFIG_COUNT").ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
 }
 
 impl AcpClient {
@@ -5543,6 +5567,72 @@ mod tests {
         assert!(
             child_env_has_git_config(&cmd, "credential.helper", "nostr"),
             "agent mode must configure relay git auth"
+        );
+    }
+
+    /// P1 (Carl 5046374806): agent mode must LAYER its identity config on top of
+    /// the Desktop's staged per-relay credential entries, never overwrite them.
+    /// The Desktop stages `GIT_CONFIG_COUNT=2` and indices 0–1 (its
+    /// `credential.<relay>/git.helper` + a companion) directly on the child
+    /// command, while the harness process env's count is 0. Composing against the
+    /// process env would restart the agent entries at index 0 and orphan the
+    /// helper. The fix reads the child's own count, so indices 0–1 survive and
+    /// the agent config lands at index ≥ 2.
+    #[cfg(unix)]
+    #[test]
+    fn install_git_identity_agent_mode_preserves_desktop_credential_config() {
+        use nostr::ToBech32;
+
+        let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
+        let mut cmd = tokio::process::Command::new("true");
+        cmd.env("BUZZ_PRIVATE_KEY", &nsec);
+        cmd.env("BUZZ_GIT_IDENTITY", "agent");
+        // The Desktop's staged per-relay credential config on the child.
+        cmd.env("GIT_CONFIG_COUNT", "2");
+        cmd.env(
+            "GIT_CONFIG_KEY_0",
+            "credential.https://relay.example/git.helper",
+        );
+        cmd.env("GIT_CONFIG_VALUE_0", "/opt/buzz/git-credential-nostr");
+        cmd.env("GIT_CONFIG_KEY_1", "credential.useHttpPath");
+        cmd.env("GIT_CONFIG_VALUE_1", "true");
+
+        let _dir = install_git_identity(&mut cmd)
+            .expect("agent mode must not error")
+            .expect("agent mode with a key must install identity");
+
+        // The Desktop's indices 0–1 must be byte-for-byte intact.
+        assert_eq!(
+            child_env(&cmd, "GIT_CONFIG_KEY_0").and_then(|v| v.into_string().ok()),
+            Some("credential.https://relay.example/git.helper".to_string()),
+            "the Desktop's per-relay helper key must be preserved at index 0"
+        );
+        assert_eq!(
+            child_env(&cmd, "GIT_CONFIG_VALUE_0").and_then(|v| v.into_string().ok()),
+            Some("/opt/buzz/git-credential-nostr".to_string()),
+            "the Desktop's per-relay helper value must be preserved at index 0"
+        );
+        assert_eq!(
+            child_env(&cmd, "GIT_CONFIG_KEY_1").and_then(|v| v.into_string().ok()),
+            Some("credential.useHttpPath".to_string()),
+            "the Desktop's companion entry must be preserved at index 1"
+        );
+
+        // The agent identity must have been appended above the Desktop entries.
+        let count = child_git_config_count(&cmd);
+        assert!(
+            count > 2,
+            "agent config must be appended, growing the count past the Desktop's 2; got {count}"
+        );
+        assert!(
+            child_env_has_git_config_key(&cmd, "user.email"),
+            "agent authorship must still be injected"
+        );
+        // The Desktop already staged a helper, so the harness must NOT add its
+        // own nostr credential helper (no double-apply).
+        assert!(
+            !child_env_has_git_config(&cmd, "credential.helper", "nostr"),
+            "a Desktop-staged helper means the harness must not add its own"
         );
     }
 

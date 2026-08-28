@@ -715,17 +715,24 @@ fn subcommand(argv: &[String]) -> Option<String> {
 /// cherry-pick/rebase patch-id exemption — is unit-testable without a signer,
 /// which the unconditional signature check in `verify_push` would otherwise
 /// require for every agent commit.
+///
+/// `remote_ids` are the object ids the destination actually holds, read from
+/// the remote itself (`git ls-remote`), NOT from the caller-writable
+/// `refs/remotes/*`. Exclusions are derived only from what a real remote
+/// reports, so an agent cannot forge a local remote-tracking ref to a wrong-
+/// author or unsigned commit and have it treated as already-pushed.
 #[allow(clippy::type_complexity)]
 fn partition_outgoing(
     real_git: &Path,
     ctx: &[String],
     expected: &str,
     sources: &[String],
+    remote_ids: &[String],
 ) -> Result<(Vec<(String, String)>, Vec<String>), String> {
     let mut offenders = Vec::new();
     let mut agent_shas = Vec::new();
     for from in sources {
-        let shas = match rev_list_outgoing(real_git, ctx, from) {
+        let shas = match rev_list_outgoing(real_git, ctx, from, remote_ids) {
             Some(s) => s,
             // The plan named this ref as an update, so it resolves — an inability
             // to compute its outgoing range is a verification failure, not an
@@ -754,8 +761,8 @@ fn partition_outgoing(
                     // i.e. a cherry-picked/rebased human commit, which is
                     // correct attribution, not new agent work masquerading as
                     // someone else. Any other non-agent author is an offender.
-                    let pool =
-                        upstream.get_or_insert_with(|| upstream_patch_ids(real_git, ctx, from));
+                    let pool = upstream
+                        .get_or_insert_with(|| upstream_patch_ids(real_git, ctx, remote_ids, from));
                     match commit_patch_id(real_git, ctx, &sha) {
                         Some(pid) if pool.contains(&pid) => {} // replayed upstream — exempt
                         Some(_) => offenders.push((sha, email)),
@@ -814,8 +821,8 @@ fn verify_push(
     // git's resolved update plan. Unreachable remote / any dry-run failure =
     // fail closed with the loud message: the real push would fail anyway, and
     // an unverifiable plan must never be treated as "nothing to check".
-    let sources = match resolve_push_sources(real_git, argv) {
-        Some(s) => s,
+    let plan = match resolve_push_sources(real_git, argv) {
+        Some(p) => p,
         None => {
             return Err(String::from(
                 "buzz git wrapper: refusing to push — could not verify outgoing commits: \
@@ -825,11 +832,41 @@ fn verify_push(
         }
     };
 
+    // The object ids the destination actually holds, read from the remote
+    // itself. This is the ONLY trustworthy exclusion source: `refs/remotes/*` is
+    // caller-writable local state, so deriving exclusions from it lets an agent
+    // `git update-ref refs/remotes/forged/x HEAD` and hide an unsigned or
+    // wrong-author commit from the walk. `git ls-remote` reflects the real
+    // destination. Fail closed when it cannot be established (no destination in
+    // the plan, or the remote read fails): an empty exclusion set would silently
+    // widen the walk, but an *unverifiable* one must refuse rather than trust
+    // whatever local refs happen to exist.
+    let remote_ids = match plan.destination.as_deref() {
+        Some(dest) => match remote_object_ids(real_git, ctx, dest) {
+            Some(ids) => ids,
+            None => {
+                return Err(String::from(
+                    "buzz git wrapper: refusing to push — could not read the destination's \
+                     commits (`git ls-remote` failed). Enforcement fails closed rather than \
+                     derive exclusions from forgeable local remote-tracking refs.",
+                ))
+            }
+        },
+        None => {
+            return Err(String::from(
+                "buzz git wrapper: refusing to push — could not identify the push destination \
+                 from git's plan. Enforcement fails closed rather than trust local \
+                 remote-tracking refs.",
+            ))
+        }
+    };
+
     // One walk of the outgoing commits, partitioned by the two distinct
     // enforcement concerns: authorship (non-agent authors that are not a
     // replayed-upstream commit) and signing (agent-authored commits whose
     // signature must be verified). Fails closed on any probe error.
-    let (offenders, agent_shas) = partition_outgoing(real_git, ctx, expected, &sources)?;
+    let (offenders, agent_shas) =
+        partition_outgoing(real_git, ctx, expected, &plan.sources, &remote_ids)?;
 
     // Every valid `Authority` enforces signing (the manifest contract
     // guarantees `commit.gpgSign=true` and a signing key matching the author
@@ -896,6 +933,17 @@ fn verify_push(
     Err(msg)
 }
 
+/// git's resolved push plan: the local source refs whose outgoing commits must
+/// be verified, plus the destination handle git itself resolved (the URL or
+/// remote name on the porcelain `To` line). The destination is read straight
+/// from git's own output, so it reflects `remote.<name>.pushurl`, `-C`, and
+/// alias expansion exactly — and it is the forge-proof handle for reading the
+/// remote's real object ids (via `git ls-remote`).
+struct PushPlan {
+    sources: Vec<String>,
+    destination: Option<String>,
+}
+
 /// The local source refs a push will send, per git's own resolved plan.
 ///
 /// Runs the user's exact invocation with `--dry-run --porcelain --no-verify`
@@ -904,7 +952,7 @@ fn verify_push(
 /// Returns `None` on any dry-run failure (caller fails closed). Deletions and
 /// up-to-date refs contribute no source; every other line's local ref (left of
 /// `:` in the `from:to` field) is a source whose outgoing commits are checked.
-fn resolve_push_sources(real_git: &Path, argv: &[String]) -> Option<Vec<String>> {
+fn resolve_push_sources(real_git: &Path, argv: &[String]) -> Option<PushPlan> {
     let sub_idx = split_globals(argv).1?;
     let mut full = argv.to_vec();
     // Inject after the subcommand token (`push` or an alias resolving to it).
@@ -919,9 +967,22 @@ fn resolve_push_sources(real_git: &Path, argv: &[String]) -> Option<Vec<String>>
     if !out.status.success() {
         return None;
     }
-    Some(parse_porcelain_sources(&String::from_utf8_lossy(
-        &out.stdout,
-    )))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Some(PushPlan {
+        sources: parse_porcelain_sources(&stdout),
+        destination: parse_porcelain_destination(&stdout),
+    })
+}
+
+/// The destination handle from a `--porcelain` push plan's `To <dest>` header —
+/// the URL or remote name git resolved for this push. `None` when absent (older
+/// git or an unexpected shape); the caller fails closed rather than guess.
+fn parse_porcelain_destination(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("To "))
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
 }
 
 /// Parse `--porcelain` push output into the set of local source refs whose
@@ -1089,18 +1150,31 @@ fn commit_patch_id(real_git: &Path, ctx: &[String], sha: &str) -> Option<String>
     ids.into_iter().next()
 }
 
-/// Patch-ids of every commit reachable from a remote-tracking ref but not from
-/// `from` — the pool a replayed upstream commit's patch-id must match. Bounded
-/// to the divergence (`--remotes --not <from>`), and computed in one
-/// `diff-tree | patch-id` pipeline. Empty on any failure, so a commit can only
-/// be *exempted* when a match is positively proven (fail-closed for the gate).
+/// Patch-ids of every commit the destination holds but that is not reachable
+/// from `from` — the pool a replayed upstream commit's patch-id must match.
+/// Positive revs are the destination's real object ids (`remote_ids`, from
+/// `git ls-remote`), NOT `refs/remotes/*`, so a forged local remote-tracking
+/// ref cannot inject an attacker-chosen commit into the exemption pool. Bounded
+/// to the divergence (`<remote_ids...> --not <from>`) and computed in one
+/// `diff-tree | patch-id` pipeline. `--ignore-missing` drops any destination id
+/// this clone lacks (a normal skew, not an error). Empty on any failure or when
+/// the destination is empty, so a commit can only be *exempted* when a match is
+/// positively proven (fail-closed for the gate).
 fn upstream_patch_ids(
     real_git: &Path,
     ctx: &[String],
+    remote_ids: &[String],
     from: &str,
 ) -> std::collections::HashSet<String> {
+    if remote_ids.is_empty() {
+        return std::collections::HashSet::new();
+    }
     let mut revs_args = ctx.to_vec();
-    revs_args.extend(["rev-list", "--remotes", "--not", from].map(String::from));
+    revs_args.push("rev-list".to_string());
+    revs_args.push("--ignore-missing".to_string());
+    revs_args.extend(remote_ids.iter().cloned());
+    revs_args.push("--not".to_string());
+    revs_args.push(from.to_string());
     let revs_refs: Vec<&str> = revs_args.iter().map(String::as_str).collect();
     let revs = match capture_raw(real_git, &revs_refs) {
         Some(o) if o.status.success() => o.stdout,
@@ -1139,11 +1213,26 @@ fn patch_ids_from_diff(real_git: &Path, ctx: &[String], diff: &[u8]) -> Vec<Stri
         .collect()
 }
 
-/// Commits reachable from `tip` but not from any remote-tracking ref. `None`
-/// when `tip` does not resolve (rev-list exits non-zero).
-fn rev_list_outgoing(real_git: &Path, ctx: &[String], tip: &str) -> Option<Vec<String>> {
+/// Commits reachable from `tip` but not held by the destination. Exclusions are
+/// the destination's real object ids (`remote_ids`, from `git ls-remote`), NOT
+/// `refs/remotes/*` — a caller cannot forge a local remote-tracking ref to hide
+/// an outgoing commit from this walk. `--ignore-missing` drops any destination
+/// id absent from this clone (normal skew). `None` when `tip` does not resolve
+/// (rev-list exits non-zero); when the destination holds nothing (`remote_ids`
+/// empty, e.g. a brand-new branch) every commit reachable from `tip` is
+/// outgoing and must be verified.
+fn rev_list_outgoing(
+    real_git: &Path,
+    ctx: &[String],
+    tip: &str,
+    remote_ids: &[String],
+) -> Option<Vec<String>> {
     let mut args = ctx.to_vec();
-    args.extend(["rev-list", tip, "--not", "--remotes"].map(String::from));
+    args.push("rev-list".to_string());
+    args.push(tip.to_string());
+    args.push("--not".to_string());
+    args.push("--ignore-missing".to_string());
+    args.extend(remote_ids.iter().cloned());
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = capture_raw(real_git, &arg_refs)?;
     if !out.status.success() {
@@ -1155,6 +1244,31 @@ fn rev_list_outgoing(real_git: &Path, ctx: &[String], tip: &str) -> Option<Vec<S
             .map(str::to_string)
             .collect(),
     )
+}
+
+/// The distinct object ids the destination currently holds, read from the
+/// remote itself via `git ls-remote <dest>`. This contacts the real remote, so
+/// it is immune to forged local `refs/remotes/*`. `None` on any failure (caller
+/// fails closed); an empty vec means the remote has no refs (a brand-new
+/// destination), which is a valid state, not an error.
+fn remote_object_ids(real_git: &Path, ctx: &[String], dest: &str) -> Option<Vec<String>> {
+    let mut args = ctx.to_vec();
+    args.extend(["ls-remote", dest].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Bounded: contacts the remote, so an unresponsive one must not hang the
+    // wrapper. Timeout returns `None`, which the caller fails closed on.
+    let out = capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT)?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
 }
 
 /// Run `git <ctx...> <args...>` and capture trimmed stdout when it succeeds.
@@ -1553,6 +1667,26 @@ mod tests {
         // Header/trailer and any stray non-tab lines contribute nothing.
         assert!(parse_porcelain_sources("To origin\nDone\n").is_empty());
         assert!(parse_porcelain_sources("").is_empty());
+    }
+
+    #[test]
+    fn porcelain_destination_reads_the_to_header() {
+        let stdout = "To ../remote.git\n\
+             \trefs/heads/main:refs/heads/main\t4ab76d3..c0bab62\n\
+            Done\n";
+        assert_eq!(
+            parse_porcelain_destination(stdout).as_deref(),
+            Some("../remote.git")
+        );
+        // A named remote resolves to a URL on the To line; whatever git prints is
+        // the forge-proof handle we hand to ls-remote.
+        assert_eq!(
+            parse_porcelain_destination("To git@example.com:o/r.git\nDone\n").as_deref(),
+            Some("git@example.com:o/r.git")
+        );
+        // No To line (unexpected shape) → None, and the caller fails closed.
+        assert!(parse_porcelain_destination("Done\n").is_none());
+        assert!(parse_porcelain_destination("").is_none());
     }
 
     // ── reuse_commit_arg (E) ──────────────────────────────────────────────────
@@ -2198,6 +2332,65 @@ mod tests {
         assert!(err.contains("not authored by your agent identity"), "{err}");
     }
 
+    /// P1 (Carl 5046374806): a forged local remote-tracking ref must not hide an
+    /// outgoing commit from the push gate. An agent can `git update-ref
+    /// refs/remotes/forged/main HEAD` so `rev-list --not --remotes` reports zero
+    /// outgoing and both verification loops accept without inspecting HEAD.
+    /// Exclusions must come from the destination's real object ids (`ls-remote`),
+    /// so the forged ref is irrelevant and the human-authored HEAD is still an
+    /// offender.
+    #[test]
+    fn verify_push_ignores_forged_remote_tracking_ref() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        run(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        run(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+        // Forge a remote-tracking ref at HEAD. The real bare remote is empty, so
+        // HEAD is genuinely outgoing — only this local ref pretends otherwise.
+        run(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "update-ref",
+            "refs/remotes/forged/main",
+            "HEAD",
+        ]);
+        // Sanity: the OLD forgeable predicate would report nothing outgoing.
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let hidden = {
+            let mut a = ctx.clone();
+            a.extend(["rev-list", "HEAD", "--not", "--remotes"].map(String::from));
+            let refs: Vec<&str> = a.iter().map(String::as_str).collect();
+            let o = capture_raw(&real_git(), &refs).unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        assert!(
+            hidden.is_empty(),
+            "precondition: the forged ref must hide HEAD from `--not --remotes`; got {hidden:?}"
+        );
+        // The gate must still refuse: exclusions come from the real remote.
+        let err = verify_push(
+            &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+            &ctx,
+            &managed(),
+        )
+        .expect_err("a forged remote-tracking ref must not bypass the author gate");
+        assert!(err.contains("not authored by your agent identity"), "{err}");
+    }
+
     #[test]
     fn verify_push_fails_closed_when_remote_unreachable() {
         let (_d, repo) = human_authored_repo();
@@ -2299,6 +2492,14 @@ mod tests {
     fn author_email(repo: &Path, rev: &str) -> String {
         let out = git_in(repo, &["show", "-s", "--format=%ae", rev]);
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The destination's real object ids for a repo wired with `origin`, read
+    /// the same forge-proof way `verify_push` does (`git ls-remote origin`).
+    /// Mirrors [`remote_object_ids`] so `partition_outgoing` tests exercise the
+    /// authoritative exclusion set, not local `refs/remotes/*`.
+    fn origin_ids(ctx: &[String]) -> Vec<String> {
+        remote_object_ids(&real_git(), ctx, "origin").expect("ls-remote origin must succeed")
     }
 
     // ── C1: injected `-c` identity outranks every other config channel ─────────
@@ -2490,9 +2691,14 @@ mod tests {
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
         // Authorship only (the signature check is exercised by the real-signer
         // integration tests); `HEAD` is the push source ref.
-        let (offenders, _agent) =
-            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
-                .expect("partition must succeed");
+        let (offenders, _agent) = partition_outgoing(
+            &real_git(),
+            &ctx,
+            AGENT_EMAIL,
+            &[String::from("HEAD")],
+            &origin_ids(&ctx),
+        )
+        .expect("partition must succeed");
         assert!(
             offenders.is_empty(),
             "replayed upstream human commit must be exempt by patch-id, got: {offenders:?}"
@@ -2510,9 +2716,14 @@ mod tests {
         git_in(&local, &["add", "agent"]);
         git_in(&local, &["commit", "-qm", "agent work"]);
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
-        let (offenders, _agent) =
-            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
-                .expect("partition must succeed");
+        let (offenders, _agent) = partition_outgoing(
+            &real_git(),
+            &ctx,
+            AGENT_EMAIL,
+            &[String::from("HEAD")],
+            &origin_ids(&ctx),
+        )
+        .expect("partition must succeed");
         assert!(
             offenders.is_empty(),
             "agent commit atop upstream human tip must be allowed: {offenders:?}"
@@ -2540,9 +2751,14 @@ mod tests {
             ],
         );
         let ctx = vec!["-C".to_string(), local.to_string_lossy().into_owned()];
-        let (offenders, _agent) =
-            partition_outgoing(&real_git(), &ctx, AGENT_EMAIL, &[String::from("HEAD")])
-                .expect("partition must succeed");
+        let (offenders, _agent) = partition_outgoing(
+            &real_git(),
+            &ctx,
+            AGENT_EMAIL,
+            &[String::from("HEAD")],
+            &origin_ids(&ctx),
+        )
+        .expect("partition must succeed");
         assert!(
             offenders.iter().any(|(_, e)| e == "human@example.com"),
             "a brand-new human commit must be an offender; got {offenders:?}"
