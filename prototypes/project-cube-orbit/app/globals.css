@@ -312,10 +312,10 @@ body { background: #e6f2f5; color: var(--ink); font-family: Inter, ui-sans-serif
 }
 .merge-preview-top > .merge-edge-indicator { top: -6px; }
 .merge-preview-bottom > .merge-edge-indicator { bottom: -6px; }
-.bestie-merge-target-left .message-panel { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-.bestie-merge-target-right .message-panel { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.bestie-merge-target-top .message-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
-.bestie-merge-target-bottom .message-panel { border-bottom-right-radius: 0; border-bottom-left-radius: 0; }
+.message-panel-cell.bestie-merge-target-left .message-panel { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.message-panel-cell.bestie-merge-target-right .message-panel { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.message-panel-cell.bestie-merge-target-top .message-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
+.message-panel-cell.bestie-merge-target-bottom .message-panel { border-bottom-right-radius: 0; border-bottom-left-radius: 0; }
 .bestie-is-slotted.bestie-merge-target-left .message-panel { width: calc(100% - var(--bestie-slot-width)); margin-left: var(--bestie-slot-width); }
 .bestie-is-slotted.bestie-merge-target-right .message-panel { width: calc(100% - var(--bestie-slot-width)); }
 .bestie-is-slotted.bestie-merge-target-top .message-panel { height: calc(100% - var(--bestie-slot-height)); margin-top: var(--bestie-slot-height); }
