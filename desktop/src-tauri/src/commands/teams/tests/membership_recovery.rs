@@ -1,8 +1,4 @@
-//! Tests for team membership updates.
-//!
-//! Kept in a sibling file so `teams.rs` stays under the file-size limit.
-
-use super::{
+use super::super::{
     apply_team_membership_delta, commit_team_create, commit_team_update,
     detach_agents_outside_roster, load_pending_team_membership_at, pending_replay_delta,
     propagate_membership, save_pending_team_membership_at, PendingTeamMembershipUpdate,
@@ -126,6 +122,8 @@ fn team(id: &str, persona_ids: &[&str]) -> TeamRecord {
         instructions: None,
         persona_ids: ids(persona_ids),
         is_builtin: false,
+        shared: false,
+        catalog_source: None,
         source_dir: None,
         is_symlink: false,
         symlink_target: None,
