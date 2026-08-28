@@ -14,6 +14,6 @@ describe("protected feature build variants", () => {
       internalDefinitions.map((feature) => feature.id),
       ["bestie"],
     );
-    assert.equal(internalDefinitions[0]?.defaultEnabled, undefined);
+    assert.equal(internalDefinitions[0]?.defaultEnabled, true);
   });
 });

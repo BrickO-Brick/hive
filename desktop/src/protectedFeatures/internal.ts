@@ -6,6 +6,7 @@ export const protectedFeatureDefinitions: FeatureDefinition[] = [
     id: "bestie",
     name: "Bestie",
     description: "Try a personal agent that is always close at hand",
+    defaultEnabled: true,
     platforms: ["desktop"],
   },
 ];
