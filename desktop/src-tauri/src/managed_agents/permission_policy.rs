@@ -174,6 +174,7 @@ mod tests {
             source_team: None,
             source_team_persona_slug: None,
             catalog_source: None,
+            team_catalog_source: None,
             env_vars: Default::default(),
             respond_to: None,
             respond_to_allowlist: Vec::new(),
