@@ -383,3 +383,129 @@ test("test_expiry_disables_buttons_after_clock_tick", async () => {
     "timed-out message shown after expiry",
   );
 });
+
+// ── Delivery-outcome recovery test (Carl's P1 regression) ─────────────────────
+//
+// Mutation target: `permission-request-card.tsx` line
+//   `if (outcome === "failed") setSubmitted(null);`
+// Removing that line leaves the card permanently on "Decision sent" after a
+// harness routing failure, and this test catches it while the orchestrator
+// suite stays green. The test uses the `_deliveryFn` seam to control the
+// outcome without a real relay.
+
+test("test_failed_delivery_re_enables_buttons_and_successful_retry_reaches_sent", async () => {
+  // Build a controllable delivery function whose outcome we resolve manually.
+  // Each call returns a fresh promise; `resolveDelivery` settles the most
+  // recently created one.
+  let resolveDelivery;
+  function makeDeliveryFn() {
+    return (..._args) =>
+      new Promise((resolve) => {
+        resolveDelivery = resolve;
+      });
+  }
+
+  const { createElement, act } = await import("react");
+  const { render, fireEvent } = await import("@testing-library/react");
+  const { QueryClientProvider } = await import("@tanstack/react-query");
+  const { PermissionRequestCardBlock } = await import(
+    "./PermissionRequestCardBlock.tsx"
+  );
+
+  const qc = await makeQueryClient(OWNER_PUBKEY);
+
+  let container;
+  await act(async () => {
+    ({ container } = render(
+      createElement(
+        QueryClientProvider,
+        { client: qc },
+        createElement(PermissionRequestCardBlock, {
+          message: makeMessage({
+            content: makePendingContent(),
+            signerPubkey: AGENT_PUBKEY,
+            ownerPubkey: OWNER_PUBKEY,
+          }),
+          isKnownAgentPubkey: makeIsKnownAgentPubkey(AGENT_PUBKEY),
+          channelId: CHANNEL_ID,
+          _deliveryFn: makeDeliveryFn(),
+        }),
+      ),
+    ));
+  });
+
+  // ── Step 1: initial render shows action buttons ──────────────────────────
+  const allowBtnInitial = container.querySelector(
+    '[data-testid="permission-decision-opt-allow"]',
+  );
+  assert.ok(allowBtnInitial !== null, "buttons present before any click");
+
+  // ── Step 2: click — card shows "Decision sent" ────────────────────────────
+  await act(async () => {
+    fireEvent.click(allowBtnInitial);
+  });
+  assert.ok(
+    container.textContent?.includes("Decision sent"),
+    "card shows Decision sent after click",
+  );
+  assert.equal(
+    container.querySelector('[data-testid="permission-decision-opt-allow"]'),
+    null,
+    "buttons hidden while decision is in flight",
+  );
+
+  // ── Step 3: delivery resolves "failed" → buttons must return ─────────────
+  // This is Carl's regression: without `if (outcome === "failed") setSubmitted(null)`
+  // the card stays stuck on "Decision sent" and the owner cannot retry.
+  await act(async () => {
+    resolveDelivery("failed");
+    // Drain microtasks so React processes the state update.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const allowBtnAfterFail = container.querySelector(
+    '[data-testid="permission-decision-opt-allow"]',
+  );
+  assert.ok(
+    allowBtnAfterFail !== null,
+    "buttons re-enabled after failed delivery — owner can retry",
+  );
+  assert.ok(
+    !container.textContent?.includes("Decision sent"),
+    "Decision sent text cleared after failed delivery",
+  );
+
+  // ── Step 4: retry click → delivery resolves "acked" → terminal sent ───────
+  // No re-render needed. `_deliveryFn` is the closure returned by `makeDeliveryFn()`.
+  // Each invocation of that closure creates a fresh promise and updates `resolveDelivery`,
+  // so clicking the re-enabled button starts a new delivery loop via the same seam.
+  await act(async () => {
+    fireEvent.click(allowBtnAfterFail);
+  });
+  // Card is back to "Decision sent" for the second attempt
+  assert.ok(
+    container.textContent?.includes("Decision sent"),
+    "Decision sent shown during second delivery attempt",
+  );
+
+  // Resolve the second delivery as "acked" → terminal state
+  await act(async () => {
+    resolveDelivery("acked");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  // Buttons stay hidden — "acked" is terminal, card awaits harness kind-40003 edit
+  assert.equal(
+    container.querySelector('[data-testid="permission-decision-opt-allow"]'),
+    null,
+    "buttons stay hidden after acked — waiting for harness resolution",
+  );
+  assert.ok(
+    container.textContent?.includes("Decision sent"),
+    "Decision sent persists after acked — terminal state",
+  );
+});

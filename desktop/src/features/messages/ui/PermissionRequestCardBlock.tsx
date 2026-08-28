@@ -8,6 +8,7 @@
  */
 import * as React from "react";
 
+import type { startPermissionDecisionDelivery } from "@/features/agents/lib/permissionDecisionDelivery";
 import type { TimelineMessage } from "@/features/messages/types";
 import { getPermissionRequestAgentPubkey } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -23,6 +24,13 @@ export type PermissionRequestCardBlockProps = {
   isKnownAgentPubkey: (pubkey: string) => boolean;
   /** Channel ID for routing the decision click; falsy → no card. */
   channelId: string | null | undefined;
+  /**
+   * Delivery function injected by tests to control the outcome without a real
+   * relay. Production callers omit this.
+   *
+   * @internal — test seam only; not part of the public API.
+   */
+  _deliveryFn?: typeof startPermissionDecisionDelivery;
 };
 
 export const PermissionRequestCardBlock = React.memo(
@@ -30,6 +38,7 @@ export const PermissionRequestCardBlock = React.memo(
     message,
     isKnownAgentPubkey,
     channelId,
+    _deliveryFn,
   }: PermissionRequestCardBlockProps) {
     const identityQuery = useIdentityQuery();
     const viewerPubkey = identityQuery.data?.pubkey;
@@ -68,6 +77,7 @@ export const PermissionRequestCardBlock = React.memo(
           channelId={channelId}
           isOwner={isOwner}
           request={request}
+          _deliveryFn={_deliveryFn}
         />
       </AttachmentGroup>
     );
@@ -75,5 +85,6 @@ export const PermissionRequestCardBlock = React.memo(
   (prev, next) =>
     prev.message === next.message &&
     prev.isKnownAgentPubkey === next.isKnownAgentPubkey &&
-    prev.channelId === next.channelId,
+    prev.channelId === next.channelId &&
+    prev._deliveryFn === next._deliveryFn,
 );

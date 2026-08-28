@@ -48,6 +48,14 @@ export type PermissionRequestCardProps = {
    * Absent or false → read-only card (buttons suppressed).
    */
   isOwner?: boolean;
+  /**
+   * Delivery function injected by tests so component tests can control
+   * the outcome without a real relay. Production callers omit this and
+   * get `startPermissionDecisionDelivery` by default.
+   *
+   * @internal — test seam only; not part of the public API.
+   */
+  _deliveryFn?: typeof startPermissionDecisionDelivery;
 };
 
 /**
@@ -99,12 +107,18 @@ function PermissionButtons({
   channelId,
   request,
   nowSecs,
+  deliveryFn = startPermissionDecisionDelivery,
 }: {
   agentPubkey: string;
   channelId: string;
   request: PermissionRequestPending;
   /** Current time in seconds (driven by a parent ticking state). */
   nowSecs: number;
+  /**
+   * Delivery function — defaults to `startPermissionDecisionDelivery`.
+   * Injected by tests to control the outcome without a real relay.
+   */
+  deliveryFn?: typeof startPermissionDecisionDelivery;
 }) {
   const [submitted, setSubmitted] = React.useState<string | null>(null);
 
@@ -150,7 +164,7 @@ function PermissionButtons({
                 // decision on a card that expired between renders.
                 if (request.expiresAt <= Date.now() / 1000) return;
                 setSubmitted(optionId);
-                void startPermissionDecisionDelivery({
+                void deliveryFn({
                   agentPubkey,
                   channelId,
                   requestNonce: request.requestNonce,
@@ -215,6 +229,7 @@ export function PermissionRequestCard({
   agentPubkey,
   channelId,
   isOwner,
+  _deliveryFn,
 }: PermissionRequestCardProps) {
   if (request.state === "resolved") {
     const resolvedLabel = outcomeLabel(
@@ -255,6 +270,7 @@ export function PermissionRequestCard({
       className={className}
       isOwner={isOwner}
       request={request}
+      deliveryFn={_deliveryFn}
     />
   );
 }
@@ -269,12 +285,14 @@ function PendingPermissionRequestCard({
   agentPubkey,
   channelId,
   isOwner,
+  deliveryFn,
 }: {
   className?: string;
   request: PermissionRequestPending;
   agentPubkey: string;
   channelId: string;
   isOwner?: boolean;
+  deliveryFn?: typeof startPermissionDecisionDelivery;
 }) {
   const [nowSecs, setNowSecs] = React.useState(() => Date.now() / 1000);
 
@@ -314,6 +332,7 @@ function PendingPermissionRequestCard({
             channelId={channelId}
             nowSecs={nowSecs}
             request={request}
+            deliveryFn={deliveryFn}
           />
         ) : (
           <div className="mt-1 text-xs text-muted-foreground">
