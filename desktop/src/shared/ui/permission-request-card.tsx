@@ -145,9 +145,9 @@ function PermissionButtons({
                   optionId,
                   deadlineSecs: request.expiresAt,
                 }).catch(() => {
-                  // First send rejected by the relay. Re-enable so the user
-                  // can retry; the retransmit loop only starts once the send
-                  // resolves.
+                  // The delivery loop never rejects on a failed send — it
+                  // retries until ack or expiry. This only fires on an
+                  // unexpected error; re-enable so the user can retry.
                   setSubmitted(null);
                 });
               }}

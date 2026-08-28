@@ -17,20 +17,26 @@ function frame(overrides = {}) {
 /**
  * Controllable harness mirroring the real wiring: a single-listener pub/sub
  * whose unsubscribe genuinely detaches, a manual retransmit tick, a manual
- * deadline flag, and a send counter.
+ * deadline flag, and a send counter. `failSends` rejects the first N send
+ * attempts, mirroring a socket that is briefly down.
  */
-function harness({ nonce = NONCE } = {}) {
+function harness({ nonce = NONCE, failSends = 0 } = {}) {
   let listener = null;
   let tickCb = null;
   let unsubscribeCalls = 0;
   let cancelRetransmitCalls = 0;
   let sendCalls = 0;
   let expired = false;
+  let remainingFailures = failSends;
 
   const outcome = retransmitPermissionDecision({
     requestNonce: nonce,
     send: () => {
       sendCalls += 1;
+      if (remainingFailures > 0) {
+        remainingFailures -= 1;
+        return Promise.reject(new Error("send failed: socket down"));
+      }
       return Promise.resolve();
     },
     subscribe: (fn) => {
@@ -143,4 +149,58 @@ test("retransmitPermissionDecision ignores a control_result for a different nonc
 
   h.push(frame());
   assert.equal(await h.outcome, "acked");
+});
+
+test("retransmitPermissionDecision survives a rejected first send and acks when a later tick's send resolves", async () => {
+  // The causal case: the owner clicks while the relay socket is down. The first
+  // send rejects, but the loop must stay live so a later retransmit — once the
+  // socket recovers — delivers and acks.
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = harness({ failSends: 1 });
+    await drainMicrotasks();
+    assert.equal(h.sendCalls, 1, "first send fired and rejected");
+
+    // A later tick, after the socket recovers, resends successfully.
+    h.tick();
+    await drainMicrotasks();
+    assert.equal(h.sendCalls, 2, "the loop retries after a rejected send");
+
+    h.push(frame());
+    assert.equal(await h.outcome, "acked");
+    assert.equal(h.unsubscribeCalls, 1);
+    assert.equal(h.cancelRetransmitCalls, 1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, [], "a rejected send must not surface unhandled");
+});
+
+test("retransmitPermissionDecision expires cleanly when every send rejects", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    // Every send rejects (permanent transport failure). The loop must not throw
+    // — it keeps retrying until the deadline, then resolves "expired".
+    const h = harness({ failSends: Infinity });
+    await drainMicrotasks();
+    assert.equal(h.sendCalls, 1, "first send fired and rejected");
+
+    h.tick();
+    await drainMicrotasks();
+    assert.equal(h.sendCalls, 2, "keeps retrying through rejection");
+
+    h.expire();
+    h.tick();
+    assert.equal(await h.outcome, "expired");
+    assert.equal(h.sendCalls, 2, "no resend past the deadline");
+    assert.equal(h.unsubscribeCalls, 1, "listener torn down at expiry");
+    assert.equal(h.cancelRetransmitCalls, 1, "scheduler torn down at expiry");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, [], "rejected sends must not surface unhandled");
 });

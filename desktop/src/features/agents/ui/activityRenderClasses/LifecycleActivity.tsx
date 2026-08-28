@@ -153,9 +153,9 @@ function PermissionDecisionButtons({
                 optionId,
                 deadlineSecs,
               }).catch(() => {
-                // First send rejected by the relay. Re-enable so the user can
-                // retry; the harness's 300 s fail-closed timeout handles
-                // permanent loss.
+                // The delivery loop never rejects on a failed send — it retries
+                // until ack or the card's 300 s fail-closed expiry. This only
+                // fires on an unexpected error; re-enable so the user can retry.
                 setPending(null);
               });
             }}

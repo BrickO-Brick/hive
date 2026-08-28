@@ -25,11 +25,19 @@ import type { ControlResultFrame } from "@/shared/api/types";
  * concurrent `control_result` for a different card carries a different nonce and
  * is inert, mirroring the `requestId` guard in `awaitLiveSwitchOutcome`.
  *
+ * A send rejection is the transport failure this loop exists to survive, so the
+ * orchestrator never throws: the first send and every retransmit run through
+ * the same guarded path, and a rejected attempt is swallowed — the next tick
+ * retries. This guarantees exactly one loop per click (the UI's disabled state
+ * guards double-click) and no unhandled rejection on any path. Permanent send
+ * failure therefore ends the same way as silence: the loop retries until
+ * `expiresAt`, then resolves `"expired"` and the card fails closed.
+ *
  * The loop is isolated from React and the relay so it can be unit tested with a
  * fake clock and synthetic frames. The caller injects the send, the
  * `control_result` subscription, and the retransmit scheduler.
  */
-export async function retransmitPermissionDecision({
+export function retransmitPermissionDecision({
   requestNonce,
   send,
   subscribe,
@@ -53,13 +61,23 @@ export async function retransmitPermissionDecision({
    */
   deadlineReached: () => boolean;
 }): Promise<"acked" | "expired"> {
-  const settled = new Promise<"acked" | "expired">((resolve) => {
+  return new Promise<"acked" | "expired">((resolve) => {
     let unsubscribe = () => {};
     let cancelRetransmit = () => {};
     const finish = (outcome: "acked" | "expired") => {
       cancelRetransmit();
       unsubscribe();
       resolve(outcome);
+    };
+    // Attempt one transmit, respecting the deadline and swallowing a rejected
+    // send. A rejection is a failed transmit, not a fatal error: the next tick
+    // retries, so the loop survives a socket that is briefly down.
+    const transmit = () => {
+      if (deadlineReached()) {
+        finish("expired");
+        return;
+      }
+      void send().catch(() => {});
     };
     unsubscribe = subscribe((frame) => {
       // A `control_result` for THIS nonce means the harness received the
@@ -74,19 +92,9 @@ export async function retransmitPermissionDecision({
       }
       finish("acked");
     });
-    cancelRetransmit = scheduleRetransmit(() => {
-      // Never resend past the card's expiry: it times out on its own and a
-      // late decision would be rejected. Stop and report the deadline.
-      if (deadlineReached()) {
-        finish("expired");
-        return;
-      }
-      void send();
-    });
+    cancelRetransmit = scheduleRetransmit(transmit);
+
+    // Fire the first send immediately, then let the scheduler drive resends.
+    transmit();
   });
-
-  // Fire the first send immediately, then let the scheduler drive resends.
-  await send();
-
-  return settled;
 }
