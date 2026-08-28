@@ -279,6 +279,39 @@ export class ChannelSectionSyncManager {
   }
 
   /**
+   * When the current `publishBaseline` was frozen against one of our own
+   * attempted (but non-retained) event ids and `remote` is the same-second
+   * lower-id peer that won the collision, the baseline is poisoned: the
+   * next pre-publish check would see the winner as having advanced past our
+   * phantom attempt and adopt the edit away (Carl P1). Folding the winner
+   * in repairs the baseline so the pre-publish check sees equality and
+   * publishes above the true retained head.
+   *
+   * Scoped to same-second lower-id only: a strictly-later remote is a genuine
+   * advance that the pending edit must still adopt (pass-2 invariant).
+   *
+   * Returns true when the fold was applied (caller may use for branching).
+   */
+  private foldSupersedingAttemptWinner(remote: {
+    createdAt: number;
+    eventId: string;
+  }): boolean {
+    if (
+      this.publishBaseline.eventId !== "" &&
+      this.ambiguousAttemptIds.has(this.publishBaseline.eventId) &&
+      remote.createdAt === this.publishBaseline.createdAt &&
+      remote.eventId < this.publishBaseline.eventId
+    ) {
+      this.publishBaseline = canonicalMax(this.publishBaseline, {
+        createdAt: remote.createdAt,
+        eventId: remote.eventId,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Adopt a remote store that superseded a local edit: hand it to the hook for
    * write-through, advance the watermark, and drop the losing pending edit —
    * including the durable outbox, so the outbox can never replay an edit that
@@ -293,7 +326,15 @@ export class ChannelSectionSyncManager {
    */
   private adoptRemote(remote: RemoteSections, gen: number): void {
     this.recordRemoteHead(remote.createdAt, remote.eventId);
-    if (gen !== this.pendingGeneration) return;
+    if (gen !== this.pendingGeneration) {
+      // A newer edit is pending. Its baseline may have been frozen against our
+      // own attempted (non-retained) event id if it was queued after the ACK
+      // but before confirmation resolved. Repair any poisoned baseline so the
+      // newer edit's pre-publish check publishes above the true retained head
+      // rather than adopting the winner away (Carl P1).
+      this.foldSupersedingAttemptWinner(remote);
+      return;
+    }
     this.pendingStore = null;
     clearChannelSectionsOutbox(this.pubkey, this.relayUrl);
     this.lastPublishedStore = remote.store;
@@ -422,6 +463,17 @@ export class ChannelSectionSyncManager {
             createdAt: remote.createdAt,
             eventId: remote.eventId,
           });
+          return { kind: "publish", store };
+        }
+        // Same-second lower-id peer winner that superseded our own attempted
+        // head: baseline.eventId is our attempted id (still in
+        // ambiguousAttemptIds because the adopt path never clears it) and the
+        // relay retained the peer's lower-id blob instead. This arises when
+        // confirmation returned retain/failed and the retry pre-publish fetch
+        // sees the winner directly with the original poisoned baseline still in
+        // place. Fold the winner in so this edit publishes above the true
+        // retained head rather than adopting it away (Carl P1).
+        if (this.foldSupersedingAttemptWinner(remote)) {
           return { kind: "publish", store };
         }
         return { kind: "adopt", remote };

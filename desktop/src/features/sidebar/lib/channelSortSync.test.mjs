@@ -806,6 +806,118 @@ test("revert-fix: undecryptable live event advances watermark before decrypt att
   }
 });
 
+// Same-second collision variant (Carl r6 P1 / queued-during-confirmation): the
+// second edit is queued AFTER the publish ACK but BEFORE confirmRetainedHead
+// resolves. When confirmation returns the peer winner, adoptRemote fires with
+// stale gen; without the fix the second edit's frozen baseline (our attempted
+// non-retained id) makes the pre-publish check adopt the winner away. The fix
+// folds the winner into the current baseline on stale-gen adopt (same-second
+// lower-id scope) so the second edit publishes above the true retained head.
+// Mutation: reverting the adoptRemote foldSupersedingAttemptWinner call makes
+// the second edit adopt the winner instead of publishing above it.
+test("same-second collision: second edit queued during confirmation survives", async () => {
+  let fetchCalls = 0;
+  let releaseConfirmation = null;
+  let publishCalls = 0;
+  let storedHead = [];
+  const storage = new Map();
+  const timers = new Map();
+  let nextId = 1;
+  const win = {
+    localStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+    },
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const fireDelay = async (ms) => {
+    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
+    timers.delete(entry[0]);
+    entry[1].fn();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  };
+  const restore = installFakeWindow(win);
+  const tauri = installEchoTauri("pk-collide2");
+  mock.method(relayClient, "fetchEvents", () => {
+    fetchCalls++;
+    if (fetchCalls === 1) return Promise.resolve([]);
+    if (fetchCalls === 2) {
+      return new Promise((resolve) => {
+        releaseConfirmation = () => resolve(storedHead);
+      });
+    }
+    return Promise.resolve(storedHead);
+  });
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls++;
+    if (publishCalls === 1) {
+      storedHead = [
+        tauri.mintHead(makeStore({ channels: "alpha" }), event.created_at),
+      ];
+      return Promise.resolve();
+    }
+    storedHead = [event];
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelSortSyncManager("pk-collide2", RELAY);
+    const adopted = [];
+    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
+
+    manager.publishSortPrefs(makeStore({ channels: "recent" }));
+    await fireDelay(2000);
+    while (releaseConfirmation === null) await Promise.resolve();
+
+    manager.publishSortPrefs(makeStore({ channels: "name" }));
+
+    releaseConfirmation();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(
+      adopted.length,
+      0,
+      "stale-gen adopt does not fire onRemoteAdopted for the newer pending edit",
+    );
+    assert.notEqual(
+      manager.getPendingStore(),
+      null,
+      "edit-2 is still pending after the stale-gen adopt",
+    );
+
+    await fireDelay(2000);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(publishCalls, 2, "edit-2 publishes above the peer winner");
+    assert.equal(
+      adopted.length,
+      0,
+      "edit-2 is NOT adopted away — no phantom-baseline poisoning",
+    );
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "edit-2 clears via its own confirmed publish",
+    );
+    assert.equal(
+      readChannelSortOutbox("pk-collide2", RELAY),
+      null,
+      "edit-2's durable outbox is cleared on confirmation",
+    );
+    manager.destroy();
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // Same-second whole-blob collision (Carl r6 P1): two windows publish distinct
 // sort blobs stamped at the same created_at; the relay retains only the lower
 // event id and OKs the loser as a no-op (`Duplicate`). A publish OK is NOT proof
