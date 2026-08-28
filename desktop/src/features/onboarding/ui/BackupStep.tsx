@@ -243,12 +243,7 @@ export function BackupStep({
                   <ShieldCheck className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  <span className="block font-medium">
-                    Protected on this device.
-                  </span>
-                  <span className="block text-foreground/75">
-                    Buzz stores your key securely on this device.
-                  </span>
+                  Stored securely on this device
                 </p>
               </div>
               <div className="flex min-h-14 items-center gap-4 text-left">
@@ -256,10 +251,7 @@ export function BackupStep({
                   <CircleSlash2 className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  <span className="block font-medium">Never share it.</span>
-                  <span className="block text-foreground/75">
-                    Anyone with your private key can use your identity.
-                  </span>
+                  Never share it—anyone with this key can sign in as you
                 </p>
               </div>
               <div className="flex min-h-14 items-center gap-4 text-left">
@@ -267,10 +259,7 @@ export function BackupStep({
                   <HardDriveDownload className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  <span className="block font-medium">Keep a backup.</span>
-                  <span className="block text-foreground/75">
-                    Buzz can’t reset or recover your key if you lose access.
-                  </span>
+                  Use a secure backup to recover your account
                 </p>
               </div>
             </div>
