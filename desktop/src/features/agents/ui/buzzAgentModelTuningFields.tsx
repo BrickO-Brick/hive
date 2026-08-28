@@ -245,12 +245,15 @@ export const NUMERIC_KIND_MIN: Record<NumericDescriptor["kind"], number> = {
  */
 export function NumericTuningFields({
   descriptors,
+  disabled = false,
   envVars,
   inheritedEnvVars,
   onEnvVarChange,
 }: {
   /** Numeric descriptors to render. Empty array → renders nothing. */
   descriptors: NumericDescriptor[];
+  /** When true, all inputs are read-only (e.g. while a Save is in flight). */
+  disabled?: boolean;
   envVars: EnvVarsValue;
   inheritedEnvVars: EnvVarsValue;
   onEnvVarChange: (key: string, value: string) => void;
@@ -273,6 +276,7 @@ export function NumericTuningFields({
               aria-describedby={`help-${testId}`}
               autoComplete="off"
               data-testid={testId}
+              disabled={disabled}
               id={testId}
               inputMode="numeric"
               min={NUMERIC_KIND_MIN[d.kind]}
@@ -293,12 +297,15 @@ export function NumericTuningFields({
 }
 
 export function BuzzAgentModelTuningFields({
+  disabled = false,
   envVars,
   inheritedEnvVars,
   model,
   onEnvVarChange,
   provider,
 }: {
+  /** When true, all controls are read-only (e.g. while a Save is in flight). */
+  disabled?: boolean;
   envVars: EnvVarsValue;
   inheritedEnvVars: EnvVarsValue;
   /** Active LLM model (optional) — used with `provider` for effort filtering. */
@@ -329,6 +336,7 @@ export function BuzzAgentModelTuningFields({
         <div className="space-y-1.5">
           <EffortSelectField
             currentEffort={currentEffort}
+            disabled={disabled}
             effortDefault={effortDefault}
             effortValid={effortValid}
             htmlFor="ba-thinking-effort"

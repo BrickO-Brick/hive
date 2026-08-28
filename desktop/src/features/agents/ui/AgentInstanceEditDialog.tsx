@@ -121,7 +121,7 @@ export function AgentInstanceEditDialog({
   const queryClient = useQueryClient();
   // Spans the COMPLETE Save sequence: locked update + standalone setters. Every
   // pending/disabled gate must key off this, not updateMutation.isPending alone,
-  // so the dialog stays gated until all persistence steps settle (Carl r9 P1).
+  // so the dialog stays fully gated until all persistence steps settle.
   const [isSaving, setIsSaving] = React.useState(false);
   // Surfaces a standalone-setter failure (auto-restart or effort) that React
   // Query does not track — keeps the dialog open so the user can retry Save.
@@ -608,6 +608,10 @@ export function AgentInstanceEditDialog({
   }
 
   function handleOpenChange(next: boolean) {
+    // Reject user-originated dismissals (Escape, overlay, close-X, Cancel) while
+    // a Save is in flight — the in-flight setters must not commit to a closed dialog.
+    // The success path calls onOpenChange(false) directly, bypassing this guard.
+    if (!next && isSaving) return;
     onOpenChange(next);
   }
 
@@ -752,7 +756,7 @@ export function AgentInstanceEditDialog({
       // Standalone setters — sequenced after the locked update resolves so the
       // dialog remains fully gated (isSaving) for the COMPLETE Save transaction.
       // A failure here surfaces as setterError (retryable) and aborts before
-      // close, so a setter rejection cannot silently go unnoticed (Carl r9 P1).
+      // close, keeping the dialog open so the user can retry Save.
       try {
         if (autoRestartOnConfigChange !== agent.autoRestartOnConfigChange) {
           // Mirrors start-on-app-launch; not part of UpdateManagedAgentInput so
@@ -787,7 +791,9 @@ export function AgentInstanceEditDialog({
       }
 
       showAgentProfileSyncWarning(result.agent.name, result.profileSyncError);
-      handleOpenChange(false);
+      // Close via onOpenChange directly — handleOpenChange guards against
+      // mid-save dismissal and must not block the intentional post-success close.
+      onOpenChange(false);
       onUpdated?.(result.agent);
       // The auto-restart policy deliberately never fires for a stopped or
       // failing agent (a broken agent must not auto-loop), so an edit meant
@@ -949,6 +955,7 @@ export function AgentInstanceEditDialog({
             {onEditLinkedPersona ? (
               <Button
                 className="w-full"
+                disabled={isSaving}
                 onClick={() => {
                   handleOpenChange(false);
                   onEditLinkedPersona();
@@ -1115,7 +1122,9 @@ export function AgentInstanceEditDialog({
             />
 
             <AgentAiDefaultsNotice
-              onEditDefaults={() => setAiDefaultsOpen(true)}
+              onEditDefaults={() => {
+                if (!isSaving) setAiDefaultsOpen(true);
+              }}
               triggerRef={aiDefaultsTriggerRef}
               explicitModel={inheritedSubmission.model ?? ""}
               explicitProvider={inheritedSubmission.provider ?? ""}
@@ -1133,7 +1142,8 @@ export function AgentInstanceEditDialog({
             <div className="space-y-3">
               <button
                 aria-expanded={showAdvancedFields}
-                className="inline-flex h-9 items-center gap-1.5 text-sm font-medium text-foreground transition-colors hover:text-foreground/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex h-9 items-center gap-1.5 text-sm font-medium text-foreground transition-colors hover:text-foreground/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                disabled={isSaving}
                 onClick={() => setShowAdvancedFields((current) => !current)}
                 type="button"
               >
