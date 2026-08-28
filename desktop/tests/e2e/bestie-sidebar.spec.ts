@@ -89,7 +89,7 @@ test("the disabled Bestie experiment does not mount the sidebar entry", async ({
 
   await expect(page.getByTestId("open-bestie-dm")).toHaveCount(0);
   await expect(page.getByTestId("open-bestie-panel")).toHaveCount(0);
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(page.getByTestId("bestie-chat-popover")).toHaveCount(0);
 });
 
@@ -118,10 +118,10 @@ test("the app-level avatar and command shortcut share one Bestie conversation", 
   );
 
   const popover = page.getByTestId("bestie-chat-popover");
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeVisible();
   await expect(popover).toContainText("Bestie");
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeHidden();
   await trigger.click();
   await expect(popover).toBeVisible();
@@ -135,23 +135,23 @@ test("the app-level avatar and command shortcut share one Bestie conversation", 
     "Keep this decision close at hand.",
   );
 
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeHidden();
   await page.getByTestId("channel-general").click();
   const channelEditor = page
     .getByTestId("message-composer")
     .locator('[contenteditable="true"]');
   await channelEditor.focus();
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeVisible();
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeHidden();
 
   await page.goto("/#/settings");
   await expect(trigger).toHaveCount(0);
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeVisible();
-  await page.keyboard.press("Meta+1");
+  await page.keyboard.press("ControlOrMeta+1");
   await expect(popover).toBeHidden();
 });
 
