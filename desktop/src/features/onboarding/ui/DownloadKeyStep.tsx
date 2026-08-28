@@ -1,4 +1,3 @@
-import { Check } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
@@ -24,10 +23,6 @@ type DownloadKeyStepProps = {
   onBack: () => void;
   /** Use in-memory backup operations inside the dev-only workshop preview. */
   previewMode?: boolean;
-  /** Whether the workshop user explicitly chose to test their saved backup. */
-  previewTestRequested?: boolean;
-  /** Opens the existing guided test from the preview's saved confirmation. */
-  onPreviewTestRequest?: () => void;
 };
 
 /**
@@ -40,8 +35,6 @@ export function DownloadKeyStep({
   session,
   onBack,
   previewMode = false,
-  previewTestRequested = false,
-  onPreviewTestRequest,
 }: DownloadKeyStepProps) {
   const reduceMotion = useReducedMotion() ?? false;
   // Once the encrypted payload is saved, the creator advances to its guided
@@ -49,7 +42,8 @@ export function DownloadKeyStep({
   const hasCreated = session.created;
   const hasVerifiedBackup = session.verified;
   const hasSelectedBackup = session.test.stage === "password";
-  const showPreviewSaved = previewMode && hasCreated && !previewTestRequested;
+  const showPreviewSaved =
+    previewMode && hasCreated && session.test.stage === "drop";
   const [primaryActionSlot, setPrimaryActionSlot] =
     React.useState<HTMLElement | null>(null);
 
@@ -86,18 +80,18 @@ export function DownloadKeyStep({
                 ? "That’s your backup file"
                 : hasCreated
                   ? "Optionally, test your backup"
-                  : "Backup your key with a password"}
+                  : "Create a secure backup file"}
         </h1>
         <p className="mt-5 text-sm leading-6 text-foreground/80">
           {showPreviewSaved
-            ? "Keep the backup file and password somewhere safe. You’ll need both to restore your identity."
+            ? "Test your backup now to make sure it works. Drop the file here or select it from your device."
             : hasVerifiedBackup
               ? "Your file and password can restore your identity."
               : hasSelectedBackup
                 ? "Now enter your password to prove you can unlock it."
                 : hasCreated
                   ? "Learn how your backup works. Drop the file you just saved and unlock it with your password."
-                  : "Keep the downloaded file private — you need both it and your password to restore your identity. Save the backup password somewhere safe; Buzz cannot reset it if lost."}
+                  : "This creates a password-protected file with your private key. Remember, Buzz can’t recover your key if you lose it."}
         </p>
       </motion.div>
 
@@ -123,38 +117,14 @@ export function DownloadKeyStep({
               className="mx-auto flex w-full max-w-140 justify-center px-6 py-5"
               data-testid="backup-password-panel"
             >
-              {showPreviewSaved ? (
-                <div className="flex flex-col items-center gap-5">
-                  <div
-                    className="flex size-20 items-center justify-center rounded-full bg-white text-black/80"
-                    data-testid="onboarding-preview-backup-saved"
-                  >
-                    <Check
-                      aria-hidden="true"
-                      className="size-10"
-                      strokeWidth={3}
-                    />
-                  </div>
-                  <Button
-                    className={ONBOARDING_SECONDARY_CTA_CLASS}
-                    data-testid="onboarding-preview-test-backup"
-                    onClick={onPreviewTestRequest}
-                    type="button"
-                    variant="ghost"
-                  >
-                    Test your backup
-                  </Button>
-                </div>
-              ) : (
-                <EncryptedBackupCreator
-                  createButtonClassName={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
-                  createButtonPortal={primaryActionSlot}
-                  previewMode={previewMode}
-                  session={session}
-                  variant="spotlight"
-                  verifyButtonPortal={primaryActionSlot}
-                />
-              )}
+              <EncryptedBackupCreator
+                createButtonClassName={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
+                createButtonPortal={primaryActionSlot}
+                previewMode={previewMode}
+                session={session}
+                variant="spotlight"
+                verifyButtonPortal={primaryActionSlot}
+              />
             </div>
           </motion.div>
         </div>
@@ -163,12 +133,13 @@ export function DownloadKeyStep({
       <OnboardingFooter>
         {showPreviewSaved ? (
           <Button
-            className={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
+            className={ONBOARDING_SECONDARY_CTA_CLASS}
             data-testid="onboarding-preview-backup-done"
             onClick={onBack}
             type="button"
+            variant="ghost"
           >
-            Done
+            Skip for now
           </Button>
         ) : (
           <div
@@ -193,7 +164,11 @@ export function DownloadKeyStep({
             type="button"
             variant="ghost"
           >
-            {hasVerifiedBackup ? "Finish" : "Skip for now"}
+            {hasVerifiedBackup
+              ? previewMode
+                ? "Continue"
+                : "Finish"
+              : "Skip for now"}
           </Button>
         ) : null}
       </OnboardingFooter>

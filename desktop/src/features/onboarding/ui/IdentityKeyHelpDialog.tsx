@@ -58,7 +58,11 @@ export function IdentityKeyHelpDialog({
   const trigger = (
     <DialogTrigger asChild>
       <Button
-        className={`text-foreground/70 transition-opacity duration-300 hover:text-foreground motion-reduce:transition-none ${
+        className={`${
+          previewMode
+            ? "text-foreground underline decoration-foreground/45 underline-offset-4 hover:decoration-foreground"
+            : "text-foreground/70 hover:text-foreground"
+        } transition-opacity duration-300 motion-reduce:transition-none ${
           isVisible ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
         data-testid="identity-key-help-trigger"
@@ -66,7 +70,9 @@ export function IdentityKeyHelpDialog({
         type="button"
         variant="link"
       >
-        What’s an identity key?
+        {previewMode
+          ? "Learn how identity keys work"
+          : "What’s an identity key?"}
       </Button>
     </DialogTrigger>
   );
@@ -96,15 +102,15 @@ export function IdentityKeyHelpDialog({
           >
             <div>
               <p>
-                Your Nostr identity has two parts: a private key that signs you
-                in and a public key you can safely share. You can find your
-                public identity anytime in Buzz Settings.
+                Buzz will create a Nostr identity with two parts: a private key
+                that signs you in and a public key you can safely share. You can
+                find your public identity anytime in Buzz settings.
               </p>
               <p>
-                Your identity belongs to you, not Buzz, and can move with you to
+                This identity belongs to you, not Buzz, and can move with you to
                 another device or compatible Nostr app. Because only you control
                 the private key, Buzz can’t reset or recover it. Keep a backup
-                somewhere safe and never share it.
+                somewhere safe, and never share it.
               </p>
             </div>
           </DialogDescription>

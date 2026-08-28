@@ -214,8 +214,14 @@ export function BackupStep({
             {previewMode ? "Create a private identity key" : "Backup options"}
           </h1>
           {previewMode ? (
-            <div className="mt-3">
-              <IdentityKeyHelpDialog inline previewMode />
+            <div className="mt-5">
+              <p className="text-sm leading-6 text-foreground/75">
+                This key will be how you log into Buzz. You can use it across
+                Buzz communities and other platforms.
+              </p>
+              <div className="mt-2">
+                <IdentityKeyHelpDialog inline previewMode />
+              </div>
             </div>
           ) : (
             <p className="mt-5 text-sm leading-6 text-foreground/75">
@@ -237,7 +243,12 @@ export function BackupStep({
                   <ShieldCheck className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  Keep it private and secure at all times.
+                  <span className="block font-medium">
+                    Protected on this device.
+                  </span>
+                  <span className="block text-foreground/75">
+                    Buzz stores your key securely on this device.
+                  </span>
                 </p>
               </div>
               <div className="flex min-h-14 items-center gap-4 text-left">
@@ -245,7 +256,10 @@ export function BackupStep({
                   <CircleSlash2 className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  Don’t share it with anyone.
+                  <span className="block font-medium">Never share it.</span>
+                  <span className="block text-foreground/75">
+                    Anyone with your private key can use your identity.
+                  </span>
                 </p>
               </div>
               <div className="flex min-h-14 items-center gap-4 text-left">
@@ -253,7 +267,10 @@ export function BackupStep({
                   <HardDriveDownload className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <p className="text-base leading-6 text-foreground">
-                  Keep a backup because Buzz can’t reset or recover it.
+                  <span className="block font-medium">Keep a backup.</span>
+                  <span className="block text-foreground/75">
+                    Buzz can’t reset or recover your key if you lose access.
+                  </span>
                 </p>
               </div>
             </div>
@@ -368,7 +385,7 @@ export function BackupStep({
               onClick={onNext}
               type="button"
             >
-              I understand, generate key
+              Create my private key
             </Button>
           </OnboardingFooter>
         ) : null}
@@ -404,7 +421,7 @@ export function BackupStep({
             )}
           >
             {previewMode ? (
-              "Keep this key private. Anyone who has it can access your account."
+              "Don’t share this key. Anyone who has it can access your account."
             ) : (
               <>
                 {introStorageDescription} You can continue now, or{" "}

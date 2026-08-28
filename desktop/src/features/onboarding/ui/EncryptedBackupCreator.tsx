@@ -857,6 +857,8 @@ export function EncryptedBackupCreator({
                 <PendingDownloadTicker />
               ) : state.savedPassword ? (
                 "Download backup again"
+              ) : previewMode ? (
+                "Save backup"
               ) : (
                 "Backup key"
               )}

@@ -33,20 +33,16 @@ export function BackupPasswordPreview({
   onDone: () => void;
   session: EncryptedBackupSession;
 }) {
-  const [testRequested, setTestRequested] = React.useState(false);
-
   return (
     <OnboardingPreviewStep
-      onBack={testRequested ? () => setTestRequested(false) : onBack}
+      onBack={onBack}
       security
       testId="onboarding-preview-backup-password"
     >
       <DownloadKeyStep
         direction="forward"
         onBack={onDone}
-        onPreviewTestRequest={() => setTestRequested(true)}
         previewMode
-        previewTestRequested={testRequested}
         session={session}
       />
     </OnboardingPreviewStep>
