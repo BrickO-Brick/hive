@@ -108,16 +108,21 @@ impl EffortLaunch {
     }
 }
 
-/// Look up `key` in `map` case-insensitively (ASCII). Prefers an exact match,
-/// then falls back to the first case-insensitive match. Effort key resolution
-/// must match Windows `Command` env semantics, where a mixed-case native key
-/// is the same variable as its canonical form.
+/// Look up `key` in `map` case-insensitively (ASCII), selecting the LAST
+/// case-insensitive match in `BTreeMap` iteration order. Effort key resolution
+/// must match Windows `Command` env semantics: `Command` writes each spelling
+/// in iteration order into a case-folded env map, so the last-set spelling wins
+/// and is the value the child actually receives. Preferring an exact match
+/// instead would pick a different case variant than the child gets — e.g.
+/// `GOOSE_THINKING_EFFORT=low` plus `goose_thinking_effort=high` would resolve
+/// to `low` while the child runs `high`. This mirrors `EffortLaunch::apply`'s
+/// `.rev().find` carry so the tier reader, the passthrough carry, and the child
+/// all agree on one value.
 pub(crate) fn get_ci<'a>(map: &'a BTreeMap<String, String>, key: &str) -> Option<&'a String> {
-    map.get(key).or_else(|| {
-        map.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(key))
-            .map(|(_, v)| v)
-    })
+    map.iter()
+        .rev()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
 }
 
 /// Resolve the single harness-agnostic effort authority and apply it to a fully

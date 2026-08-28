@@ -697,6 +697,27 @@ fn mixed_case_native_key_is_read_and_wins() {
 }
 
 #[test]
+fn duplicate_case_native_variants_resolve_to_windows_effective_value() {
+    // Carl P2 (r8): both case spellings of a known runtime's native key survive
+    // the case-sensitive record env map. Windows `Command` writes each spelling
+    // in `BTreeMap` iteration order into a case-folded env map, so the LAST-set
+    // spelling wins and is the value the child receives. Canonical
+    // `GOOSE_THINKING_EFFORT` sorts before lowercase `goose_thinking_effort`, so
+    // the lowercase `high` is written last and is the child's effective value.
+    // `get_ci` must select that last match, not the exact-case `low`.
+    let mut r = record();
+    r.env_vars = env(&[(GOOSE_KEY, "low"), ("goose_thinking_effort", "high")]);
+    let launch = project_record_only(&r, Some(goose()));
+    assert_eq!(
+        launch.value.as_deref(),
+        Some("high"),
+        "known-runtime native lookup selects the last case variant Windows Command sets"
+    );
+    // Mutation: reverting `get_ci` to exact-first selects the canonical `low`,
+    // inverting the effective effort and re-breaking this pin.
+}
+
+#[test]
 fn apply_strips_mixed_case_effort_keys() {
     // A hand-set mixed-case foreign effort key must be swept, not left to
     // shadow the projected value once Windows case-folds it at spawn.
