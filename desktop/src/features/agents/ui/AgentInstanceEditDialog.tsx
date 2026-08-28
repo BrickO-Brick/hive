@@ -119,6 +119,13 @@ export function AgentInstanceEditDialog({
   const updateMutation = useUpdateManagedAgentMutation();
   const startMutation = useStartManagedAgentMutation();
   const queryClient = useQueryClient();
+  // Spans the COMPLETE Save sequence: locked update + standalone setters. Every
+  // pending/disabled gate must key off this, not updateMutation.isPending alone,
+  // so the dialog stays gated until all persistence steps settle (Carl r9 P1).
+  const [isSaving, setIsSaving] = React.useState(false);
+  // Surfaces a standalone-setter failure (auto-restart or effort) that React
+  // Query does not track — keeps the dialog open so the user can retry Save.
+  const [setterError, setSetterError] = React.useState<Error | null>(null);
   const runtimesQuery = useAcpRuntimesQuery({ enabled: open });
   const configSurfaceQuery = useAgentConfigSurface(open ? agent.pubkey : null);
   const runtimes = runtimesQuery.data ?? [];
@@ -207,6 +214,7 @@ export function AgentInstanceEditDialog({
       setAutoRestartOnConfigChange(agent.autoRestartOnConfigChange);
       setEffortLevel(null);
       effortTouched.current = false;
+      setSetterError(null);
       setRespondTo(agent.respondTo);
       setRespondToAllowlist(agent.respondToAllowlist);
       setAvatarUrl(agent.avatarUrl ?? "");
@@ -625,10 +633,12 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
-    !updateMutation.isPending &&
+    !isSaving &&
     !isAvatarUploadPending;
 
   async function handleSubmit() {
+    setIsSaving(true);
+    setSetterError(null);
     try {
       const parsedParallelism = Number.parseInt(parallelism, 10);
       const parsedArgs = agentArgs
@@ -738,36 +748,44 @@ export function AgentInstanceEditDialog({
       };
 
       const result = await updateMutation.mutateAsync(input);
-      if (autoRestartOnConfigChange !== agent.autoRestartOnConfigChange) {
-        // Standalone setter (mirrors start-on-app-launch) — not part of
-        // UpdateManagedAgentInput, so the frozen update shape stays frozen.
-        await setManagedAgentAutoRestart(
-          agent.pubkey,
-          autoRestartOnConfigChange,
-        );
-      }
-      // Effort is a Save-gated standalone setter, sequenced AFTER the update
-      // resolves. Folding it into the frozen UpdateManagedAgentInput is
-      // avoided; sequencing after the locked save is what removes the r8 race
-      // (a selection can no longer land its own IPC between here and Save). The
-      // pin→inherit transition (agentCommandUpdate === "") already cleared the
-      // effort column + aliases inside that locked save, so resolveEffortSubmission
-      // suppresses the write there — re-persisting would restore the just-cleared pin.
-      const effortSubmission = resolveEffortSubmission({
-        effortLevel,
-        originalEffortLevel:
-          configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
-        inheritTransition: agentCommandUpdate === "",
-      });
-      if (effortTouched.current && effortSubmission.persist) {
-        await persistAgentEffortLevel(agent.pubkey, effortSubmission.level);
-        // The picker owns no mutation now, so refresh the config surface here
-        // (what its own onSuccess used to do) — the panel's canonical tier must
-        // reflect the new next-spawn value.
-        await queryClient.invalidateQueries({
-          queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
+
+      // Standalone setters — sequenced after the locked update resolves so the
+      // dialog remains fully gated (isSaving) for the COMPLETE Save transaction.
+      // A failure here surfaces as setterError (retryable) and aborts before
+      // close, so a setter rejection cannot silently go unnoticed (Carl r9 P1).
+      try {
+        if (autoRestartOnConfigChange !== agent.autoRestartOnConfigChange) {
+          // Mirrors start-on-app-launch; not part of UpdateManagedAgentInput so
+          // the frozen update shape stays frozen.
+          await setManagedAgentAutoRestart(
+            agent.pubkey,
+            autoRestartOnConfigChange,
+          );
+        }
+        // Effort is a Save-gated standalone setter, sequenced AFTER the update
+        // resolves. The pin→inherit transition (agentCommandUpdate === "") already
+        // cleared effort inside the locked save, so resolveEffortSubmission
+        // suppresses the write there — re-persisting would restore the cleared pin.
+        const effortSubmission = resolveEffortSubmission({
+          effortLevel,
+          originalEffortLevel:
+            configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
+          inheritTransition: agentCommandUpdate === "",
         });
+        if (effortTouched.current && effortSubmission.persist) {
+          await persistAgentEffortLevel(agent.pubkey, effortSubmission.level);
+          // The picker owns no mutation now, so refresh the config surface here
+          // (what its own onSuccess used to do) — the panel's canonical tier must
+          // reflect the new next-spawn value.
+          await queryClient.invalidateQueries({
+            queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
+          });
+        }
+      } catch (e) {
+        setSetterError(e instanceof Error ? e : new Error("Failed to save"));
+        return;
       }
+
       showAgentProfileSyncWarning(result.agent.name, result.profileSyncError);
       handleOpenChange(false);
       onUpdated?.(result.agent);
@@ -795,7 +813,9 @@ export function AgentInstanceEditDialog({
         });
       }
     } catch {
-      // React Query stores the error; keep dialog open and render it inline.
+      // React Query stores the update error; keep dialog open and render it inline.
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -878,6 +898,11 @@ export function AgentInstanceEditDialog({
   const advancedFieldsTransition = shouldReduceMotion
     ? { duration: 0 }
     : ADVANCED_FIELDS_MOTION_TRANSITION;
+  // Displayed inline when either the locked update or a standalone setter fails.
+  // setterError takes precedence — the update already committed when it fires.
+  const displayError =
+    setterError ??
+    (updateMutation.error instanceof Error ? updateMutation.error : null);
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -891,7 +916,7 @@ export function AgentInstanceEditDialog({
         footer={
           <div className="flex w-full items-center justify-end gap-2">
             <Button
-              disabled={updateMutation.isPending || isAvatarUploadPending}
+              disabled={isSaving || isAvatarUploadPending}
               onClick={() => handleOpenChange(false)}
               type="button"
               variant="outline"
@@ -904,7 +929,7 @@ export function AgentInstanceEditDialog({
               onClick={() => void handleSubmit()}
               type="button"
             >
-              {updateMutation.isPending ? "Saving..." : "Save changes"}
+              {isSaving ? "Saving..." : "Save changes"}
             </Button>
           </div>
         }
@@ -960,7 +985,7 @@ export function AgentInstanceEditDialog({
                     "h-8 px-0 py-0 leading-6",
                     PERSONA_FIELD_CONTROL_CLASS,
                   )}
-                  disabled={updateMutation.isPending}
+                  disabled={isSaving}
                   id="edit-agent-name"
                   onChange={(event) => setName(event.target.value)}
                   placeholder="Agent name"
@@ -971,7 +996,7 @@ export function AgentInstanceEditDialog({
             <OwnerOnlyAccessField
               accessLocked={agentAccessOwnerOnly === true}
               allowlist={respondToAllowlist}
-              disabled={updateMutation.isPending}
+              disabled={isSaving}
               mode={respondTo}
               onAllowlistChange={setRespondToAllowlist}
               onModeChange={setRespondTo}
@@ -987,7 +1012,7 @@ export function AgentInstanceEditDialog({
                 Provider
               </label>
               <PersonaDropdownField
-                disabled={updateMutation.isPending}
+                disabled={isSaving}
                 id="edit-agent-runtime"
                 onValueChange={handleRuntimeDropdownChange}
                 options={runtimeDropdownOptions}
@@ -1030,7 +1055,7 @@ export function AgentInstanceEditDialog({
                       "h-8 px-0 py-0 leading-6",
                       PERSONA_FIELD_CONTROL_CLASS,
                     )}
-                    disabled={updateMutation.isPending}
+                    disabled={isSaving}
                     id="edit-agent-command"
                     onChange={(event) => setAgentCommand(event.target.value)}
                     placeholder="Full path or shell command"
@@ -1041,7 +1066,7 @@ export function AgentInstanceEditDialog({
             ) : null}
             {/* LLM provider + provider API key + model */}
             <EditAgentProviderModelFields
-              disabled={updateMutation.isPending}
+              disabled={isSaving}
               llmProviderFieldVisible={llmProviderFieldVisible}
               providerRequired={providerRequired}
               providerDropdownOptions={providerDropdownOptions}
@@ -1076,7 +1101,7 @@ export function AgentInstanceEditDialog({
             <EffortPickerField
               agent={agent}
               config={configSurfaceQuery.data}
-              disabled={updateMutation.isPending}
+              disabled={isSaving}
               value={
                 effortTouched.current
                   ? effortLevel
@@ -1139,7 +1164,7 @@ export function AgentInstanceEditDialog({
                       acpCommand={acpCommand}
                       agentArgs={agentArgs}
                       autoRestartOnConfigChange={autoRestartOnConfigChange}
-                      disabled={updateMutation.isPending}
+                      disabled={isSaving}
                       envVars={envVars}
                       fileSatisfiedEnvKeys={fileSatisfiedEnvKeys}
                       hiddenEnvKeys={
@@ -1174,11 +1199,11 @@ export function AgentInstanceEditDialog({
               </AnimatePresence>
             </div>
 
-            {/* Error */}
-            {updateMutation.error instanceof Error ? (
-              <p className="text-sm text-destructive">
-                {updateMutation.error.message}
-              </p>
+            {/* Error — covers both the locked update (React Query) and the
+                standalone setters (setterError); setter error takes precedence
+                since the update already committed when it fires. */}
+            {displayError != null ? (
+              <p className="text-sm text-destructive">{displayError.message}</p>
             ) : null}
           </div>
         </div>
