@@ -237,10 +237,10 @@ function effortConfigSurface() {
 }
 
 // Installs the effort-capable surface plus a CONTROLLABLE update boundary: the
-// caller decides when `update_managed_agent` resolves (or rejects) so the tests
-// can prove the effort setter fires strictly AFTER the locked update — never on
-// selection, never before the update settles, never on a failed update. Returns
-// `resolveUpdate` / `rejectUpdate` to settle the deferred update on demand.
+// tests can prove the effort setter fires strictly AFTER the locked update —
+// never on selection, never before the update settles, never on a failed
+// update. `failUpdate` makes `update_managed_agent` reject immediately;
+// `deferUpdate` holds it pending until the returned `resolveUpdate()` is called.
 function installEffortIpc({ deferUpdate = false, failUpdate = false } = {}) {
   installIpc();
   const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
