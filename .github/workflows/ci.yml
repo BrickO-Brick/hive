@@ -707,6 +707,14 @@ jobs:
             --run-ignored ignored-only
         env:
           BUZZ_TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
+      - name: Workflow wake lifecycle PostgreSQL tests
+        run: |
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-relay) and test(/^workflow_sink::/)' \
+            --run-ignored ignored-only
+        env:
+          DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
       - name: Database pressure observability PostgreSQL tests
         # Explicit pool acquisition and advisory-lock metrics require real
         # Postgres and are ignored by the infrastructure-free unit-test job.
