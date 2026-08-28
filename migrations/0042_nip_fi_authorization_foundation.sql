@@ -4,7 +4,7 @@
 -- audio admission ledger, 30382 projection, delivery queue, exporter claim,
 -- acknowledgement, retry scheduler, or online retention/compaction workflow.
 --
--- This migration applies to migration 0040's resulting state. Its scope is the
+-- This migration applies to migration 0041's resulting state. Its scope is the
 -- NIP-FI *final-admission* surface: replay/receipt, audit events, invalidation,
 -- capacity, protected-object authority, restore version deltas, and the closed
 -- admission result. Closed vocabularies below carry only the core subset;
@@ -716,7 +716,7 @@ CREATE CONSTRAINT TRIGGER authorization_event_receipt_cardinality
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION authorization_operation_receipt_event_guard_v1();
 
--- Same ledger posture as migration 0040's identity relations: the admission,
+-- Same ledger posture as migration 0041's identity relations: the admission,
 -- replay, audit, and invalidation relations below are append-only denial and
 -- authority facts protected by immutable no_delete/no_truncate triggers, so
 -- they carry community_id as provenance rather than deletable ownership. Widen

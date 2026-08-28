@@ -2852,9 +2852,9 @@ mod tests {
         let pool = connect_test_pool().await;
         reset_public_schema(&pool).await;
         MIGRATOR
-            .run_to(41, &pool)
+            .run_to(42, &pool)
             .await
-            .expect("apply migrations 1-41");
+            .expect("apply migrations 1-42");
 
         let community_id = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -2984,9 +2984,9 @@ mod tests {
         let pool = connect_test_pool().await;
         reset_public_schema(&pool).await;
         MIGRATOR
-            .run_to(40, &pool)
+            .run_to(41, &pool)
             .await
-            .expect("apply migrations 1-40");
+            .expect("apply migrations 1-41");
 
         let community_id = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
