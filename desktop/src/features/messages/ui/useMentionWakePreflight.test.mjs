@@ -351,6 +351,38 @@ test("mention-free drafts skip the mention-ref snapshot entirely", async () => {
   assert.equal(snapshots, 0);
 });
 
+test("a prewake start is marked speculative", async (t) => {
+  // The flag is what bounds the spawned harness's lifetime: without it an
+  // abandoned draft leaks a live agent until app quit. Nothing else in the app
+  // sets it, so this call site is the whole contract.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { act, renderHook } = await import("@testing-library/react");
+  const inputs = [];
+  const contentRef = { current: "@Fizz please investigate" };
+  const view = renderHook(() =>
+    useMentionWakePreflight(
+      localAgentOptions(contentRef, () => {}, {
+        startManagedAgent: async (input) => {
+          inputs.push(input);
+          return { pubkey: AGENT, status: "running" };
+        },
+      }),
+    ),
+  );
+
+  act(() => view.result.current.prepareMentionWake(contentRef.current));
+  await act(async () => t.mock.timers.tick(MENTION_WAKE_GATE_HOLD_MS));
+
+  assert.deepEqual(inputs, [
+    {
+      pubkey: AGENT,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: "c".repeat(64),
+      speculative: true,
+    },
+  ]);
+});
+
 test("provider-backed agents are never woken speculatively", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { act, renderHook } = await import("@testing-library/react");

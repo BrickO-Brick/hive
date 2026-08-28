@@ -31,3 +31,22 @@ test("start flight keys coalesce only within the same tenant scope", () => {
   );
   assert.notEqual(scoped, managedAgentStartFlightKey(AGENT));
 });
+
+test("a send's durable start shares the prewake's flight", () => {
+  // Same agent, same tenant: the send must reuse the in-flight speculative
+  // start rather than spawning a second one. Its own message dispatch is what
+  // clears the harness's never-used bound.
+  assert.equal(
+    managedAgentStartFlightKey({
+      pubkey: AGENT,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: SIGNER,
+      speculative: true,
+    }),
+    managedAgentStartFlightKey({
+      pubkey: AGENT,
+      expectedRelayUrl: "wss://relay.example",
+      expectedSignerPubkey: SIGNER,
+    }),
+  );
+});

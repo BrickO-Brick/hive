@@ -35,6 +35,13 @@ export type ManagedAgentStartInput =
       pubkey: string;
       expectedRelayUrl?: string;
       expectedSignerPubkey?: string;
+      /**
+       * The user did not ask for this start — it is a prewake for a draft that
+       * may never be sent. The backend attaches a one-shot never-used bound to
+       * the spawned harness, which the first dispatched event disarms, so an
+       * abandoned draft ends in the same stopped state as no prewake at all.
+       */
+      speculative?: boolean;
     };
 
 type MentionWakePlan = {
@@ -223,6 +230,9 @@ export function useMentionWakePreflight(options: {
                       pubkey,
                       expectedRelayUrl: context.expectedRelayUrl,
                       expectedSignerPubkey: context.expectedSignerPubkey,
+                      // Nobody has sent anything yet. Bound the harness so an
+                      // abandoned draft cannot leak it.
+                      speculative: true,
                     }),
                   ]
                 : [];

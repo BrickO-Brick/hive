@@ -8,6 +8,16 @@ import type { ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import type { ManagedAgentStartInput } from "./useMentionWakePreflight";
 
+/**
+ * Scope of an in-flight start: the agent and the tenant it is being started
+ * for.
+ *
+ * `speculative` is deliberately excluded. If a prewake is still in flight when
+ * the send path asks for a durable start of the same scope, sharing that flight
+ * is correct — the send's own message dispatch is what promotes the harness out
+ * of its never-used bound, not the flavour of the call that started it. Keying
+ * on the flag instead would spawn a second start for an agent already booting.
+ */
 export function managedAgentStartFlightKey(input: ManagedAgentStartInput) {
   const pubkey = normalizePubkey(
     typeof input === "string" ? input : input.pubkey,
