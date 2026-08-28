@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:buzz/features/channels/channel_management_provider.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
+import 'package:buzz/features/channels/channel_sync.dart';
 import 'package:buzz/shared/relay/relay.dart';
 
 /// Tests for [ChannelsNotifier] in the pure-Nostr world.
@@ -1656,6 +1657,35 @@ void main() {
       expect(session.totalSubscribeCount, initialSubscribeCount);
       expect(session.unsubscribeCount, 0);
       expect(session.subscribeFilters, hasLength(2));
+
+      session.emit(
+        const NostrEvent(
+          id: 'retained-live-event',
+          pubkey: 'alice',
+          createdAt: 20,
+          kind: EventKind.streamMessageV2,
+          tags: [
+            ['h', _channelA],
+          ],
+          content: 'after unchanged refresh',
+          sig: 'sig',
+        ),
+      );
+
+      final channelA = container
+          .read(channelsProvider)
+          .requireValue
+          .firstWhere((channel) => channel.id == _channelA);
+      expect(
+        channelA.lastMessageAt,
+        DateTime.fromMillisecondsSinceEpoch(20 * 1000, isUtc: true),
+      );
+      expect(
+        container
+            .read(channelsProvider.notifier)
+            .observedUnreadEventsByChannel[_channelA],
+        contains('retained-live-event'),
+      );
     },
   );
 
@@ -1676,6 +1706,7 @@ void main() {
       addTearDown(container.dispose);
 
       await container.read(channelsProvider.future);
+      await _waitUntil(() => session.activeSubscriptionCount == 2);
       session.memberships = [
         _membership(_channelB, myPk),
         _membership(_channelD, myPk),
@@ -1903,6 +1934,37 @@ void main() {
       expect(
         channels.firstWhere((channel) => channel.id == _channelB).lastMessageAt,
         DateTime.fromMillisecondsSinceEpoch(40 * 1000, isUtc: true),
+      );
+    },
+  );
+
+  test(
+    'chunks latest-message and unread queries at 100 for 129 channels',
+    () async {
+      final ids = [for (var i = 0; i < 129; i++) 'channel-$i'];
+      final session = _FakeRelaySession(
+        memberships: [for (final id in ids) _membership(id, myPk)],
+        metadata: [for (final id in ids) _meta(id: id, name: id)],
+      );
+      final container = _buildContainer(session: session);
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await _waitUntil(() => session.queryBatches.length == 4);
+
+      expect(session.queryBatches.map((batch) => batch.length), [
+        100,
+        29,
+        100,
+        29,
+      ]);
+      expect(
+        session.historyFilters.where(
+          (filter) => filter.kinds.toSet().containsAll(
+            EventKind.channelMessageEventKinds,
+          ),
+        ),
+        isEmpty,
       );
     },
   );
@@ -2426,7 +2488,10 @@ NostrEvent _meta({
   sig: 'sig',
 );
 
-ProviderContainer _buildContainer({required _FakeRelaySession session}) {
+ProviderContainer _buildContainer({
+  required _FakeRelaySession session,
+  TaskDelay liveSubscriptionDelay = _noDelay,
+}) {
   return ProviderContainer(
     retry: (_, _) => null,
     overrides: [
@@ -2435,6 +2500,9 @@ ProviderContainer _buildContainer({required _FakeRelaySession session}) {
       // Route the pubkey through a mutable notifier so tests can switch the
       // signing identity mid-flight the way an account change does at runtime.
       myPubkeyProvider.overrideWith((ref) => ref.watch(_testPubkeyProvider)),
+      channelsLiveSubscriptionDelayProvider.overrideWithValue(
+        liveSubscriptionDelay,
+      ),
     ],
   );
 }
@@ -2929,6 +2997,14 @@ class _FakeRelaySession extends RelaySessionNotifier {
   }
 
   @override
+  Future<void Function()> subscribeWithStatus(
+    NostrFilter filter,
+    void Function(NostrEvent) onEvent, {
+    void Function(String message)? onClosed,
+    required void Function(RelaySubscriptionStatus status) onStatusChanged,
+  }) => subscribe(filter, onEvent, onClosed: onClosed);
+
+  @override
   Future<void Function()> subscribe(
     NostrFilter filter,
     void Function(NostrEvent) onEvent, {
@@ -2969,3 +3045,5 @@ class _FakeAppLifecycleNotifier extends AppLifecycleNotifier {
   @override
   AppLifecycleState build() => AppLifecycleState.resumed;
 }
+
+Future<void> _noDelay(Duration _) async {}

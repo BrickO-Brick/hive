@@ -9,6 +9,7 @@ import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme_provider.dart';
 import '../../shared/utils/string_utils.dart';
 import 'channel.dart';
+import 'channel_sync.dart';
 import 'channel_management_provider.dart'
     show ChannelMember, channelDetailsProvider;
 import 'channel_mutes/channel_mutes_provider.dart';
@@ -24,9 +25,7 @@ part 'channels_provider_lifecycle.dart';
 
 const _channelTypeOrder = {'stream': 0, 'forum': 1, 'dm': 2};
 const _unreadCatchUpLimit = 1000;
-const _latestMessageQueryBatchSize = 128;
 const _latestMessageQueryDeadline = Duration(seconds: 8);
-const _liveSubscriptionStartInterval = Duration(milliseconds: 125);
 const _participatedRootIdsPrefix = 'buzz-thread-participation.v1';
 const _authoredRootIdsPrefix = 'buzz-thread-authored.v1';
 
@@ -321,14 +320,11 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       for (
         var start = 0;
         start < activeChannels.length;
-        start += _latestMessageQueryBatchSize
+        start += channelQueryBatchSize
       ) {
         final remaining = _latestMessageQueryDeadline - stopwatch.elapsed;
         if (remaining <= Duration.zero) break;
-        final end = min(
-          start + _latestMessageQueryBatchSize,
-          activeChannels.length,
-        );
+        final end = min(start + channelQueryBatchSize, activeChannels.length);
         try {
           final events = await _fenced(
             fence,
@@ -425,11 +421,12 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     RelaySessionNotifier session,
     List<NostrFilter> filters, {
     required String operation,
+    Duration timeout = const Duration(seconds: 8),
   }) async {
     if (filters.isEmpty) return const [];
 
     try {
-      return await session.queryRelay(filters);
+      return await session.queryRelay(filters, timeout: timeout);
     } catch (error) {
       debugPrint(
         '[ChannelsNotifier] batched $operation failed; '
@@ -546,7 +543,8 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     _ChannelRefreshFence fence,
   ) async {
     fence.ensureCurrent();
-    if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
+    if (!ref.mounted ||
+        ref.read(relaySessionProvider).status != SessionStatus.connected) {
       return;
     }
 
@@ -573,58 +571,64 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
       entry.value();
     }
 
-    final pendingChannelIds = channelIds.toList();
-    for (var index = 0; index < pendingChannelIds.length; index++) {
-      final channelId = pendingChannelIds[index];
-      if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
-        return;
-      }
-      if (_unsubscribersByChannel.containsKey(channelId)) continue;
-      if (subscriptionVersion != _subscriptionVersion || !fence.isCurrent) {
-        return;
-      }
-      try {
-        final unsubscribe = await session.subscribe(
-          NostrFilter(
-            kinds: EventKind.channelEventKinds,
-            tags: {
-              '#h': [channelId],
-            },
-            limit: 0,
-          ),
-          _handleLiveEvent,
-        );
-        if (!fence.isCurrent) {
-          unsubscribe();
-          throw const _StaleChannelRefresh();
-        }
-        if (subscriptionVersion != _subscriptionVersion ||
-            ref.read(relaySessionProvider).status != SessionStatus.connected ||
-            !_desiredLiveChannelIds.contains(channelId) ||
-            ref.read(relayConfigProvider).baseUrl != relayBaseUrl ||
-            _subscriptionRelayBaseUrl != relayBaseUrl) {
-          unsubscribe();
-          return;
-        }
-        final replaced = _unsubscribersByChannel[channelId];
-        if (replaced != null) {
-          unsubscribe();
-          continue;
-        }
-        _unsubscribersByChannel[channelId] = unsubscribe;
-        if (index + 1 < pendingChannelIds.length) {
-          await Future<void>.delayed(_liveSubscriptionStartInterval);
-        }
-      } on _StaleChannelRefresh {
-        rethrow;
-      } catch (error) {
-        debugPrint(
-          '[ChannelsNotifier] live subscription failed for $channelId: $error',
-        );
-      }
-    }
+    final pendingChannelIds = [
+      for (final channelId in channelIds)
+        if (!_unsubscribersByChannel.containsKey(channelId)) channelId,
+    ];
+    await runPacedTasks(
+      [
+        for (final channelId in pendingChannelIds)
+          () async {
+            if (subscriptionVersion != _subscriptionVersion ||
+                !fence.isCurrent ||
+                ref.read(relaySessionProvider).status !=
+                    SessionStatus.connected) {
+              return;
+            }
+            final unsubscribe = await session.subscribeWithStatus(
+              NostrFilter(
+                kinds: EventKind.channelEventKinds,
+                tags: {
+                  '#h': [channelId],
+                },
+                limit: 0,
+              ),
+              _handleLiveEvent,
+              onStatusChanged: (_) {},
+            );
+            if (subscriptionVersion != _subscriptionVersion ||
+                !fence.isCurrent ||
+                ref.read(relaySessionProvider).status !=
+                    SessionStatus.connected ||
+                !_desiredLiveChannelIds.contains(channelId) ||
+                ref.read(relayConfigProvider).baseUrl != relayBaseUrl ||
+                _subscriptionRelayBaseUrl != relayBaseUrl) {
+              unsubscribe();
+              return;
+            }
+            final replaced = _unsubscribersByChannel[channelId];
+            if (replaced != null) {
+              unsubscribe();
+              return;
+            }
+            _unsubscribersByChannel[channelId] = unsubscribe;
+          },
+      ],
+      maxConcurrent: liveSubscriptionMaxConcurrent,
+      startInterval: liveSubscriptionStartInterval,
+      isCancelled: () =>
+          subscriptionVersion != _subscriptionVersion ||
+          !fence.isCurrent ||
+          ref.read(relaySessionProvider).status != SessionStatus.connected ||
+          ref.read(relayConfigProvider).baseUrl != relayBaseUrl,
+      delay: ref.read(channelsLiveSubscriptionDelayProvider),
+      onError: (error) {
+        debugPrint('[ChannelsNotifier] live subscription failed: $error');
+      },
+    );
 
-    if (ref.read(relaySessionProvider).status != SessionStatus.connected) {
+    if (!ref.mounted ||
+        ref.read(relaySessionProvider).status != SessionStatus.connected) {
       return;
     }
 
@@ -702,11 +706,20 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
     ];
 
     try {
-      final events = await _fetchChannelHistoryBatch(
-        session,
-        filters,
-        operation: 'unread catch-up',
-      );
+      final events = <NostrEvent>[];
+      final stopwatch = Stopwatch()..start();
+      for (final batch in chunkChannelQueryItems(filters)) {
+        final remaining = _latestMessageQueryDeadline - stopwatch.elapsed;
+        if (remaining <= Duration.zero) break;
+        events.addAll(
+          await _fetchChannelHistoryBatch(
+            session,
+            batch,
+            operation: 'unread catch-up',
+            timeout: remaining,
+          ),
+        );
+      }
       // The relay round-trip above is the window Jed's probes park in: a newer
       // refresh, a community switch or an identity switch here means every
       // write below belongs to a channel list the user has left.
@@ -974,4 +987,8 @@ class ChannelsNotifier extends AsyncNotifier<List<Channel>> {
 
 final channelsProvider = AsyncNotifierProvider<ChannelsNotifier, List<Channel>>(
   ChannelsNotifier.new,
+);
+
+final channelsLiveSubscriptionDelayProvider = Provider<TaskDelay>(
+  (_) => defaultTaskDelay,
 );
