@@ -36,7 +36,8 @@ test("a persisted unknown command is preserved as a read-only current option", (
   const state = acpCommandPickerState("my-acp", [candidate]);
   assert.equal(state.selectValue, "my-acp");
   assert.deepEqual(state.options.at(-1), {
-    label: "my-acp (current)",
+    disabled: true,
+    label: "my-acp (unavailable)",
     value: "my-acp",
   });
 });
@@ -44,7 +45,8 @@ test("a persisted unknown command is preserved as a read-only current option", (
 test("late discovery replaces the current marker without changing the command", () => {
   const before = acpCommandPickerState("buzz-janet-acp", []);
   assert.deepEqual(before.options.at(-1), {
-    label: "buzz-janet-acp (current)",
+    disabled: true,
+    label: "buzz-janet-acp (unavailable)",
     value: "buzz-janet-acp",
   });
 

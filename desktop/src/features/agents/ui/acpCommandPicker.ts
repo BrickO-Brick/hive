@@ -18,10 +18,11 @@ export function acpCommandPickerState(
     })),
   ];
   if (command && !options.some((option) => option.value === command)) {
-    options.push({ label: `${command} (current)`, value: command });
+    options.push({
+      disabled: true,
+      label: `${command} (unavailable)`,
+      value: command,
+    });
   }
-  return {
-    options,
-    selectValue: command || DEFAULT_ACP_COMMAND_VALUE,
-  };
+  return { options, selectValue: command || DEFAULT_ACP_COMMAND_VALUE };
 }

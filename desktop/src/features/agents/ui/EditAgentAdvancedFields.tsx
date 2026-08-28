@@ -279,23 +279,25 @@ export function EditAgentAdvancedFields({
           active community relay — so offering a knob here would advertise a
           setting with no effect. The stored field is preserved untouched. */}
 
-      {/* ACP command */}
-      <div className="space-y-1.5">
-        <label
-          className="text-sm font-medium text-foreground"
-          htmlFor="edit-agent-acp-command"
-        >
-          ACP command
-        </label>
-        <PersonaDropdownField
-          disabled={disabled}
-          id="edit-agent-acp-command"
-          onValueChange={onAcpCommandChange}
-          options={acpCommandPicker.options}
-          placeholder="Choose an ACP command"
-          value={acpCommandPicker.selectValue}
-        />
-      </div>
+      {/* Definition-less legacy agents keep a direct ACP command control. */}
+      {linkedPersona == null ? (
+        <div className="space-y-1.5">
+          <label
+            className="text-sm font-medium text-foreground"
+            htmlFor="edit-agent-acp-command"
+          >
+            ACP command
+          </label>
+          <PersonaDropdownField
+            disabled={disabled}
+            id="edit-agent-acp-command"
+            onValueChange={onAcpCommandChange}
+            options={acpCommandPicker.options}
+            placeholder="Choose an ACP command"
+            value={acpCommandPicker.selectValue}
+          />
+        </div>
+      ) : null}
 
       {/* System prompt override — hidden for linked instances; the persona
           definition is authoritative and the backend will reject any override. */}

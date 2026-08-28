@@ -148,6 +148,7 @@ pub(super) fn sample_persona() -> AgentDefinition {
         display_name: "Test Persona".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
         system_prompt: "You are a test assistant.".to_string(),
+        acp_command: None,
         runtime: Some("goose".to_string()),
         model: Some("claude-opus-4".to_string()),
         provider: Some("anthropic".to_string()),
@@ -279,7 +280,8 @@ fn shared_persona_event_has_exact_tag_and_round_trips() {
 
 #[test]
 fn round_trip_serialization() {
-    let record = sample_persona();
+    let mut record = sample_persona();
+    record.acp_command = Some("buzz-janet-acp".to_string());
     let builder = build_persona_event(&record).unwrap();
     let keys = nostr::Keys::generate();
     let event = builder.sign_with_keys(&keys).unwrap();
@@ -292,6 +294,7 @@ fn round_trip_serialization() {
         Some("https://example.com/avatar.png".to_string())
     );
     assert_eq!(restored.system_prompt, "You are a test assistant.");
+    assert_eq!(restored.acp_command.as_deref(), Some("buzz-janet-acp"));
     assert_eq!(restored.runtime, Some("goose".to_string()));
     assert_eq!(restored.model, Some("claude-opus-4".to_string()));
     assert_eq!(restored.provider, Some("anthropic".to_string()));
@@ -321,6 +324,7 @@ fn content_matches_nip_ap_vector() {
     let content = PersonaEventContent {
         display_name: "Test Agent".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        acp_command: None,
         avatar_url: Some("https://example.com/avatar.png".to_string()),
         runtime: Some("goose".to_string()),
         model: Some("claude-opus-4".to_string()),
@@ -376,6 +380,7 @@ fn content_matches_nip_ap_vector() {
         display_name: "Test Agent".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
         system_prompt: "You are a test assistant.".to_string(),
+        acp_command: None,
         runtime: Some("goose".to_string()),
         model: Some("claude-opus-4".to_string()),
         provider: Some("anthropic".to_string()),
@@ -408,6 +413,7 @@ fn round_trip_minimal_persona() {
         display_name: "Minimal".to_string(),
         avatar_url: None,
         system_prompt: "Hello".to_string(),
+        acp_command: None,
         runtime: None,
         model: None,
         provider: None,
@@ -506,6 +512,7 @@ fn quad_absent_definition_hash_stable_across_activation() {
         display_name: "Test".to_string(),
         avatar_url: None,
         system_prompt: "Hello".to_string(),
+        acp_command: None,
         runtime: Some("goose".to_string()),
         model: Some("gpt-oss".to_string()),
         provider: None,
@@ -551,6 +558,7 @@ fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDef
         display_name: content.display_name,
         avatar_url: content.avatar_url,
         system_prompt: content.system_prompt.unwrap_or_default(),
+        acp_command: content.acp_command,
         runtime: content.runtime,
         model: content.model,
         provider: content.provider,
@@ -577,6 +585,7 @@ fn persona_content_hash_is_deterministic() {
         display_name: "Test".to_string(),
         avatar_url: None,
         system_prompt: Some("Hello".to_string()),
+        acp_command: None,
         runtime: None,
         model: None,
         provider: None,
@@ -597,6 +606,7 @@ fn persona_content_hash_changes_on_edit() {
         display_name: "Test".to_string(),
         avatar_url: None,
         system_prompt: Some("Hello".to_string()),
+        acp_command: None,
         runtime: None,
         model: None,
         provider: None,
@@ -611,6 +621,17 @@ fn persona_content_hash_changes_on_edit() {
         persona_content_hash(&content1),
         persona_content_hash(&content2)
     );
+}
+
+#[test]
+fn snapshot_applies_persona_acp_command_to_linked_instance() {
+    let mut record = sample_record();
+    let mut persona = sample_persona();
+    persona.acp_command = Some("buzz-janet-acp".to_string());
+
+    apply_persona_snapshot(&mut record, &persona);
+
+    assert_eq!(record.acp_command, "buzz-janet-acp");
 }
 
 // ── PersonaSnapshot.runtime ───────────────────────────────────────────────

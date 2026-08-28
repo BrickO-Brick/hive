@@ -252,11 +252,13 @@ with a TypeScript lookup table or an id comparison in a component.
 
 15. **Databricks model discovery has one shared catalog authority.** Desktop and ACP call the shared `buzz-agent` discovery library; Desktop passes the effective merged `DATABRICKS_MODEL_FILTER` explicitly, and the library applies it to raw workspace endpoint IDs and Unity Catalog model-service FQNs after the additive union. A successful filtered-empty catalog is authoritative: it stays empty, disables switching, and never falls through to configured or known-model fallback. UC FQNs are catalog data and always use the MLflow Chat Completions route, regardless of family-looking text in their components.
 
-16. **ACP command selection is convention-based.** The editor always offers
+16. **ACP transport is persona-owned before deployment.** Select `acp_command` in the persona create/edit form beside the harness. Deployment inherits that value; linked instances do not expose a competing post-deploy override. Legacy definitions without the field and definition-less agents continue to use the stored/default `buzz-acp` command. Shared persona events and restart snapshots carry the field so edits apply on the next spawn.
+
+17. **ACP command selection is convention-based.** The editor always offers
     stock `buzz-acp` and installed executable `buzz-*-acp` aliases discovered
     from normal executable search directories. It does not offer arbitrary
-    command entry. A persisted value outside that set remains visible as a
-    current compatibility option but is not editable; selecting a conventional
+    command entry. A persisted value outside that set remains visible as an
+    unavailable compatibility option but is not editable; selecting a conventional
     option replaces it. Discovery returns the path produced by the same resolver
     used at spawn, so a duplicate alias must never advertise one executable and
     later launch another. Keep these transitions in the pure
@@ -291,7 +293,7 @@ with a TypeScript lookup table or an id comparison in a component.
   every profile tab when opened from Agents and from the agent's DM.
 - `ui/AgentConfigPanelPresentation.test.mjs` — shared profile/agent config rows
   show only effective values, with an em dash for unknown values.
-- `ui/acpCommandPicker.test.mjs` — stock/discovered/current command mode,
+- `ui/acpCommandPicker.test.mjs` — stock/discovered/unavailable command mode,
   late discovery, query-failure compatibility, and conventional replacement of
   persisted unknown commands.
 - `ui/effortPicker.test.mjs` — `effortPickerState` gating (local + discovered

@@ -568,6 +568,7 @@ pub async fn confirm_agent_snapshot_import(
                 .system_prompt
                 .clone()
                 .unwrap_or_default(),
+            acp_command: None,
             runtime: snapshot.definition.runtime.clone(),
             model: snapshot.definition.model.clone(),
             provider: snapshot.definition.provider.clone(),

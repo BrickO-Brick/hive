@@ -9,6 +9,7 @@ fn member(id: &str, display_name: &str) -> AgentDefinition {
         display_name: display_name.to_string(),
         avatar_url: None,
         system_prompt: "Do the work.".to_string(),
+        acp_command: None,
         runtime: Some("goose".to_string()),
         model: Some("claude-opus-4".to_string()),
         provider: Some("anthropic".to_string()),
