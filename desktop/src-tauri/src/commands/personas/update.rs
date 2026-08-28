@@ -123,10 +123,12 @@ pub async fn update_persona(
 /// [`update_persona`] enqueues best-effort, while
 /// [`sharing::update_persona_and_publish`] prepares a strict publication and
 /// returns the event so the caller can await relay acceptance.
-pub(super) async fn update_persona_with<R: Send + 'static>(
+pub(super) async fn update_persona_with<Rt: tauri::Runtime + 'static, R: Send + 'static>(
     input: UpdatePersonaRequest,
-    app: AppHandle,
-    retain: impl FnOnce(&AppHandle, &AppState, &AgentDefinition) -> Result<R, String> + Send + 'static,
+    app: tauri::AppHandle<Rt>,
+    retain: impl FnOnce(&tauri::AppHandle<Rt>, &AppState, &AgentDefinition) -> Result<R, String>
+        + Send
+        + 'static,
 ) -> Result<(AgentDefinition, R), String> {
     use tauri::Manager;
 

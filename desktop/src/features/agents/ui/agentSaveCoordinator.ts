@@ -248,7 +248,7 @@ export async function runAgentSaveCoordinator(
       // while this editor was open — the same user situation as the Step-0
       // drift abort. Report it as such and bail without settling: nothing was
       // written, so there is no persistence to verify.
-      if (message.includes(PERSONA_REVISION_CONFLICT)) {
+      if (message.startsWith(PERSONA_REVISION_CONFLICT)) {
         toast.error(
           `${def?.displayName ?? "This agent"} changed while you were editing — reopen the editor to get the latest before saving.`,
         );

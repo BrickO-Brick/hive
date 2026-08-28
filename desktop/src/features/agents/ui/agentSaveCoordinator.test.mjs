@@ -1436,6 +1436,45 @@ test("test_generic_write_failure_is_not_treated_as_a_drift_conflict", async () =
     cap.restore();
   }
 });
+test("test_error_containing_conflict_token_midstring_is_not_treated_as_drift", async () => {
+  // The marker check uses startsWith, not includes. An unrelated error message
+  // that happens to contain the conflict token somewhere inside it must not
+  // be misidentified as a concurrent-edit conflict and trigger the drift toast.
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+      updatePersona: async () => {
+        // Message embeds the token mid-string — must NOT trigger the drift path.
+        throw new Error(
+          `unrelated failure containing ${PERSONA_REVISION_CONFLICT} inside`,
+        );
+      },
+      refetchStores: async () => ({
+        persona: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+        agent: null,
+      }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "any write failure returns false");
+    const errors = cap.captured.filter((c) => c.kind === "error");
+    assert.equal(errors.length, 1, "exactly one error toast");
+    assert.doesNotMatch(
+      errors[0].message,
+      /changed while you were editing/i,
+      "mid-string token must not trigger the drift toast",
+    );
+  } finally {
+    cap.restore();
+  }
+});
 
 // ── Test family 9: success toast names the observed (persisted) agent (P2) ───
 //
