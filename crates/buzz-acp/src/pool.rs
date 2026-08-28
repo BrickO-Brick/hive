@@ -306,7 +306,21 @@ pub struct AgentPool {
     result_rx: mpsc::UnboundedReceiver<PromptResult>,
     pub join_set: JoinSet<()>,
     task_map: HashMap<tokio::task::Id, TaskMeta>,
+    /// Nonces of permission decisions already forwarded to a read loop, with the
+    /// instant each was recorded. The desktop retransmits a decision until it
+    /// sees a `control_result`; a copy that arrives after the read loop applied
+    /// the decision and its task ended would otherwise get `no_active_turn` /
+    /// `channel_closed` and flip the resolved card to failed. Recording the
+    /// nonce on first delivery lets [`Self::was_recently_decided`] recognize
+    /// such a late duplicate and ack it success-shaped instead. Pruned to
+    /// [`DECIDED_NONCE_RETENTION`] (≥ the card's max expiry) on every write.
+    recently_decided: HashMap<String, tokio::time::Instant>,
 }
+
+/// Retention for [`AgentPool::recently_decided`]. Matches the maximum card
+/// expiry (`PERMISSION_ASK_TIMEOUT_SECS`) so a nonce stays recognized for as
+/// long as the desktop could still be retransmitting it, then is reclaimed.
+const DECIDED_NONCE_RETENTION: Duration = Duration::from_secs(300);
 
 /// Result returned by a completed prompt task.
 pub struct PromptResult {
@@ -739,7 +753,28 @@ impl AgentPool {
             result_rx,
             join_set: JoinSet::new(),
             task_map: HashMap::new(),
+            recently_decided: HashMap::new(),
         }
+    }
+
+    /// Record a permission-decision nonce as delivered to a read loop and prune
+    /// entries older than [`DECIDED_NONCE_RETENTION`]. Called when a decision is
+    /// first forwarded so a later retransmit of the same nonce is recognized.
+    pub fn record_permission_decision(&mut self, nonce: &str) {
+        let now = tokio::time::Instant::now();
+        self.recently_decided
+            .retain(|_, at| now.duration_since(*at) < DECIDED_NONCE_RETENTION);
+        self.recently_decided.insert(nonce.to_string(), now);
+    }
+
+    /// Whether `nonce` was recently forwarded to a read loop and is still within
+    /// the retention window. A late retransmit that matches is a duplicate the
+    /// harness has already applied — the caller acks it success-shaped rather
+    /// than failing the resolved card.
+    pub fn was_recently_decided(&self, nonce: &str) -> bool {
+        self.recently_decided.get(nonce).is_some_and(|at| {
+            tokio::time::Instant::now().duration_since(*at) < DECIDED_NONCE_RETENTION
+        })
     }
 
     /// Try to claim an idle agent for the given channel (or heartbeat if `None`).
@@ -4949,6 +4984,60 @@ mod tests {
             args: vec![],
             env: vec![],
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recently_decided_recognizes_a_nonce_within_retention() {
+        let mut pool = AgentPool::from_slots(vec![None]);
+        assert!(
+            !pool.was_recently_decided("n1"),
+            "unknown nonce is not recently decided"
+        );
+        pool.record_permission_decision("n1");
+        assert!(
+            pool.was_recently_decided("n1"),
+            "just-recorded nonce is recognized"
+        );
+        assert!(
+            !pool.was_recently_decided("n2"),
+            "a different nonce is not recognized"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recently_decided_expires_after_retention_window() {
+        let mut pool = AgentPool::from_slots(vec![None]);
+        pool.record_permission_decision("n1");
+        // Just inside the window: still recognized.
+        tokio::time::advance(DECIDED_NONCE_RETENTION - Duration::from_secs(1)).await;
+        assert!(
+            pool.was_recently_decided("n1"),
+            "nonce inside retention is still recognized"
+        );
+        // Past the window: no longer recognized (bounds the set's growth and
+        // stops acking retransmits for cards that have long since expired).
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(
+            !pool.was_recently_decided("n1"),
+            "nonce past retention is forgotten"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recording_prunes_entries_past_retention() {
+        let mut pool = AgentPool::from_slots(vec![None]);
+        pool.record_permission_decision("old");
+        tokio::time::advance(DECIDED_NONCE_RETENTION + Duration::from_secs(1)).await;
+        // Recording a new nonce prunes the stale one so the map cannot grow
+        // without bound over a long-lived process.
+        pool.record_permission_decision("new");
+        assert!(!pool.was_recently_decided("old"), "stale entry was pruned");
+        assert!(pool.was_recently_decided("new"), "fresh entry retained");
+        assert_eq!(
+            pool.recently_decided.len(),
+            1,
+            "only the fresh entry remains"
+        );
     }
 
     #[test]

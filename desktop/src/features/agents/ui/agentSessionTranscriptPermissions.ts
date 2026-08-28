@@ -412,9 +412,16 @@ export function handlePermissionWrite(
 
 /**
  * Handle a `control_result` frame for a `permission_decision` delivery.
- * A non-"sent" status means the click did not reach the harness — marks the
+ * A non-success status means the click did not reach the harness — marks the
  * card with an incremented `deliveryFailed` counter so buttons re-enable for
  * retry.
+ *
+ * `sent` and `already_decided` are both success: `sent` means the harness
+ * forwarded the decision to the live read loop; `already_decided` means a
+ * retransmit matched a nonce the harness had already applied (the deciding
+ * task has since ended). Neither may fail the card — an `already_decided` that
+ * incremented `deliveryFailed` would flip a correctly-resolved card back to a
+ * clickable/failed state, the exact P1 the retransmit loop exists to avoid.
  */
 export function handlePermissionDecisionResult(
   d: PermissionDraftSlice,
@@ -423,7 +430,7 @@ export function handlePermissionDecisionResult(
   const frameType = asString(payload.type);
   if (frameType !== "permission_decision") return;
   const deliveryStatus = asString(payload.status);
-  if (deliveryStatus === "sent") return;
+  if (deliveryStatus === "sent" || deliveryStatus === "already_decided") return;
   // Delivery failed — find the card by nonce and mark it retryable.
   const nonce = asString(payload.requestNonce);
   if (!nonce) return;

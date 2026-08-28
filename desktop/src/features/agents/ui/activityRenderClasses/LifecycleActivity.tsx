@@ -1,7 +1,10 @@
 import { AlertCircle, CheckCircle2, ShieldCheck, XCircle } from "lucide-react";
 import * as React from "react";
 
-import { sendPermissionDecision } from "@/shared/api/agentControl";
+import {
+  resolveDecisionDeadlineSecs,
+  startPermissionDecisionDelivery,
+} from "@/features/agents/lib/permissionDecisionDelivery";
 import { formatTranscriptTimestampTitle } from "../agentSessionUtils";
 import { ActivityRow, ActivityRowLabel } from "./ActivityRow";
 import { ToolActivity } from "./ToolActivity";
@@ -81,6 +84,7 @@ function PermissionDecisionButtons({
   options,
   requestNonce,
   deliveryFailed,
+  deadlineSecs,
 }: {
   agentPubkey: string;
   channelId: string;
@@ -92,6 +96,10 @@ function PermissionDecisionButtons({
    * boolean) ensures a second failure after a retry also re-enables buttons.
    */
   deliveryFailed?: number;
+  /**
+   * Effective expiry deadline (unix seconds) bounding the retransmit loop.
+   */
+  deadlineSecs: number;
 }) {
   const [pending, setPending] = React.useState<string | null>(null);
 
@@ -138,14 +146,16 @@ function PermissionDecisionButtons({
             disabled={pending !== null}
             onClick={() => {
               setPending(optionId);
-              void sendPermissionDecision(
+              void startPermissionDecisionDelivery({
                 agentPubkey,
                 channelId,
                 requestNonce,
                 optionId,
-              ).catch(() => {
-                // Relay rejected the send. Re-enable so the user can retry;
-                // the harness's 300 s fail-closed timeout handles permanent loss.
+                deadlineSecs,
+              }).catch(() => {
+                // First send rejected by the relay. Re-enable so the user can
+                // retry; the harness's 300 s fail-closed timeout handles
+                // permanent loss.
                 setPending(null);
               });
             }}
@@ -222,6 +232,11 @@ export function LifecycleActivity(props: ActivityRenderClassItemProps) {
             options={options}
             requestNonce={requestNonce}
             deliveryFailed={deliveryFailed}
+            deadlineSecs={resolveDecisionDeadlineSecs(
+              props.item.expiresAt,
+              props.item.timestamp,
+              Date.now() / 1000,
+            )}
           />
         ) : null}
         {/* Row 5: decision — only when outcome is resolved */}

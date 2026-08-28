@@ -1107,7 +1107,13 @@ async fn publish_relay_observer_event(
 }
 
 /// Maximum age (seconds) for an observer control frame to be considered fresh.
-const OBSERVER_CONTROL_FRESHNESS_SECS: i64 = 300;
+///
+/// Doubles as the observer-control subscription lookback (see
+/// [`crate::relay::build_observer_control_req`]): one constant drives both the
+/// admission window and the resubscribe `since` so they cannot drift. A frame
+/// signed just before a reconnect resubscribe stays inside both windows, and a
+/// retransmitted copy sent while the socket was down lands after reconnect.
+pub(crate) const OBSERVER_CONTROL_FRESHNESS_SECS: i64 = 300;
 
 fn handle_relay_observer_control_event(
     keys: &nostr::Keys,
@@ -1492,52 +1498,95 @@ fn handle_permission_decision_control(
         option_id: option_id.to_string(),
     };
 
-    // Find the in-flight task for this channel and deliver via its mpsc.
-    let entry = pool
-        .task_map_mut()
-        .values_mut()
-        .find(|m| m.channel_id == Some(channel_id));
+    // Deliver via the in-flight task's mpsc if one exists for this channel.
+    // Compute the send result in a scope that releases the task_map borrow
+    // before we touch the pool-level recently-decided set.
+    enum Delivery {
+        Sent,
+        Full,
+        Closed,
+        NoChannel,
+        NoTask,
+    }
+    let delivery = {
+        let entry = pool
+            .task_map_mut()
+            .values_mut()
+            .find(|m| m.channel_id == Some(channel_id));
+        match entry {
+            Some(meta) => match &meta.permission_decision_tx {
+                Some(tx) => match tx.try_send(decision) {
+                    Ok(()) => Delivery::Sent,
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Delivery::Full,
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Delivery::Closed,
+                },
+                None => Delivery::NoChannel,
+            },
+            None => Delivery::NoTask,
+        }
+    };
 
-    let status = if let Some(meta) = entry {
-        if let Some(tx) = &meta.permission_decision_tx {
-            match tx.try_send(decision) {
-                Ok(()) => {
-                    tracing::info!(
-                        channel = %channel_id,
-                        nonce = %request_nonce,
-                        option_id = %option_id,
-                        "permission_decision delivered to read loop"
-                    );
-                    "sent"
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(
-                        channel = %channel_id,
-                        "permission_decision channel full — dropping (will timeout)"
-                    );
-                    "channel_full"
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    tracing::warn!(
-                        channel = %channel_id,
-                        "permission_decision channel closed — read loop already exited"
-                    );
-                    "channel_closed"
-                }
+    let status = match delivery {
+        Delivery::Sent => {
+            tracing::info!(
+                channel = %channel_id,
+                nonce = %request_nonce,
+                option_id = %option_id,
+                "permission_decision delivered to read loop"
+            );
+            // Record the nonce so a later retransmit that arrives after this
+            // task ends is recognized as an already-applied duplicate rather
+            // than a delivery failure.
+            pool.record_permission_decision(request_nonce);
+            "sent"
+        }
+        Delivery::Full => {
+            tracing::warn!(
+                channel = %channel_id,
+                "permission_decision channel full — dropping (will timeout)"
+            );
+            "channel_full"
+        }
+        Delivery::Closed => {
+            tracing::warn!(
+                channel = %channel_id,
+                "permission_decision channel closed — read loop already exited"
+            );
+            // The read loop that owned this decision has exited. If we already
+            // forwarded this nonce, the decision was applied and this is a late
+            // retransmit — ack it success-shaped.
+            if pool.was_recently_decided(request_nonce) {
+                "already_decided"
+            } else {
+                "channel_closed"
             }
-        } else {
+        }
+        Delivery::NoChannel => {
             tracing::warn!(
                 channel = %channel_id,
                 "permission_decision_tx not installed for in-flight task"
             );
             "no_channel"
         }
-    } else {
-        tracing::warn!(
-            channel = %channel_id,
-            "permission_decision control frame for channel with no in-flight task"
-        );
-        "no_active_turn"
+        Delivery::NoTask => {
+            // No in-flight task. If this nonce was already delivered and applied
+            // by a task that has since returned, a retransmit landing after the
+            // card resolved must not flip it to failed — ack it success-shaped.
+            if pool.was_recently_decided(request_nonce) {
+                tracing::debug!(
+                    channel = %channel_id,
+                    nonce = %request_nonce,
+                    "permission_decision retransmit for an already-decided nonce — acking success-shaped"
+                );
+                "already_decided"
+            } else {
+                tracing::warn!(
+                    channel = %channel_id,
+                    "permission_decision control frame for channel with no in-flight task"
+                );
+                "no_active_turn"
+            }
+        }
     };
 
     if let Some(observer) = observer {
@@ -8776,6 +8825,159 @@ mod error_outcome_emission_tests {
 }
 
 #[cfg(test)]
+mod permission_decision_control_tests {
+    //! Pins the A2 inbound-delivery dedup: a `permission_decision` control
+    //! frame is forwarded to the in-flight task's mpsc exactly once; a later
+    //! retransmit of the same nonce that lands after the deciding task has
+    //! ended is acked success-shaped (`already_decided`) rather than failing
+    //! the already-resolved card with `no_active_turn` / `channel_closed`.
+
+    use super::*;
+    use crate::observer::ObserverHandle;
+    use crate::pool::{AgentPool, TaskMeta};
+    use std::collections::HashSet;
+
+    fn decision_payload(channel_id: Uuid, nonce: &str) -> serde_json::Value {
+        serde_json::json!({
+            "channelId": channel_id.to_string(),
+            "requestNonce": nonce,
+            "optionId": "opt-allow",
+        })
+    }
+
+    /// Install an in-flight task for `channel_id` carrying a permission mpsc,
+    /// returning the receiver so the test can observe delivery.
+    fn install_task(
+        pool: &mut AgentPool,
+        channel_id: Uuid,
+    ) -> tokio::sync::mpsc::Receiver<crate::acp::PermissionDecision> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let task_id = pool.join_set.spawn(async {}).id();
+        pool.task_map_mut().insert(
+            task_id,
+            TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                turn_id: "test-turn".into(),
+                recoverable_batch: None,
+                control_tx: None,
+                steer_tx: None,
+                permission_decision_tx: Some(tx),
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        rx
+    }
+
+    /// Drain the observer for the single `control_result` status string.
+    fn control_result_status(
+        rx: &mut tokio::sync::broadcast::Receiver<observer::ObserverEvent>,
+    ) -> String {
+        loop {
+            let event = rx.try_recv().expect("a control_result event was emitted");
+            if event.kind == "control_result" {
+                return event.payload["status"].as_str().unwrap().to_string();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_is_delivered_once_then_retransmit_is_already_decided() {
+        let observer = ObserverHandle::in_process();
+        let mut rx_obs = observer.subscribe();
+        let channel_id = Uuid::new_v4();
+        let nonce = "nonce-live";
+
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let mut rx_task = install_task(&mut pool, channel_id);
+
+        // (a) First delivery reaches the read loop's mpsc and records the nonce.
+        handle_permission_decision_control(
+            &decision_payload(channel_id, nonce),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(control_result_status(&mut rx_obs), "sent");
+        let delivered = rx_task.try_recv().expect("decision delivered to read loop");
+        assert_eq!(delivered.request_nonce, nonce);
+        assert_eq!(delivered.option_id, "opt-allow");
+
+        // (b) The deciding task ends: drop its mpsc and remove it from the map,
+        // exactly as `handle_prompt_result` would on turn completion.
+        drop(rx_task);
+        pool.task_map_mut().clear();
+
+        // (c) A retransmit of the same nonce lands with no in-flight task. It
+        // must be recognized as an already-applied duplicate.
+        handle_permission_decision_control(
+            &decision_payload(channel_id, nonce),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(
+            control_result_status(&mut rx_obs),
+            "already_decided",
+            "retransmit after the task ended must ack success-shaped, not fail the resolved card"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_nonce_with_no_task_is_no_active_turn() {
+        // Mutation guard: without the recently-decided record, a decision for a
+        // channel with no in-flight task falls through to `no_active_turn`.
+        // This is what a retransmit of a *never-delivered* nonce must still get,
+        // and what the `already_decided` path above would collapse into if
+        // `was_recently_decided` were stubbed to always-false.
+        let observer = ObserverHandle::in_process();
+        let mut rx_obs = observer.subscribe();
+        let channel_id = Uuid::new_v4();
+
+        let mut pool = AgentPool::from_slots(vec![None]);
+        handle_permission_decision_control(
+            &decision_payload(channel_id, "never-seen"),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(control_result_status(&mut rx_obs), "no_active_turn");
+    }
+
+    #[tokio::test]
+    async fn closed_channel_for_decided_nonce_is_already_decided() {
+        // The read loop is still in the task map but its receiver was dropped
+        // (loop exited mid-turn). A retransmit of an already-delivered nonce on
+        // that closed channel must ack `already_decided`, not `channel_closed`.
+        let observer = ObserverHandle::in_process();
+        let mut rx_obs = observer.subscribe();
+        let channel_id = Uuid::new_v4();
+        let nonce = "nonce-closed";
+
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let rx_task = install_task(&mut pool, channel_id);
+
+        handle_permission_decision_control(
+            &decision_payload(channel_id, nonce),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(control_result_status(&mut rx_obs), "sent");
+
+        // Read loop exits: its receiver drops, but the task_map entry (with the
+        // now-closed sender) is still present.
+        drop(rx_task);
+        handle_permission_decision_control(
+            &decision_payload(channel_id, nonce),
+            &mut pool,
+            Some(&observer),
+        );
+        assert_eq!(
+            control_result_status(&mut rx_obs),
+            "already_decided",
+            "closed channel for an already-delivered nonce acks success-shaped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod observer_payload_trim_tests {
     use super::*;
 
@@ -9039,6 +9241,7 @@ mod observer_payload_trim_tests {
             request_nonce: "test-nonce".to_string(),
             actionable: true,
             reason: None,
+            expires_at: None,
         });
 
         let payload_before = event.payload.clone();

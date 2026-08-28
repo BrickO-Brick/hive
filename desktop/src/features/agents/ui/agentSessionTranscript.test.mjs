@@ -2133,7 +2133,13 @@ function makePermissionRequestWithAuth(
   seq,
   requestId,
   nonce,
-  { actionable = true, reason, turnId = "turn-1", channelId = "ch-1" } = {},
+  {
+    actionable = true,
+    reason,
+    expiresAt,
+    turnId = "turn-1",
+    channelId = "ch-1",
+  } = {},
 ) {
   return {
     seq,
@@ -2156,9 +2162,24 @@ function makePermissionRequestWithAuth(
         ],
       },
     },
-    authorization: { requestNonce: nonce, actionable, reason },
+    authorization: { requestNonce: nonce, actionable, reason, expiresAt },
   };
 }
+
+test("buildTranscript_carries_authorization_expiresAt_onto_the_card", () => {
+  // The envelope's expiresAt must reach the transcript item so the observer-
+  // feed card can bound its retransmit loop by the real card deadline.
+  const transcript = buildTranscript([
+    makePermissionRequestWithAuth(1, "req-exp", "nonce-exp", {
+      expiresAt: 1_700_000_300,
+    }),
+  ]);
+  const card = transcript.find(
+    (i) => i.renderClass === "permission" && i.requestNonce === "nonce-exp",
+  );
+  assert.ok(card, "permission card must exist");
+  assert.equal(card.expiresAt, 1_700_000_300);
+});
 
 test("buildTranscript_nonce_keyed_card_is_actionable_with_options", () => {
   // An acp_read with an authorization envelope should produce one card
@@ -2438,6 +2459,43 @@ test("buildTranscript_control_result_sent_does_not_mark_delivery_failed", () => 
     card.deliveryFailed,
     undefined,
     "deliveryFailed must not be set on sent control_result",
+  );
+});
+
+test("buildTranscript_control_result_already_decided_does_not_mark_delivery_failed", () => {
+  // `already_decided` is success: a retransmit matched a nonce the harness had
+  // already applied (the deciding task ended). It must NOT set deliveryFailed —
+  // failing a correctly-resolved card is the exact P1 the retransmit loop and
+  // this dedup exist to prevent.
+  const nonce = "nonce-already-decided";
+  const events = [
+    makePermissionRequestWithAuth(1, "req-ad", nonce),
+    {
+      seq: 2,
+      timestamp: "2026-07-01T10:00:01.000Z",
+      kind: "control_result",
+      agentIndex: 0,
+      channelId: "ch-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      payload: {
+        type: "permission_decision",
+        status: "already_decided",
+        requestNonce: nonce,
+        optionId: "allow_once",
+      },
+    },
+  ];
+  const transcript = buildTranscript(events);
+
+  const card = transcript.find(
+    (i) => i.renderClass === "permission" && i.requestNonce === nonce,
+  );
+  assert.ok(card, "permission card must exist");
+  assert.equal(
+    card.deliveryFailed,
+    undefined,
+    "deliveryFailed must not be set on already_decided control_result",
   );
 });
 

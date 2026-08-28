@@ -1385,6 +1385,7 @@ impl AcpClient {
                             request_nonce: entry.nonce.clone(),
                             actionable: false,
                             reason: Some("uncertain".to_string()),
+                            expires_at: None,
                         },
                         serde_json::json!({ "id": req_id_str }),
                     );
@@ -1555,6 +1556,7 @@ impl AcpClient {
                         request_nonce: nonce.to_string(),
                         actionable: false,
                         reason: Some(reason.to_string()),
+                        expires_at: None,
                     },
                     response.clone(),
                 );
@@ -1673,6 +1675,7 @@ impl AcpClient {
                         request_nonce: nonce.to_string(),
                         actionable: false,
                         reason: Some("uncertain".to_string()),
+                        expires_at: None,
                     },
                     serde_json::json!({ "id": id_val }),
                 );
@@ -1709,6 +1712,7 @@ impl AcpClient {
                         request_nonce: nonce.to_string(),
                         actionable: false,
                         reason: Some(reason.to_string()),
+                        expires_at: None,
                     },
                     response,
                 );
@@ -3334,24 +3338,14 @@ impl AcpClient {
                     }
                 };
 
-                // Emit the single enveloped acp_read — suppresses the caller's
-                // generic emit via the Ok(true) return.
-                self.observe_authorized(
-                    "acp_read",
-                    AuthorizationEnvelope {
-                        request_nonce: nonce.clone(),
-                        actionable: true,
-                        reason: None,
-                    },
-                    msg.clone(),
-                );
-
                 // Per-request deadline: min(now + 300s, turn hard deadline).
                 let ask_deadline = tokio::time::Instant::now()
                     + std::time::Duration::from_secs(PERMISSION_ASK_TIMEOUT_SECS);
                 let entry_deadline = ask_deadline.min(hard_deadline);
-                // Compute and store expiry_unix_secs once — both the pending and
-                // resolved payloads reuse this value (no recompute drift).
+                // Compute and store expiry_unix_secs once — the envelope, the
+                // pending payload, and the resolved payload all reuse this value
+                // (no recompute drift). The desktop bounds its
+                // retransmit-until-acked loop by the envelope's copy.
                 let expiry_unix_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -3360,6 +3354,19 @@ impl AcpClient {
                         .checked_duration_since(tokio::time::Instant::now())
                         .unwrap_or_default()
                         .as_secs();
+
+                // Emit the single enveloped acp_read — suppresses the caller's
+                // generic emit via the Ok(true) return.
+                self.observe_authorized(
+                    "acp_read",
+                    AuthorizationEnvelope {
+                        request_nonce: nonce.clone(),
+                        actionable: true,
+                        reason: None,
+                        expires_at: Some(expiry_unix_secs),
+                    },
+                    msg.clone(),
+                );
 
                 // Build and sign the kind-9 sentinel event ONCE before inserting
                 // the entry — the resolved edit retransmits the same signed event
@@ -3519,6 +3526,7 @@ impl AcpClient {
                 request_nonce: nonce.to_string(),
                 actionable: false,
                 reason: Some(reason.to_string()),
+                expires_at: None,
             },
             msg.clone(),
         );
@@ -3526,6 +3534,11 @@ impl AcpClient {
     }
 
     /// Emit an `acp_read` with an authorization envelope.
+    ///
+    /// Only ever called with `actionable: false` (fail-closed / auto-deny
+    /// paths); the single actionable emit builds its envelope inline with the
+    /// card expiry. `expires_at` is therefore always `None` here — no owner
+    /// decision is awaited on these frames.
     fn emit_permission_read_with_nonce(
         &self,
         _id: &serde_json::Value,
@@ -3540,6 +3553,7 @@ impl AcpClient {
                 request_nonce: nonce.to_string(),
                 actionable,
                 reason: reason.map(str::to_string),
+                expires_at: None,
             },
             msg.clone(),
         );
@@ -4238,6 +4252,7 @@ fn run_admission_preflight(
             request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
             actionable: true,
             reason: None,
+            expires_at: None,
         }),
         payload: msg.clone(),
     };
@@ -7857,6 +7872,7 @@ mod tests {
                 request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
                 actionable: true,
                 reason: None,
+                expires_at: None,
             }),
             payload: msg.clone(),
         };

@@ -20,6 +20,14 @@ export type ObserverEvent = {
     requestNonce: string;
     actionable: boolean;
     reason?: string;
+    /**
+     * Wire card-expiry (unix seconds) for an actionable card. Bounds the
+     * desktop's retransmit-until-acked loop so a decision published while the
+     * harness socket is down is resent until the card expires, never past it.
+     * Absent on non-actionable frames and on archived/pre-upgrade frames signed
+     * before this field existed.
+     */
+    expiresAt?: number;
   };
 };
 
@@ -130,6 +138,13 @@ export type TranscriptItem =
        * incoming `control_result` frames back to this card.
        */
       requestNonce?: string;
+      /**
+       * Wire card-expiry (unix seconds) from the `authorization` envelope on an
+       * actionable `acp_read` permission frame. Bounds the observer-feed card's
+       * retransmit-until-acked loop. Absent on read-only cards and on
+       * archived/pre-upgrade frames.
+       */
+      expiresAt?: number;
       /**
        * When `true`, this card is waiting for a user Allow/Deny decision.
        * `false` (or absent) means the card is read-only (auto-handled, or the

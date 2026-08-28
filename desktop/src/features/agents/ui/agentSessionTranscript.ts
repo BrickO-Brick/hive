@@ -773,6 +773,7 @@ export function processTranscriptEvent(
             requestNonce: auth.requestNonce,
             actionable: auth.actionable,
             authorizationReason: auth.reason,
+            expiresAt: auth.expiresAt,
             options: request.options,
           });
         }

@@ -3738,20 +3738,38 @@ async fn send_membership_subscribe(
     }
 }
 
-/// Send a NIP-01 REQ for owner-to-agent observer control frames.
-async fn send_observer_control_subscribe(ws: &mut WsStream, agent_pubkey_hex: &str) -> bool {
-    let req = json!([
+/// Build the NIP-01 REQ for owner-to-agent observer control frames.
+///
+/// The subscription looks back `OBSERVER_CONTROL_FRESHNESS_SECS` (the same
+/// constant the admission window uses) rather than starting at `now`. Kind-24200
+/// control frames are ephemeral — the relay never stores them, so there is no
+/// server-side replay — but the relay's live fan-out filters by
+/// `created_at >= since`. A `since = now` sub therefore drops a decision that
+/// reaches the relay moments after resubscribe but was signed moments before,
+/// and drops a retransmitted copy whose `created_at` predates the reconnect.
+/// The freshness-width lookback closes that race and lets the desktop's
+/// retransmit land after a reconnect, while the admission window still rejects
+/// anything genuinely stale.
+fn build_observer_control_req(agent_pubkey_hex: &str, now_secs: u64) -> Value {
+    let since = now_secs.saturating_sub(crate::OBSERVER_CONTROL_FRESHNESS_SECS as u64);
+    json!([
         "REQ",
         OBSERVER_CONTROL_SUB_ID,
         {
             "kinds": [KIND_AGENT_OBSERVER_FRAME],
             "#p": [agent_pubkey_hex],
-            "since": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            "since": since,
         }
-    ]);
+    ])
+}
+
+/// Send a NIP-01 REQ for owner-to-agent observer control frames.
+async fn send_observer_control_subscribe(ws: &mut WsStream, agent_pubkey_hex: &str) -> bool {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let req = build_observer_control_req(agent_pubkey_hex, now_secs);
 
     match serde_json::to_string(&req) {
         Ok(text) => {
@@ -4463,6 +4481,41 @@ async fn wait_for_any_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observer_control_req_looks_back_one_freshness_window() {
+        // The subscription `since` must be `now - OBSERVER_CONTROL_FRESHNESS_SECS`,
+        // not `now`. A `since = now` sub drops a decision that reaches the relay
+        // moments after resubscribe but was signed just before, and drops a
+        // retransmitted copy whose `created_at` predates the reconnect.
+        let now: u64 = 1_700_000_000;
+        let req = build_observer_control_req("agentpk", now);
+        let since = req[2]["since"].as_u64().expect("since is a u64");
+        assert_eq!(
+            since,
+            now - crate::OBSERVER_CONTROL_FRESHNESS_SECS as u64,
+            "since must look back exactly one freshness window"
+        );
+        // Mutation guard: a `since = now` builder would fail this.
+        assert_ne!(since, now, "since must not start at now");
+        // Filter shape is otherwise unchanged.
+        assert_eq!(req[0], "REQ");
+        assert_eq!(req[1], OBSERVER_CONTROL_SUB_ID);
+        assert_eq!(
+            req[2]["kinds"],
+            serde_json::json!([KIND_AGENT_OBSERVER_FRAME])
+        );
+        assert_eq!(req[2]["#p"], serde_json::json!(["agentpk"]));
+    }
+
+    #[test]
+    fn observer_control_req_saturates_at_epoch() {
+        // A clock reading below the freshness window must not underflow; the
+        // lookback saturates to 0 rather than wrapping to a huge `since` that
+        // would filter out every live frame.
+        let req = build_observer_control_req("agentpk", 10);
+        assert_eq!(req[2]["since"].as_u64(), Some(0));
+    }
 
     #[test]
     fn relay_ws_to_http_plain() {

@@ -23,7 +23,7 @@
 import * as React from "react";
 import { ShieldCheck } from "lucide-react";
 
-import { sendPermissionDecision } from "@/shared/api/agentControl";
+import { startPermissionDecisionDelivery } from "@/features/agents/lib/permissionDecisionDelivery";
 import { cn } from "@/shared/lib/cn";
 import {
   Attachment,
@@ -138,13 +138,16 @@ function PermissionButtons({
                 // decision on a card that expired between renders.
                 if (request.expiresAt <= Date.now() / 1000) return;
                 setSubmitted(optionId);
-                void sendPermissionDecision(
+                void startPermissionDecisionDelivery({
                   agentPubkey,
                   channelId,
-                  request.requestNonce,
+                  requestNonce: request.requestNonce,
                   optionId,
-                ).catch(() => {
-                  // Relay rejected the send. Re-enable so the user can retry.
+                  deadlineSecs: request.expiresAt,
+                }).catch(() => {
+                  // First send rejected by the relay. Re-enable so the user
+                  // can retry; the retransmit loop only starts once the send
+                  // resolves.
                   setSubmitted(null);
                 });
               }}

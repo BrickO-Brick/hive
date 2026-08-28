@@ -47,6 +47,14 @@ pub struct AuthorizationEnvelope {
     /// Human-readable reason when `actionable` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Wire card-expiry (unix seconds) for an actionable card — the same value
+    /// stored in the kind-9 sentinel. The desktop bounds its
+    /// retransmit-until-acked loop by this deadline, so a decision published
+    /// while the harness socket is down keeps being resent until the card
+    /// expires (never past it). `None` on non-actionable / already-resolved
+    /// frames, where no owner decision is awaited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 /// Handle used by the harness to publish local observer events.
