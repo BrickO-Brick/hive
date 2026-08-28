@@ -702,3 +702,34 @@ test("readChannelStarsStore: a legacy delete that does not take rolls back and r
   assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
   assert.equal(window.localStorage.getItem(legacyKey), null);
 });
+
+test("readChannelStarsStore: legacy delete + rollback both throw — every read returns DEFAULT until storage recovers, never seeds", () => {
+  const pubkey = "pk-star-migrate-delrollbackthrow";
+  const relay = "wss://relay-delrollbackthrow.example.com";
+  const legacy = makeStarStore({ chr: STAR_E(true, 900, 4) });
+  writeChannelStarsStore(pubkey, legacy);
+  const legacyKey = storageKey(pubkey);
+  const scoped = storageKey(pubkey, relay);
+  const origRemove = window.localStorage.removeItem;
+  // removeItem throws globally: the legacy delete AND the scoped rollback both
+  // throw, so a scoped copy the migration wrote survives on disk.
+  window.localStorage.removeItem = () => {
+    throw new Error("SecurityError");
+  };
+  try {
+    // First read: scoped write took, legacy delete threw, rollback threw.
+    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
+    // A stuck scoped copy survives, but the reader must NOT expose it while the
+    // legacy key still holds importable data — the seam Thufir found.
+    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
+    // Legacy key is intact, so the claim stays retryable rather than lost.
+    assert.notEqual(window.localStorage.getItem(legacyKey), null);
+  } finally {
+    window.localStorage.removeItem = origRemove;
+  }
+  // Storage recovers: the next read finishes the claim from the stuck scoped
+  // copy, deletes the legacy key, and only then exposes the value.
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
+  assert.equal(window.localStorage.getItem(legacyKey), null);
+  assert.notEqual(window.localStorage.getItem(scoped), null);
+});

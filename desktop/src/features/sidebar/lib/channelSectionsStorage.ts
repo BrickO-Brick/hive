@@ -141,22 +141,26 @@ function parseRaw(raw: string | null): ChannelSectionStore | null {
 /**
  * Read the section store for `pubkey` scoped to `relayUrl`.
  *
- * On first access for a scoped key, migrates any existing data from the legacy
- * pubkey-only key so users don't lose their sections on upgrade. Migrated data
- * is exposed to the caller (and thus to publish) ONLY once the legacy key is
- * provably gone: we write the scoped key, delete the legacy key, and confirm
- * the delete took. On any write/delete failure we roll back the partial scoped
- * copy and return `DEFAULT_STORE`, leaving the migration safely retryable — so
- * legacy sections can never be exposed while still importable by a second
- * relay, which would let relay A's sections seed-publish onto relay B (Carl P1).
+ * Enforces one invariant on every read: a scoped copy is exposed only while no
+ * importable legacy (pubkey-only) key remains. If a non-empty legacy key still
+ * exists — whether because this is the first scoped read or because a prior
+ * migration wrote the scoped copy but could not delete the legacy key — we
+ * finish the claim inline: write the scoped copy if absent, delete the legacy
+ * key, and expose the value only once that delete provably took. On any storage
+ * failure we return `DEFAULT_STORE`, which cannot seed-publish (bootstrap gates
+ * on a non-empty local store), leaving the claim to complete on a later read
+ * once storage recovers. This makes "scoped data is owned only when the legacy
+ * key is gone" a property the reader proves every read, not a promise a
+ * one-shot migration hopes to keep under failing storage — so relay A's
+ * sections can never seed-publish onto a first-visited relay B (Carl P1).
  *
- * This makes the migration first-scope-only, not merely "usually deletes
- * afterward." Concurrent claimants are safe: every window (main and huddle)
- * resolves the same app-wide active community (`buzz-active-community-id`), so
- * at any instant they scope to the same relay and any race migrates the
- * identical legacy value to the identical scoped key (idempotent). A second
- * relay only enters play after a community switch, which happens strictly after
- * the first scoped read consumed the legacy key.
+ * Concurrent windows are safe without an atomic claim. Each window (main and
+ * huddle) takes its scope from the app-wide active community at mount, so the
+ * first scoped read for a live legacy key runs before any second relay scope
+ * can exist; that read either claims the legacy key or hits the failure path
+ * above. A race migrates the identical legacy value to the identical scoped key
+ * (idempotent), and the loser's post-delete confirmation fails and exposes
+ * `DEFAULT_STORE`.
  */
 export function readChannelSectionsStore(
   pubkey: string,
@@ -164,57 +168,59 @@ export function readChannelSectionsStore(
 ): ChannelSectionStore {
   try {
     const key = storageKey(pubkey, relayUrl);
-    const raw = window.localStorage.getItem(key);
+    const scoped = parseRaw(window.localStorage.getItem(key));
 
-    // Scoped key already has data — use it directly.
-    if (raw !== null) {
-      return parseRaw(raw) ?? DEFAULT_STORE;
-    }
+    // Unscoped read: the key IS the legacy key, so there is nothing to claim.
+    if (!relayUrl) return scoped ?? DEFAULT_STORE;
 
-    // No scoped data yet.  If we were given a relay scope, attempt a
-    // one-time migration from the legacy pubkey-only key.
-    if (relayUrl) {
-      const legacyKey = storageKey(pubkey);
-      const legacyRaw = window.localStorage.getItem(legacyKey);
-      const migrated = parseRaw(legacyRaw);
-      if (migrated && migrated.sections.length > 0) {
-        return migrateLegacyStore(key, legacyKey, migrated);
-      }
-    }
+    const legacyKey = storageKey(pubkey);
+    const legacy = parseRaw(window.localStorage.getItem(legacyKey));
+    const legacyHasData = legacy !== null && legacy.sections.length > 0;
 
-    return DEFAULT_STORE;
+    // No importable legacy value remains — an existing scoped copy is proven
+    // owned. This short-circuits every read after a completed claim.
+    if (!legacyHasData) return scoped ?? DEFAULT_STORE;
+
+    // A consumable legacy key still coexists with (or would seed) the scoped
+    // key; neither is safe to expose until that legacy key is provably gone.
+    return claimLegacy(key, legacyKey, scoped ?? legacy, scoped !== null);
   } catch {
     return DEFAULT_STORE;
   }
 }
 
 /**
- * Claim the legacy value for the scoped key: persist it, delete the legacy key,
- * and expose it only if the legacy key is confirmed gone. Any failure rolls
- * back the partial scoped copy and returns `DEFAULT_STORE` so the migration is
- * retryable and no relay imports legacy data the legacy key still holds.
+ * Enforce the ownership invariant: expose `owned` only once the legacy key is
+ * provably gone. Write the scoped copy when it is not already present, delete
+ * the legacy key, and confirm the delete took. On any failure return
+ * `DEFAULT_STORE`, rolling back only a scoped copy WE just wrote — never a
+ * pre-existing one, whose deletion could itself throw and lose owned data. An
+ * unproven copy is thus never exposed while the legacy key can still be
+ * imported by another relay; the next read re-attempts once storage recovers.
  */
-function migrateLegacyStore(
+function claimLegacy(
   key: string,
   legacyKey: string,
-  migrated: ChannelSectionStore,
+  owned: ChannelSectionStore,
+  scopedExists: boolean,
 ): ChannelSectionStore {
   try {
-    window.localStorage.setItem(key, JSON.stringify(migrated));
+    if (!scopedExists) window.localStorage.setItem(key, JSON.stringify(owned));
     window.localStorage.removeItem(legacyKey);
     if (window.localStorage.getItem(legacyKey) !== null) {
       // Delete did not take — do not expose data another relay could import.
-      window.localStorage.removeItem(key);
+      if (!scopedExists) window.localStorage.removeItem(key);
       return DEFAULT_STORE;
     }
-    return migrated;
+    return owned;
   } catch {
-    // Scoped write or legacy delete threw — roll back the partial scoped copy
-    // so the scoped key stays empty and the migration can retry later.
-    try {
-      window.localStorage.removeItem(key);
-    } catch {
-      // Best effort; a stuck partial copy self-heals on the next read.
+    if (!scopedExists) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        // Best effort. A stuck scoped copy is re-exposed only by a future read
+        // that proves the legacy key gone, so it can never seed early.
+      }
     }
     return DEFAULT_STORE;
   }
