@@ -552,6 +552,13 @@ test("an ACP-only edit publishes the selected transport", async ({ page }) => {
   expect(
     personas.find((persona) => persona.id === personaId)?.acp_command,
   ).toBe("buzz-janet-acp");
+  const publications = await invokeTauri<
+    Array<{ sourcePersonaId: string; agent: { acpCommand?: string } }>
+  >(page, "fetch_persona_catalog");
+  expect(
+    publications.find((entry) => entry.sourcePersonaId === personaId)?.agent
+      .acpCommand,
+  ).toBe("buzz-janet-acp");
 });
 
 test("the new team card offers create and import", async ({ page }) => {
