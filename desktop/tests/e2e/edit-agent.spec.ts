@@ -402,12 +402,11 @@ test.describe("edit agent dialog", () => {
     });
   });
 
-  test("profile Edit opens the instance editor for a persona-linked agent", async ({
+  test("profile Edit opens the persona editor for a persona-linked agent", async ({
     page,
   }) => {
-    // The profile belongs to the deployed agent instance. Its Edit action must
-    // open the instance editor so instance-owned settings such as ACP command
-    // remain reachable; the linked definition is available from that dialog.
+    // A persona-linked agent inherits ACP transport from its definition, so the
+    // profile Edit action must open the persona editor.
     await installMockBridge(page, {
       managedAgents: [
         {
@@ -442,12 +441,12 @@ test.describe("edit agent dialog", () => {
     });
     await page.getByTestId("user-profile-edit-agent").click();
 
-    // Instance editor opens; the definition editor does not.
-    await expect(page.getByTestId("edit-agent-dialog")).toBeVisible({
+    // Persona editor opens with the definition-owned ACP command field.
+    await expect(page.getByTestId("persona-dialog")).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByTestId("persona-dialog")).not.toBeVisible();
-    await page.getByRole("button", { name: "Advanced", exact: true }).click();
-    await expect(page.locator("#edit-agent-acp-command")).toBeVisible();
+    await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
+    await page.getByRole("tab", { name: "Customize for this agent" }).click();
+    await expect(page.locator("#persona-acp-command")).toBeVisible();
   });
 });
