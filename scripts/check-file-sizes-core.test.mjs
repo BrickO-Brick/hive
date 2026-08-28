@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +38,12 @@ function git(repo, ...args) {
   }).trim();
 }
 
-function createEntrypointFixture({ surface, files, lineDelta = 1 }) {
+function createEntrypointFixture({
+  surface,
+  files,
+  lineDelta = 1,
+  symlinkEntrypoint = false,
+}) {
   const repo = realpathSync(
     mkdtempSync(path.join(tmpdir(), `file-size-${surface}-`)),
   );
@@ -71,7 +77,15 @@ function createEntrypointFixture({ surface, files, lineDelta = 1 }) {
     writeFileSync(governedFile, `${"line\n".repeat(lineCount - 1)}line`);
   }
 
-  const entrypointPath = path.join(surfaceScriptsDir, "check-file-sizes.mjs");
+  const realEntrypointPath = path.join(
+    surfaceScriptsDir,
+    "check-file-sizes.mjs",
+  );
+  let entrypointPath = realEntrypointPath;
+  if (symlinkEntrypoint) {
+    entrypointPath = path.join(repo, `${surface}-file-size-check.mjs`);
+    symlinkSync(realEntrypointPath, entrypointPath);
+  }
   const result = spawnSync(realpathSync(process.execPath), [entrypointPath], {
     cwd: repo,
     encoding: "utf8",
@@ -142,6 +156,26 @@ test("surface entrypoints execute every production rule", () => {
       assert.ok(
         result.stderr.includes(relativeFile),
         `${fixture.surface} should report ${relativeFile}: ${result.stderr}`,
+      );
+    }
+  }
+});
+
+test("surface entrypoints execute through symlinked paths", () => {
+  for (const fixture of entrypointCases) {
+    const { result, relativeFiles } = createEntrypointFixture({
+      ...fixture,
+      symlinkEntrypoint: true,
+    });
+    assert.equal(
+      result.status,
+      1,
+      `${fixture.surface} symlink should reject ceiling + 1: ${result.stderr || result.stdout}`,
+    );
+    for (const relativeFile of relativeFiles) {
+      assert.ok(
+        result.stderr.includes(relativeFile),
+        `${fixture.surface} symlink should report ${relativeFile}: ${result.stderr}`,
       );
     }
   }
