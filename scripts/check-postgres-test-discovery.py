@@ -12,6 +12,8 @@ IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*=")
 BARE_IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*\]")
 FUNCTION = re.compile(r"\b(?:async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 MODULE = re.compile(r"\bmod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+OUT_OF_LINE_MODULE = re.compile(r"\bmod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;")
+PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=\s*")
 EXTERNAL_INFRA = re.compile(r"\b(?:s3|minio|storage|docker|network)\b", re.IGNORECASE)
 RAW_STRING = re.compile(r'(?:b?r)(?P<hashes>#{0,255})"')
 CHAR_LITERAL = re.compile(r"(?:b)?'(?:\\(?:u\{[0-9A-Fa-f_]+\}|x[0-9A-Fa-f]{2}|.)|[^\\'\n])'")
@@ -174,10 +176,34 @@ def integration_binary_is_postgres(path: Path) -> bool:
     )
 
 
+def out_of_line_module_names(path: Path) -> list[str]:
+    """Return sibling module names whose explicit path resolves to path."""
+    names = []
+    resolved_path = path.resolve()
+    for parent_source in path.parent.glob("*.rs"):
+        if parent_source.resolve() == resolved_path:
+            continue
+        source = parent_source.read_text(encoding="utf-8")
+        sanitized = sanitize_rust(source)
+        for attribute in PATH_ATTRIBUTE.finditer(sanitized):
+            equals = source.find("=", attribute.start(), attribute.end())
+            parsed = parse_rust_string_literal(source, equals + 1)
+            if parsed is None:
+                continue
+            module_path, literal_end = parsed
+            if (parent_source.parent / module_path).resolve() != resolved_path:
+                continue
+            module = OUT_OF_LINE_MODULE.search(sanitized, literal_end)
+            if module is not None:
+                names.append(module.group("name"))
+    return names
+
+
 def file_has_postgres_lane_test(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     sanitized = sanitize_rust(source)
     ranges = module_ranges(source)
+    external_modules = out_of_line_module_names(path)
 
     for attribute_start, _attribute_end, reason in ignore_attributes(source, sanitized):
         reason_lower = reason.lower()
@@ -187,7 +213,7 @@ def file_has_postgres_lane_test(path: Path) -> bool:
             and not EXTERNAL_INFRA.search(reason)
             and not any(name.startswith("external_infra") for name in modules)
             and (
-                any(name.endswith("postgres_tests") for name in modules)
+                any(name.endswith("postgres_tests") for name in modules + external_modules)
                 or integration_binary_is_postgres(path)
             )
         ):
@@ -217,6 +243,7 @@ def validate_file(path: Path) -> list[str]:
     source = path.read_text(encoding="utf-8")
     sanitized = sanitize_rust(source)
     ranges = module_ranges(source)
+    external_modules = out_of_line_module_names(path)
     errors = []
 
     for match in BARE_IGNORE_ATTRIBUTE.finditer(sanitized):
@@ -226,7 +253,7 @@ def validate_file(path: Path) -> list[str]:
             continue
         modules = [name for start, end, name in ranges if start < match.start() < end]
         in_postgres_structure = (
-            any(name.endswith("postgres_tests") for name in modules)
+            any(name.endswith("postgres_tests") for name in modules + external_modules)
             or integration_binary_is_postgres(path)
         )
         if in_postgres_structure:
@@ -252,7 +279,7 @@ def validate_file(path: Path) -> list[str]:
             name for start, end, name in ranges if start < attribute_start < end
         ]
         in_postgres_lane = (
-            any(name.endswith("postgres_tests") for name in modules)
+            any(name.endswith("postgres_tests") for name in modules + external_modules)
             or integration_binary_is_postgres(path)
         )
         in_external_module = any(name.startswith("external_infra") for name in modules)

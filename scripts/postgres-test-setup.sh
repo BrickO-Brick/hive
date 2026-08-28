@@ -63,7 +63,7 @@ if ! "$workspace_root/bin/pgschema" apply \
   exit 1
 fi
 if ! "$psql" --dbname="$template_database" --set=ON_ERROR_STOP=1 \
-  --file="$workspace_root/scripts/attach-schema-partitions.sql" \
+  --file="$workspace_root/scripts/reconcile-schema-after-pgschema.sql" \
   >>"$schema_log" 2>&1; then
   cat "$schema_log" >&2
   exit 1

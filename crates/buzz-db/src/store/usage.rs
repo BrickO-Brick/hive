@@ -495,7 +495,7 @@ mod postgres_tests {
             .execute(admin)
             .await
             .expect("create scratch db");
-        let base = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+        let base = crate::test_support::database_url();
         let idx = base.rfind('/').expect("db url has a path segment");
         let scratch_url = format!("{}/{}", &base[..idx], name);
         let pool = PgPool::connect(&scratch_url)
@@ -523,7 +523,7 @@ mod postgres_tests {
         // Postgres advisory locks are per-database; hardcoding the production
         // USAGE_METRICS_LOCK_KEY (0x4255_5A5A_4D45_5452) on the shared test DB
         // races any live buzz-relay on the same database (see #3619).
-        let admin_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+        let admin_url = crate::test_support::database_url();
         let admin = PgPoolOptions::new()
             .max_connections(1)
             .connect(&admin_url)

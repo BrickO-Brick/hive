@@ -2759,7 +2759,7 @@ mod postgres_tests {
     }
 
     async fn admin_url() -> String {
-        std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into())
+        crate::test_support::database_url()
     }
 
     /// Create a fresh scratch database on the same server and optionally run migrations.

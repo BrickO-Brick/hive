@@ -36,6 +36,18 @@ cat >"$fixture_root/tests/postgres_search.rs" <<'RS'
 fn integration_database_test() {}
 RS
 
+cat >"$fixture_root/src/lib.rs" <<'RS'
+#[cfg(test)]
+#[path = "out_of_line.rs"]
+mod postgres_tests;
+RS
+
+cat >"$fixture_root/src/out_of_line.rs" <<'RS'
+#[test]
+#[ignore = "requires PostgreSQL"]
+fn out_of_line_database_test() {}
+RS
+
 python3 "$checker" "$fixture_root"
 
 packages="$("$repo_root/scripts/postgres-test-packages.sh" "$fixture_root")"

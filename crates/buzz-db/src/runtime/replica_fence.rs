@@ -1110,7 +1110,7 @@ mod postgres_tests {
     /// same database observes a token/epoch that resolves that entry.
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn probe_commits_tokens_and_sessions_prove_coverage() {
+    async fn cluster_global_probe_commits_tokens_and_sessions_prove_coverage() {
         let (admin, pool, name) = scratch_db().await;
         let fence = ReplicaFence::new();
 
@@ -1165,7 +1165,7 @@ mod postgres_tests {
     /// epoch — fails the epoch check instead of proving stale coverage.
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn probe_rotates_epoch_on_same_epoch_token_regression() {
+    async fn cluster_global_probe_rotates_epoch_on_same_epoch_token_regression() {
         let (admin, pool, name) = scratch_db().await;
         let fence = ReplicaFence::new();
 
