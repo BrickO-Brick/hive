@@ -61,7 +61,6 @@ CREATE TABLE identity_enrollment_policies (
     expires_at TIMESTAMPTZ,
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
     PRIMARY KEY (community_id, policy_revision),
-    UNIQUE (community_id, policy_revision, enrollment_mode),
     CHECK (expires_at IS NULL OR effective_at < expires_at)
 );
 
@@ -103,9 +102,9 @@ CREATE TABLE identity_bindings (
     PRIMARY KEY (community_id, binding_id),
     UNIQUE (community_id, binding_version),
     UNIQUE (community_id, binding_id, binding_version),
-    FOREIGN KEY (community_id, policy_revision, binding_provenance)
+    FOREIGN KEY (community_id, policy_revision)
         REFERENCES identity_enrollment_policies
-            (community_id, policy_revision, enrollment_mode),
+            (community_id, policy_revision),
     CHECK (binding_version > 0),
     CHECK (binding_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CHECK (birth_history_id <> '00000000-0000-0000-0000-000000000000'::uuid),
