@@ -73,6 +73,38 @@ async fn relay_mode_probe_rechecks_the_same_url_without_caching() {
     server.await.expect("NIP-11 server task");
 }
 
+#[tokio::test]
+async fn relay_mode_probe_rejects_non_success_with_valid_open_body() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test NIP-11 server");
+    let addr = listener.local_addr().expect("test server address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept NIP-11 request");
+        let mut request = vec![0; 2048];
+        let bytes_read = stream.read(&mut request).await.expect("read request");
+        let request = String::from_utf8_lossy(&request[..bytes_read]);
+        assert!(request.starts_with("GET / HTTP/1.1"));
+
+        let body = r#"{"supported_nips":[1,11,42]}"#;
+        let response = format!(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/nostr+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write response");
+    });
+    let relay_url = format!("ws://{addr}");
+
+    let error = probe_relay_mesh_mode(&relay_url)
+        .await
+        .expect_err("non-success HTTP status must not prove an open relay");
+    assert!(error.contains("503 Service Unavailable"), "{error}");
+    server.await.expect("NIP-11 server task");
+}
+
 #[test]
 fn buzz_mesh_join_uses_the_same_live_member_from_every_other_node() {
     let targets = vec![

@@ -197,6 +197,8 @@ async fn probe_relay_mesh_mode(relay_url: &str) -> Result<mesh_llm::MeshRelayMod
         .send()
         .await
         .map_err(|error| format!("NIP-11 probe failed: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("NIP-11 probe returned an unsuccessful HTTP status: {error}"))?
         .json()
         .await
         .map_err(|error| format!("NIP-11 document was not JSON: {error}"))?;
