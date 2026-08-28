@@ -1,4 +1,7 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { expect, test, type Page } from "@playwright/test";
+import type { ChannelWindowStore } from "../../src/features/messages/lib/channelWindowStore";
+import type { RelayEvent } from "../../src/shared/api/types";
 import { installMockBridge } from "../helpers/bridge";
 import {
   pageOlderHistory,
@@ -150,6 +153,148 @@ for (const race of [false, true]) {
     await pageOlderHistory(page);
   });
 }
+
+test("reconnect inserts a middle history row above a deep reader without shifting", async ({
+  page,
+}, testInfo) => {
+  await installMockBridge(page);
+  await page.goto("/");
+  await page.getByTestId("channel-deep-history").click();
+  const timeline = page.getByTestId("message-timeline");
+  await expect(timeline.locator("[data-message-id]").first()).toBeVisible();
+  for (let step = 0; step < 4; step++) await pageOlderHistory(page);
+
+  // Retain five pages, then read inside the first revalidated join page. Deeper
+  // exact joins deliberately reuse immutable history; this is a reconnect gap
+  // in the range actually fetched, not a request for arbitrary backfill repair.
+  await timeline.evaluate((element) => {
+    element.scrollTop = element.scrollHeight * 0.66;
+  });
+  const readingRow = timeline.locator(
+    '[data-message-id="mock-deep-history-520"]',
+  );
+  await expect(readingRow).toBeAttached();
+  await readingRow.evaluate((row) => {
+    const scroller = row.closest('[data-testid="message-timeline"]');
+    if (!scroller) throw Error("No timeline scroller");
+    scroller.scrollTop +=
+      row.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top -
+      100;
+  });
+  await waitForHistorySettled(page);
+  const anchor = await visibleAnchor(page);
+  const channelId = "feedf00d-0000-4000-8000-000000000007";
+  const before = await page.evaluate(
+    ({ channelId, anchorId }) => {
+      const client = window.__BUZZ_E2E_QUERY_CLIENT__ as QueryClient;
+      const store = client.getQueryData<ChannelWindowStore>([
+        "channel-window",
+        channelId,
+      ]);
+      const rows = client.getQueryData<RelayEvent[]>([
+        "channel-messages",
+        channelId,
+      ]);
+      if (!store || !rows) throw Error("Missing retained history");
+      const anchorIndex = rows.findIndex((row) => row.id === anchorId);
+      const olderNeighbor = rows[anchorIndex - 5];
+      const newerNeighbor = rows[anchorIndex - 4];
+      if (!olderNeighbor || !newerNeighbor) throw Error("No interior gap");
+      return {
+        ids: rows.map((row) => row.id),
+        pages: store.pages.length,
+        anchorIndex,
+        gapIndex: anchorIndex - 4,
+        createdAt: Math.floor(
+          (olderNeighbor.created_at + newerNeighbor.created_at) / 2,
+        ),
+        verifiedPageIds: store.pages[1].rows.map((row) => row.event.id),
+      };
+    },
+    { channelId, anchorId: anchor.id },
+  );
+  expect(before.pages).toBe(5);
+  expect(before.ids.length - before.anchorIndex).toBeGreaterThan(75);
+  expect(before.gapIndex).toBeGreaterThan(0);
+  expect(before.verifiedPageIds).toContain(before.ids[before.gapIndex]);
+  await beginAnchorTrace(page, anchor.id);
+  const gap = await page.evaluate((createdAt) => {
+    window.__BUZZ_E2E__ = {
+      ...window.__BUZZ_E2E__,
+      mock: { ...window.__BUZZ_E2E__?.mock, channelWindowDelayMs: 150 },
+    };
+    // Clear the mock sockets synchronously before emitting, so this row cannot
+    // reach the UI through live delivery. The reconnect must fetch it.
+    window.__BUZZ_E2E_RESTART_MOCK_WEBSOCKETS__?.();
+    if (
+      window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+        channelName: "deep-history",
+      })
+    )
+      throw Error("Expected disconnected mock subscription");
+    const event = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "deep-history",
+      content: "Recovered middle row above the reader\nwith a second line",
+      createdAt,
+    });
+    if (!event) throw Error("Missing injected gap event");
+    return event;
+  }, before.createdAt);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ channelId, gapId }) => {
+          const client = window.__BUZZ_E2E_QUERY_CLIENT__ as QueryClient;
+          return (
+            client
+              .getQueryData<ChannelWindowStore>(["channel-window", channelId])
+              ?.pages.some((page) =>
+                page.rows.some((row) => row.event.id === gapId),
+              ) &&
+            client.isFetching({ queryKey: ["channel-messages", channelId] }) ===
+              0
+          );
+        },
+        { channelId, gapId: gap.id },
+      ),
+    )
+    .toBe(true);
+  await expect(
+    timeline.locator(`[data-message-id="${gap.id}"]`),
+  ).toBeAttached();
+  await waitForHistorySettled(page);
+  const after = await page.evaluate((channelId) => {
+    const client = window.__BUZZ_E2E_QUERY_CLIENT__ as QueryClient;
+    return client
+      .getQueryData<RelayEvent[]>(["channel-messages", channelId])
+      ?.map((row) => row.id);
+  }, channelId);
+  const expected = before.ids.toSpliced(before.gapIndex, 0, gap.id);
+  expect(after).toEqual(expected); // unchanged first/last IDs; not a prepend
+  const gapTop = await anchorTop(page, gap.id);
+  expect(gapTop).not.toBeNull();
+  expect(gapTop ?? Infinity).toBeLessThan(anchor.top);
+  await assertAnchorTrace(page, anchor.top);
+  const trace = await page.evaluate(
+    () =>
+      (window as unknown as { __HISTORY_ANCHOR_TRACE__: number[] })
+        .__HISTORY_ANCHOR_TRACE__,
+  );
+  await testInfo.attach("middle-insertion-anchor.json", {
+    body: JSON.stringify({
+      retainedPages: before.pages,
+      retainedRows: before.ids.length,
+      insertionIndex: before.gapIndex,
+      anchorIndex: before.anchorIndex,
+      anchor,
+      gapTop,
+      samples: trace.length,
+      maximumDrift: Math.max(...trace.map((top) => Math.abs(top - anchor.top))),
+    }),
+    contentType: "application/json",
+  });
+});
 
 test("DM exhaustion adds intro and date markers without displacing the reading row", async ({
   page,
