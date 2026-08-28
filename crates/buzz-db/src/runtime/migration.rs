@@ -690,7 +690,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 42);
+        assert_eq!(migrations.len(), 43);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1184,8 +1184,8 @@ mod tests {
 
         // Durable workflow wakes are recipient-gated and must remain outside
         // full-text search on both fresh and brownfield databases.
-        assert_eq!(migrations[40].version, 41);
-        let workflow_wake_fts = migrations[40].sql.as_str();
+        assert_eq!(migrations[41].version, 42);
+        let workflow_wake_fts = migrations[41].sql.as_str();
         assert!(workflow_wake_fts.contains("kind = 44620"));
         assert!(desired_schema.contains("44200, 44620"));
 
