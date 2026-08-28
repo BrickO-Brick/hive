@@ -371,8 +371,17 @@ export async function runAgentSaveCoordinator(
     if (profileSyncError) {
       showAgentProfileSyncWarning(agentName, profileSyncError);
     } else if (publishCatalogUpdates && personaInput) {
-      // Use personaSaveNotice for the publish-specific success message.
-      toast.success(personaSaveNotice(agentName, publicationStatus));
+      // The publish notice reports the DEFINITION update, so name it from the
+      // observed persona (disk state) — not `agentName`, which is
+      // instance-oriented and falls back to the pre-save `def.displayName` on a
+      // definition-only edit where both agent candidates are null. Fall back to
+      // the submitted rename, then the pre-save snapshot.
+      const personaName =
+        observedPersona?.displayName ??
+        personaInput.displayName ??
+        def?.displayName ??
+        "Agent";
+      toast.success(personaSaveNotice(personaName, publicationStatus));
     } else {
       toast.success(`${agentName} saved.`);
     }

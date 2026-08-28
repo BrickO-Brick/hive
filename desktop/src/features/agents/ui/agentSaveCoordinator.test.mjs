@@ -1255,3 +1255,43 @@ test("test_success_toast_uses_observed_name_on_thrown_but_persisted_rename", asy
     cap.restore();
   }
 });
+
+test("test_published_definition_rename_notice_uses_observed_persona_name", async () => {
+  const cap = captureToasts();
+  try {
+    // Definition-only publish edit: both agent candidates are null, so the
+    // publish notice must name the DEFINITION from the observed persona, not
+    // fall back to the pre-save `def.displayName`.
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Bob" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => ({ publicationStatus: "published" }),
+      refetchStores: async () => ({
+        persona: makeDefinition({ displayName: "Bob" }),
+        agent: null,
+      }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, true, "published definition rename is a full success");
+    const successes = cap.captured.filter((c) => c.kind === "success");
+    assert.equal(successes.length, 1, "exactly one success toast");
+    assert.match(
+      successes[0].message,
+      /^Updated Bob and published it/,
+      "publish notice must name the observed (persisted) rename",
+    );
+    assert.doesNotMatch(
+      successes[0].message,
+      /Alice/,
+      "publish notice must not report the stale pre-save definition name",
+    );
+  } finally {
+    cap.restore();
+  }
+});
