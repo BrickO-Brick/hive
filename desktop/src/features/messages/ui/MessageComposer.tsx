@@ -54,6 +54,7 @@ import { MentionAutocomplete } from "./MentionAutocomplete";
 import { ComposerDockToolbar } from "./ComposerDockToolbar";
 import { ComposerUploadProgressPill } from "./ComposerUploadProgressPill";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
+import { useComposerVoiceNote } from "./useComposerVoiceNote";
 import { useMentionSendFlow } from "./useMentionSendFlow";
 import { useAgentAddressLockPicker } from "./useAgentAddressLockPicker";
 import { useAddressMentionPulse } from "./useAddressMentionPulse";
@@ -155,6 +156,16 @@ function MessageComposerImpl({
   );
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
+  const voiceNote = useComposerVoiceNote({
+    hasAttachments: () =>
+      media.pendingImetaRef.current.length > 0 ||
+      media.queuedAttachmentsRef.current.length > 0,
+    onBeforeStart: () => {
+      setIsEmojiPickerOpen(false);
+      setIsFormattingOpen(false);
+    },
+    uploadFile: media.uploadFile,
+  });
   const {
     handleAttachmentEditSave,
     handleAttachmentRevert,
@@ -607,6 +618,7 @@ function MessageComposerImpl({
     if (
       (!trimmed && !hasMedia) ||
       disabledRef.current ||
+      voiceNote.statusRef.current !== "idle" ||
       isSendingRef.current ||
       isSubmitLockedRef.current ||
       isUploadingRef.current ||
@@ -682,6 +694,7 @@ function MessageComposerImpl({
     mentions.getDraftMentionRefs,
     mentions.restoreDraftMentionRefs,
     mentions.revalidateMentionPubkeys,
+    voiceNote.statusRef,
   ]);
   submitMessageRef.current = submitMessage;
   // Draft auto-submit runs once after persisted editor state loads.
@@ -710,7 +723,6 @@ function MessageComposerImpl({
     },
     [submitMessage],
   );
-  // ── Keyboard handling ───────────────────────────────────────────────
   // Tiptap handles formatting shortcuts (⌘B, ⌘I, etc.) natively.
   // Plain Enter → submit is now handled inside the Tiptap `submitOnEnter`
   // extension (fires before ProseMirror's splitBlock). This wrapper only
@@ -780,20 +792,19 @@ function MessageComposerImpl({
     editor: richText.editor,
     scrollToBottom: scrollComposerToBottom,
     setPendingImeta: media.setPendingImeta,
-    uploadFile: media.uploadFile,
+    uploadFile: voiceNote.uploadFileWhenIdle,
   });
-  // ── Send button state ───────────────────────────────────────────────
   const sendDisabled =
     composerDisabled ||
     media.isUploading ||
+    voiceNote.status !== "idle" ||
     mentionSendFlow.isPreparingMentionSend ||
     (isContentEmpty &&
       media.pendingImeta.length === 0 &&
       media.queuedAttachments.length === 0);
   const handleCaptureSelection = React.useCallback(() => {}, []);
-  const handlePaperclipClick = React.useCallback(() => {
-    void media.handlePaperclip();
-  }, [media.handlePaperclip]);
+  const handlePaperclipClick = media.handlePaperclip;
+  const acceptsDrop = ownsDropZone && voiceNote.isIdle;
   return (
     <>
       <footer
@@ -832,11 +843,11 @@ function MessageComposerImpl({
             )}
             data-submit-locked={isSubmitLocked ? "true" : "false"}
             data-testid="message-composer"
-            onDragEnter={ownsDropZone ? media.handleDragEnter : undefined}
-            onDragLeave={ownsDropZone ? media.handleDragLeave : undefined}
-            onDragOver={ownsDropZone ? media.handleDragOver : undefined}
+            onDragEnter={acceptsDrop ? media.handleDragEnter : undefined}
+            onDragLeave={acceptsDrop ? media.handleDragLeave : undefined}
+            onDragOver={acceptsDrop ? media.handleDragOver : undefined}
             onDrop={
-              ownsDropZone
+              acceptsDrop
                 ? (e) => {
                     if (isDeferredEditPending) {
                       e.preventDefault();
@@ -850,7 +861,7 @@ function MessageComposerImpl({
               handleSubmit(event);
             }}
           >
-            {ownsDropZone && media.isDragOver && <DropZoneOverlay />}
+            {acceptsDrop && media.isDragOver && <DropZoneOverlay />}
             <EmojiAutocomplete
               onSelect={applyEmojiInsert}
               selectedIndex={emojiAutocomplete.emojiSelectedIndex}
@@ -956,6 +967,9 @@ function MessageComposerImpl({
               isFormattingOpen={isFormattingOpen}
               isSending={isSending || mentionSendFlow.isPreparingMentionSend}
               isUploading={media.isUploading}
+              isVoiceNoteProcessing={voiceNote.status === "processing"}
+              isVoiceNoteRecording={voiceNote.status !== "idle"}
+              voiceNoteRecorder={voiceNote.recorderElement}
               onCaptureSelection={handleCaptureSelection}
               onAutoPinConfirmationDismiss={dismissAutoPinConfirmation}
               onAutoPinConfirmationTurnOff={turnOffAutoPinConfirmation}
@@ -965,6 +979,8 @@ function MessageComposerImpl({
               onLinkButton={linkEditor.openFromToolbar}
               onOpenMentionPicker={openMentionSettings}
               onPaperclip={handlePaperclipClick}
+              onFinishVoiceNote={() => void voiceNote.finish()}
+              onVoiceNote={voiceNote.toggle}
               onRemoveAddressedAgent={removeAddressedAgent}
               pulseVersionByPubkey={addressPulse.pulseVersionByPubkey}
               sendDisabled={sendDisabled}

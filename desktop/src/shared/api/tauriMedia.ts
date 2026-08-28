@@ -30,9 +30,28 @@ export async function uploadMediaFile(
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (signal?.aborted) throw new Error("upload cancelled");
   onDispatch?.();
-  return invokeTauriRaw<BlobDescriptor>("upload_media_bytes_raw", bytes, {
-    headers,
-  });
+  try {
+    return await invokeTauriRaw<BlobDescriptor>(
+      "upload_media_bytes_raw",
+      bytes,
+      {
+        headers,
+      },
+    );
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    if (typeof error === "string" && error.trim()) throw new Error(error);
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      error.message.trim()
+    ) {
+      throw new Error(error.message);
+    }
+    throw new Error("Media upload failed.");
+  }
 }
 
 /** Stop the native HTTP request associated with a background media upload. */

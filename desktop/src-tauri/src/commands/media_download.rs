@@ -5,7 +5,8 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::commands::clipboard::with_clipboard;
 use crate::commands::export_util::save_bytes_with_dialog;
-use crate::commands::media::{detect_and_validate_mime, mint_media_get_auth, sanitize_filename};
+use crate::commands::media::{detect_and_validate_mime, mint_media_get_auth};
+use crate::commands::media_filename::sanitize_filename;
 use crate::commands::{
     personas::{
         parse_snapshot_payload_from_bytes, MAX_SNAPSHOT_JSON_BYTES, MAX_SNAPSHOT_PNG_BYTES,
