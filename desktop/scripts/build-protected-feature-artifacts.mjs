@@ -20,7 +20,14 @@ const scratchRoot = mkdtempSync(
 );
 const selectedOutput = path.join(desktopRoot, "dist");
 const alternateOutput = path.join(scratchRoot, "alternate");
-const viteBinary = process.platform === "win32" ? "vite.cmd" : "vite";
+const vitePackageJsonPath = fileURLToPath(
+  import.meta.resolve("vite/package.json"),
+);
+const vitePackage = JSON.parse(readFileSync(vitePackageJsonPath, "utf8"));
+const viteEntrypoint = path.resolve(
+  path.dirname(vitePackageJsonPath),
+  vitePackage.bin.vite,
+);
 
 function buildVariant({ internal, output }) {
   const env = { ...process.env };
@@ -31,8 +38,8 @@ function buildVariant({ internal, output }) {
   }
 
   const result = spawnSync(
-    viteBinary,
-    ["build", "--outDir", output, "--emptyOutDir"],
+    process.execPath,
+    [viteEntrypoint, "build", "--outDir", output, "--emptyOutDir"],
     {
       cwd: desktopRoot,
       env,
