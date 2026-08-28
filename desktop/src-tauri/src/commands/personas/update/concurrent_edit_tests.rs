@@ -2,7 +2,7 @@
 //! compare-and-swap conflict BEFORE it mutates or writes, so a stale
 //! full-replacement input cannot clobber a concurrent writer.
 //!
-//! Two layers of coverage:
+//! Three layers of coverage:
 //!
 //! 1. **Comparison logic** — four unit tests against `find_persona_for_update`
 //!    directly: stale rejection, matching-revision pass, absent-revision skip,
@@ -12,12 +12,20 @@
 //!    `update_persona_with` against a file-backed store under a
 //!    `MockRuntime` `AppHandle`. Writer A commits R1→R2 through the command
 //!    path; writer B then submits with expected R1, is rejected with
-//!    `PERSONA_REVISION_CONFLICT`, and the store still reads R2. This pins the
-//!    wiring: if `update_persona_with` stops calling `find_persona_for_update`,
-//!    moves the check outside the lock, or disconnects the guard in any other
-//!    way, this test turns RED — even if the comparison-logic tests stay green.
+//!    `PERSONA_REVISION_CONFLICT`, and the store still reads R2. Turns RED if
+//!    `update_persona_with` removes the guard call entirely.
+//!
+//! 3. **Lock-scope assertion** — a test-only observer (`PRE_GUARD_OBSERVER`)
+//!    fires inside the `spawn_blocking` body right before `find_persona_for_update`
+//!    while `managed_agents_store_lock` is held. The observer asserts
+//!    `try_lock()` fails — proving the guard and the comparison share the same
+//!    lock scope. Moving the lock acquisition to after the comparison (recreating
+//!    the TOCTOU race) means the observer fires before the lock is held and
+//!    `try_lock()` succeeds, turning this test RED.
 
-use super::{find_persona_for_update, update_persona_with, PERSONA_REVISION_CONFLICT};
+use super::{
+    find_persona_for_update, update_persona_with, PERSONA_REVISION_CONFLICT, PRE_GUARD_OBSERVER,
+};
 use crate::app_state::build_app_state;
 use crate::managed_agents::{save_personas, AgentDefinition, UpdatePersonaRequest};
 
@@ -154,15 +162,27 @@ fn update_request(id: &str, display_name: &str, expected: Option<&str>) -> Updat
     }
 }
 
-/// Command-path wiring regression: Writer A commits a definition update through
-/// the real `update_persona_with` (R1 → R2 in the persisted store). Writer B
-/// then submits with its seed-time expected revision R1; the command must reject
-/// it with a `PERSONA_REVISION_CONFLICT` error and leave A's R2 untouched.
+/// Command-path regression suite: runs in a single async test to prevent
+/// test-isolation races on the process-global `HOME`/`XDG_DATA_HOME`
+/// environment variables and the `PRE_GUARD_OBSERVER` slot.
 ///
-/// This test turns RED if `update_persona_with` disconnects the guard from the
-/// lock-held write — even if the comparison-logic tests above stay green.
+/// **Layer 2 — wiring:** Writer A commits R1→R2 through the real
+/// `update_persona_with`; Writer B submits with expected R1 and is rejected;
+/// the persisted store still reads R2 with A's fields intact. Turns RED if
+/// the guard call is removed entirely from `update_persona_with`.
+///
+/// **Layer 3 — lock scope:** the `PRE_GUARD_OBSERVER` hook fires inside
+/// `spawn_blocking` right before `find_persona_for_update` while
+/// `_store_guard` is in scope. The observer asserts `try_lock()` fails,
+/// proving the guard and the comparison are inside the same lock scope.
+/// Moving the lock acquisition to after the comparison (the TOCTOU shape)
+/// means `try_lock()` succeeds and the assertion panics — turning this test
+/// **RED**.
 #[tokio::test]
-async fn command_path_rejects_stale_writer_and_preserves_newer_revision() {
+async fn command_path_and_lock_scope_regressions() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -170,9 +190,8 @@ async fn command_path_rejects_stale_writer_and_preserves_newer_revision() {
     let old_home = std::env::var_os("HOME");
     let old_xdg = std::env::var_os("XDG_DATA_HOME");
     {
-        // Hold the path mutex only during the synchronous setup phase; it must
-        // be released before the async writes so clippy does not flag a
-        // MutexGuard held across an await point.
+        // Hold the path mutex only during the synchronous setup phase so that
+        // clippy does not flag a MutexGuard held across an await point.
         let _path_guard = crate::managed_agents::lock_path_mutex();
         std::env::set_var("HOME", &home);
         std::env::set_var("XDG_DATA_HOME", &home);
@@ -180,12 +199,54 @@ async fn command_path_rejects_stale_writer_and_preserves_newer_revision() {
 
     let app = mock_app();
 
+    // ── Layer 3: lock-scope assertion ─────────────────────────────────────
+    // Install the observer BEFORE seeding so it fires on the first real write.
+    let observer_fired = Arc::new(AtomicBool::new(false));
+    let observer_fired_clone = observer_fired.clone();
+    {
+        let mut slot = PRE_GUARD_OBSERVER.lock().expect("observer slot");
+        *slot = Some(Box::new(move |state: &crate::app_state::AppState| {
+            assert!(
+                state.managed_agents_store_lock.try_lock().is_err(),
+                "managed_agents_store_lock must already be held when find_persona_for_update \
+                 runs — a successful try_lock means the comparison happens outside the lock, \
+                 which recreates the TOCTOU race"
+            );
+            observer_fired_clone.store(true, Ordering::SeqCst);
+        }));
+    }
+
     // Seed: one persona at R1 in the persisted store.
     save_personas(app.handle(), &[persona("p1", "Alice", R1)]).expect("seed write must succeed");
 
-    // Writer A: submits with expected R1. Succeeds; store advances to a new
-    // `updated_at` (set by `now_iso()` inside the command, so we don't know
-    // the exact string — we only need it to differ from R1).
+    // Layer 3 probe: a successful write fires the observer while the lock is held.
+    let probe_result = update_persona_with(
+        update_request("p1", "Alice probe", Some(R1)),
+        app.handle().clone(),
+        |_app, _state, _persona| Ok(()),
+    )
+    .await;
+
+    // Clear the observer immediately — must happen before any assertion that
+    // could panic, so it is never left installed for subsequent invocations.
+    {
+        let mut slot = PRE_GUARD_OBSERVER.lock().expect("observer slot");
+        *slot = None;
+    }
+
+    probe_result.expect("probe write must succeed — revision matches the seed");
+    assert!(
+        observer_fired.load(Ordering::SeqCst),
+        "the pre-guard observer must have fired — if it did not, the hook is not wired"
+    );
+
+    // ── Layer 2: command-path wiring ──────────────────────────────────────
+    // Writer A: now at the probe's updated_at (R2). Capture it so B can use
+    // the original R1 as a stale seed.
+    //
+    // Re-seed at R1 so the two-writer scenario starts from a known revision.
+    save_personas(app.handle(), &[persona("p1", "Alice", R1)]).expect("re-seed write must succeed");
+
     let a_result = update_persona_with(
         update_request("p1", "Alice A", Some(R1)),
         app.handle().clone(),
@@ -196,8 +257,7 @@ async fn command_path_rejects_stale_writer_and_preserves_newer_revision() {
     let r2 = a_persona.updated_at.clone();
     assert_ne!(r2, R1, "the commit must advance the revision past R1");
 
-    // Writer B: seeded at R1, submits after A has already committed R2.
-    // The command must reject this with a PERSONA_REVISION_CONFLICT error.
+    // Writer B: seeded at R1, submits after A has committed R2.
     let b_result = update_persona_with(
         update_request("p1", "Alice B (must not land)", Some(R1)),
         app.handle().clone(),
@@ -228,7 +288,7 @@ async fn command_path_rejects_stale_writer_and_preserves_newer_revision() {
         "A's committed display_name must survive B's stale write attempt"
     );
 
-    // Restore env vars.
+    // ── Cleanup ───────────────────────────────────────────────────────────
     std::env::remove_var("HOME");
     std::env::remove_var("XDG_DATA_HOME");
     match old_home {

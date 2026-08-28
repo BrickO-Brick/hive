@@ -21,6 +21,17 @@ mod concurrent_edit_tests;
 #[cfg(test)]
 mod name_propagation_tests;
 
+/// Test-only hook: a process-global observer called right before
+/// `find_persona_for_update` while `managed_agents_store_lock` is held.
+/// Tests can install a closure that asserts the lock is not re-acquirable
+/// at that point, proving the guard and the comparison share the same
+/// lock scope. Production builds compile this away entirely.
+#[cfg(test)]
+type GuardObserver = Box<dyn Fn(&crate::app_state::AppState) + Send>;
+#[cfg(test)]
+pub(crate) static PRE_GUARD_OBSERVER: std::sync::Mutex<Option<GuardObserver>> =
+    std::sync::Mutex::new(None);
+
 /// Marker prefixed to the compare-and-swap rejection so the frontend can map it
 /// to the "changed while you were editing" affordance rather than a generic
 /// save failure. The persisted definition advanced past the revision the editor
@@ -151,6 +162,20 @@ pub(super) async fn update_persona_with<Rt: tauri::Runtime + 'static, R: Send + 
                 .map_err(|error| error.to_string())?;
             let mut personas = load_personas(&app)?;
             pending::project_active_persona_sharing(&app, &state, &mut personas);
+            // In test builds, fire the pre-guard observer (if installed) with a
+            // reference to the state while the store lock is still held. Tests
+            // use this to assert that `managed_agents_store_lock.try_lock()`
+            // fails here — proving the guard and the comparison are inside the
+            // same lock scope. The observer fires on every code path, so moving
+            // the lock acquisition to after this call turns RED.
+            #[cfg(test)]
+            {
+                if let Ok(observer_guard) = PRE_GUARD_OBSERVER.lock() {
+                    if let Some(ref observer) = *observer_guard {
+                        observer(&state);
+                    }
+                }
+            }
             let persona = find_persona_for_update(
                 &mut personas,
                 &input.id,
