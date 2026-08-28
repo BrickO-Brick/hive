@@ -703,7 +703,7 @@ jobs:
         run: |
           cargo nextest run \
             --archive-file target/ci/backend-integration-tests.tar.zst \
-            -E 'package(buzz-db) and test(/^workflow::/)' \
+            -E 'package(buzz-db) and test(/^store::workflow::/)' \
             --run-ignored ignored-only
         env:
           BUZZ_TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
