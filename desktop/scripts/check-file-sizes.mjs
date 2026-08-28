@@ -13,6 +13,9 @@ export const policy = {
   label: "Desktop",
 };
 
-if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === scriptPath) {
+if (
+  process.argv[1] &&
+  realpathSync(path.resolve(process.argv[1])) === scriptPath
+) {
   await runFileSizeCheck(policy);
 }
