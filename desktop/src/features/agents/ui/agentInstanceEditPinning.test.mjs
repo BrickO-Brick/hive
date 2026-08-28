@@ -9,6 +9,7 @@ import {
   computeEditAgentFormValidity,
   hasMissingRequiredEnvKey,
   resolveAgentCommandUpdate,
+  resolveEffortSubmission,
   resolveInheritedRuntimeSubmission,
   resolveRuntimeProviderCapability,
 } from "./personaRuntimeModel.ts";
@@ -331,4 +332,73 @@ test("inheritToggle_cancelled_emitsNoUpdate", () => {
     "",
     "Save on the pin→inherit transition emits the empty-command sentinel the backend clears the column on",
   );
+});
+
+// ── Effort write is Save-gated and cannot re-pin an inherit transition ────────
+//
+// Carl r8 P1. The effort picker no longer direct-writes on selection; the
+// dialog holds the pending value and persists it on Save via a standalone
+// setter (`resolveEffortSubmission` + `persistAgentEffortLevel`) sequenced
+// AFTER the locked `update_managed_agent`. Two invariants this pins:
+//   1. On the pin→inherit transition (agentCommandUpdate === ""), the locked
+//      save already cleared the effort column + aliases, so the effort setter
+//      must be SUPPRESSED — re-persisting the picked value would restore the
+//      very pin the transition just cleared (the deferred-IPC race).
+//   2. Cancel never reaches the submit path, so no effort write is dispatched.
+
+test("inheritTransition_suppressesEffortWrite_evenWhenUserPickedAValue", () => {
+  // User pinned to Claude, selected effort "high", then switched to Inherit and
+  // saved. The command update is the inherit sentinel, so the effort write must
+  // be suppressed regardless of the picked value.
+  const agentCommandUpdate = resolveAgentCommandUpdate({
+    inheritHarness: true,
+    agentCommand: pinnedAgent.agentCommand,
+    originalAgentCommand: pinnedAgent.agentCommand,
+    agentCommandOverride: pinnedAgent.agentCommandOverride,
+  });
+  assert.equal(agentCommandUpdate, "");
+
+  const submission = resolveEffortSubmission({
+    effortLevel: "high", // the deferred selection that used to race the save
+    originalEffortLevel: null,
+    inheritTransition: agentCommandUpdate === "",
+  });
+  assert.equal(
+    submission.persist,
+    false,
+    "the pin→inherit transition must suppress the effort write so it cannot restore the just-cleared pin",
+  );
+});
+
+test("effortWrite_persistsRealChange_onNonInheritSave", () => {
+  // A plain effort edit with no harness change: the setter persists the new
+  // value (agentCommandUpdate is undefined → not an inherit transition).
+  const submission = resolveEffortSubmission({
+    effortLevel: "high",
+    originalEffortLevel: null,
+    inheritTransition: false,
+  });
+  assert.deepEqual(submission, { persist: true, level: "high" });
+});
+
+test("effortWrite_noOp_whenSelectionUnchanged", () => {
+  // Re-selecting the currently-effective value (or a name-only Save) writes
+  // nothing, so an unrelated edit never rewrites the effort column.
+  const submission = resolveEffortSubmission({
+    effortLevel: "high",
+    originalEffortLevel: "high",
+    inheritTransition: false,
+  });
+  assert.equal(submission.persist, false);
+});
+
+test("effortWrite_clearToAdapterDefault_persistsNull", () => {
+  // Clearing an existing pin to the adapter-default sentinel is a real change
+  // and must persist null (revert), not be treated as a no-op.
+  const submission = resolveEffortSubmission({
+    effortLevel: null,
+    originalEffortLevel: "high",
+    inheritTransition: false,
+  });
+  assert.deepEqual(submission, { persist: true, level: null });
 });

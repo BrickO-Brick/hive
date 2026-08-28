@@ -204,11 +204,20 @@ with a TypeScript lookup table or an id comparison in a component.
 14. **Thinking effort has two surfaces: a local-only WRITE control and a
    read-only two-facts DISPLAY.** The write control is `EffortPickerField`
    (`ui/EffortPickerField.tsx`), a self-contained section component mounted in
-   `AgentInstanceEditDialog` beside the Model block. It is direct-write, not
-   part of the frozen `UpdateManagedAgentInput` shape: each selection calls
-   `persistAgentEffortLevel` and invalidates the config-surface query, mirroring
-   the `setManagedAgentAutoRestart` standalone-setter precedent. Its gating and
-   option compute live in the pure helper `ui/effortPicker.ts`
+   `AgentInstanceEditDialog` beside the Model block. It is a **Save-gated
+   standalone setter**, not part of the frozen `UpdateManagedAgentInput` shape:
+   the picker is a controlled field (dialog holds the pending selection), and
+   Save persists it via `persistAgentEffortLevel` sequenced AFTER the locked
+   `update_managed_agent` resolves, mirroring the `setManagedAgentAutoRestart`
+   standalone-setter precedent. It must NOT persist on selection — a
+   direct-write on selection races the dialog's own locked save (a delayed
+   effort IPC can restore a pin the pin→inherit save just cleared) and can
+   commit a write a Cancel or failed Save should have discarded. On the
+   pin→inherit transition the locked save already clears the effort column and
+   aliases, so the setter is suppressed there (`resolveEffortSubmission`); after
+   persisting, invalidate the config-surface query so the panel's canonical tier
+   reflects the new next-spawn value. Its gating and option compute live in the
+   pure helper `ui/effortPicker.ts`
    (`effortPickerState`): the picker renders only when
    `agent.backend.type === "local"` **AND** a `thought_level` `effortConfigId`
    has been discovered from the running session (absent pre-first-session and

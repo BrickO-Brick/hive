@@ -1,9 +1,11 @@
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 
 import {
+  agentConfigSurfaceQueryKey,
   useAcpRuntimesQuery,
   useAgentConfigSurface,
   useBakedBuildEnvKeysQuery,
@@ -24,7 +26,10 @@ import { Button } from "@/shared/ui/button";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
-import { setManagedAgentAutoRestart } from "@/shared/api/tauriManagedAgents";
+import {
+  persistAgentEffortLevel,
+  setManagedAgentAutoRestart,
+} from "@/shared/api/tauriManagedAgents";
 import { EffortPickerField } from "./EffortPickerField";
 import { EditAgentAdvancedFields } from "./EditAgentAdvancedFields";
 import {
@@ -54,6 +59,7 @@ import {
   envVarsEqual,
   isEditAgentProviderSaveValid,
   resolveAgentCommandUpdate,
+  resolveEffortSubmission,
   resolveInheritedRuntimeSubmission,
   resolveRuntimeProviderCapability,
 } from "./personaRuntimeModel";
@@ -112,6 +118,7 @@ export function AgentInstanceEditDialog({
 }) {
   const updateMutation = useUpdateManagedAgentMutation();
   const startMutation = useStartManagedAgentMutation();
+  const queryClient = useQueryClient();
   const runtimesQuery = useAcpRuntimesQuery({ enabled: open });
   const configSurfaceQuery = useAgentConfigSurface(open ? agent.pubkey : null);
   const runtimes = runtimesQuery.data ?? [];
@@ -142,6 +149,13 @@ export function AgentInstanceEditDialog({
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
   const [autoRestartOnConfigChange, setAutoRestartOnConfigChange] =
     React.useState(agent.autoRestartOnConfigChange);
+  // Effort picker is a Save-gated standalone setter: hold the pending selection
+  // in dialog state and persist it on Save alone (see resolveEffortSubmission /
+  // handleSubmit), never on selection. `effortTouched` distinguishes "user
+  // picked a value" from "showing the config-surface effective value", so an
+  // untouched Save writes nothing.
+  const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
+  const effortTouched = React.useRef(false);
   const personasQuery = usePersonasQuery();
   const linkedPersona = React.useMemo(
     () =>
@@ -191,6 +205,8 @@ export function AgentInstanceEditDialog({
       setIsCustomProviderEditing(false);
       setEnvVars(agent.envVars);
       setAutoRestartOnConfigChange(agent.autoRestartOnConfigChange);
+      setEffortLevel(null);
+      effortTouched.current = false;
       setRespondTo(agent.respondTo);
       setRespondToAllowlist(agent.respondToAllowlist);
       setAvatarUrl(agent.avatarUrl ?? "");
@@ -730,6 +746,28 @@ export function AgentInstanceEditDialog({
           autoRestartOnConfigChange,
         );
       }
+      // Effort is a Save-gated standalone setter, sequenced AFTER the update
+      // resolves. Folding it into the frozen UpdateManagedAgentInput is
+      // avoided; sequencing after the locked save is what removes the r8 race
+      // (a selection can no longer land its own IPC between here and Save). The
+      // pin→inherit transition (agentCommandUpdate === "") already cleared the
+      // effort column + aliases inside that locked save, so resolveEffortSubmission
+      // suppresses the write there — re-persisting would restore the just-cleared pin.
+      const effortSubmission = resolveEffortSubmission({
+        effortLevel,
+        originalEffortLevel:
+          configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
+        inheritTransition: agentCommandUpdate === "",
+      });
+      if (effortTouched.current && effortSubmission.persist) {
+        await persistAgentEffortLevel(agent.pubkey, effortSubmission.level);
+        // The picker owns no mutation now, so refresh the config surface here
+        // (what its own onSuccess used to do) — the panel's canonical tier must
+        // reflect the new next-spawn value.
+        await queryClient.invalidateQueries({
+          queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
+        });
+      }
       showAgentProfileSyncWarning(result.agent.name, result.profileSyncError);
       handleOpenChange(false);
       onUpdated?.(result.agent);
@@ -1035,7 +1073,21 @@ export function AgentInstanceEditDialog({
               modelStatusMessage={modelStatusMessage}
             />
 
-            <EffortPickerField agent={agent} config={configSurfaceQuery.data} />
+            <EffortPickerField
+              agent={agent}
+              config={configSurfaceQuery.data}
+              disabled={updateMutation.isPending}
+              value={
+                effortTouched.current
+                  ? effortLevel
+                  : (configSurfaceQuery.data?.normalized.thinkingEffort
+                      ?.value ?? null)
+              }
+              onChange={(level) => {
+                effortTouched.current = true;
+                setEffortLevel(level);
+              }}
+            />
 
             <AgentAiDefaultsNotice
               onEditDefaults={() => setAiDefaultsOpen(true)}
