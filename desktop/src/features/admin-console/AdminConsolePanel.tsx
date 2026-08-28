@@ -806,6 +806,7 @@ export function AdminConsolePanel({
   pubkey,
   role,
   source,
+  initialTab,
 }: {
   /**
    * Whether mutation controls should be enabled. `false` when the relay probe
@@ -821,9 +822,15 @@ export function AdminConsolePanel({
   role?: AdminPrincipalRole | null;
   /** Source from probe — `"config"` | `"owner_fallback"` | `"db"` | undefined */
   source?: AdminPrincipalSource | null;
+  /**
+   * Override the initially active tab. Intended for unit tests that need to
+   * land on a specific tab without driving click events through MinimalDocument.
+   * Do not pass this prop in production code.
+   */
+  initialTab?: Tab;
 }) {
   const isOperator = role === "operator";
-  const [activeTab, setActiveTab] = useState<Tab>("reports");
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab ?? "reports");
   // Increment whenever the (pubkey, origin) context changes to invalidate all
   // in-flight useAsyncLoad effects via their effect-local `active` flags.
   const generationRef = useRef(0);
