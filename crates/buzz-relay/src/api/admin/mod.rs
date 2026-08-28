@@ -1998,6 +1998,7 @@ mod postgres_tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn nip98_mode_unrostered_signer_does_not_consume_a_replay_slot() {
         // Regression: the replay ID must be claimed only AFTER principal
         // resolution succeeds. A validly-signing but unrostered key (any
