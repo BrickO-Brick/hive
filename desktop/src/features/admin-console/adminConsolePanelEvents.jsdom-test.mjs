@@ -3762,32 +3762,34 @@ test("attachment-budget-seam: only 5 of 7 image attachments trigger native fetch
   // After detail loads, all 7 AttachmentViewers would mount if the budget were
   // bypassed — each auto-loads image/* on mount. With the budget in place only
   // 5 mount and issue fetches.
-  assert.equal(
-    requestedSha256s.length,
-    5,
-    `exactly 5 attachment fetches must fire; got ${requestedSha256s.length}: ${JSON.stringify(requestedSha256s)}`,
-  );
-
-  // The 6th and 7th items (sha256 of attachments[5] and attachments[6]) must
-  // never appear in the fetch log — the budget silently drops them.
-  const excessHashes = [attachments[5].sha256, attachments[6].sha256];
-  for (const excess of excessHashes) {
-    assert.ok(
-      !requestedSha256s.includes(excess),
-      `excess attachment sha256 ${excess.slice(0, 8)}… must never be requested (budget bypass detected)`,
+  try {
+    assert.equal(
+      requestedSha256s.length,
+      5,
+      `exactly 5 attachment fetches must fire; got ${requestedSha256s.length}: ${JSON.stringify(requestedSha256s)}`,
     );
+
+    // The 6th and 7th items (sha256 of attachments[5] and attachments[6]) must
+    // never appear in the fetch log — the budget silently drops them.
+    const excessHashes = [attachments[5].sha256, attachments[6].sha256];
+    for (const excess of excessHashes) {
+      assert.ok(
+        !requestedSha256s.includes(excess),
+        `excess attachment sha256 ${excess.slice(0, 8)}… must never be requested (budget bypass detected)`,
+      );
+    }
+
+    // Truncation notice must be visible.
+    const notice = container.querySelector(
+      "[data-testid='attachment-truncated-notice']",
+    );
+    assert.ok(
+      notice !== null,
+      "truncation notice must render when attachments are capped",
+    );
+  } finally {
+    await unmount();
   }
-
-  // Truncation notice must be visible.
-  const notice = container.querySelector(
-    "[data-testid='attachment-truncated-notice']",
-  );
-  assert.ok(
-    notice !== null,
-    "truncation notice must render when attachments are capped",
-  );
-
-  await unmount();
 });
 
 // ── P2-1: canMutate gates every mutation affordance ────────────────────────
@@ -3943,12 +3945,15 @@ test("canMutate-false: all five mutation affordances are absent in disabled mode
     await openFirstReportDetail(container);
     await settle(20);
     const form = container.querySelector("[data-testid='resolve-report-form']");
-    assert.equal(
-      form,
-      null,
-      "resolve-report-form must be absent when canMutate=false (family A)",
-    );
-    await unmount();
+    try {
+      assert.equal(
+        form,
+        null,
+        "resolve-report-form must be absent when canMutate=false (family A)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family B: reopen-report-form must be absent ──
@@ -3966,12 +3971,15 @@ test("canMutate-false: all five mutation affordances are absent in disabled mode
     await openFirstReportDetail(container);
     await settle(20);
     const form = container.querySelector("[data-testid='reopen-report-form']");
-    assert.equal(
-      form,
-      null,
-      "reopen-report-form must be absent when canMutate=false (family B)",
-    );
-    await unmount();
+    try {
+      assert.equal(
+        form,
+        null,
+        "reopen-report-form must be absent when canMutate=false (family B)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family C: enforcement-cancel-btn must be absent ──
@@ -3989,12 +3997,15 @@ test("canMutate-false: all five mutation affordances are absent in disabled mode
     const cancelBtn = container.querySelector(
       "[data-testid='enforcement-cancel-btn']",
     );
-    assert.equal(
-      cancelBtn,
-      null,
-      "enforcement-cancel-btn must be absent when canMutate=false (family C)",
-    );
-    await unmount();
+    try {
+      assert.equal(
+        cancelBtn,
+        null,
+        "enforcement-cancel-btn must be absent when canMutate=false (family C)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family D: feedback-status-control must be absent ──
@@ -4029,12 +4040,15 @@ test("canMutate-false: all five mutation affordances are absent in disabled mode
     const ctrl = container.querySelector(
       "[data-testid='feedback-status-control']",
     );
-    assert.equal(
-      ctrl,
-      null,
-      "feedback-status-control must be absent when canMutate=false (family D)",
-    );
-    await unmount();
+    try {
+      assert.equal(
+        ctrl,
+        null,
+        "feedback-status-control must be absent when canMutate=false (family D)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family E: staffing add/remove must be absent ──
@@ -4055,20 +4069,23 @@ test("canMutate-false: all five mutation affordances are absent in disabled mode
     await doRender();
     await settle(30);
     const addBtn = container.querySelector("[data-testid='staffing-add-btn']");
-    assert.equal(
-      addBtn,
-      null,
-      "staffing-add-btn must be absent when canMutate=false (family E add)",
-    );
     const removeBtn = container.querySelector(
       `[data-testid='staffing-remove-btn-${opPubkey}']`,
     );
-    assert.equal(
-      removeBtn,
-      null,
-      "staffing-remove-btn must be absent when canMutate=false (family E remove)",
-    );
-    await unmount();
+    try {
+      assert.equal(
+        addBtn,
+        null,
+        "staffing-add-btn must be absent when canMutate=false (family E add)",
+      );
+      assert.equal(
+        removeBtn,
+        null,
+        "staffing-remove-btn must be absent when canMutate=false (family E remove)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 });
 
@@ -4186,11 +4203,14 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     await openFirstReportDetail(container);
     await settle(20);
     const form = container.querySelector("[data-testid='resolve-report-form']");
-    assert.ok(
-      form !== null,
-      "resolve-report-form must be present when canMutate=true (family A)",
-    );
-    await unmount();
+    try {
+      assert.ok(
+        form !== null,
+        "resolve-report-form must be present when canMutate=true (family A)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family B: reopen-report-form must be present ──
@@ -4210,11 +4230,14 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     await openFirstReportDetail(container);
     await settle(20);
     const form = container.querySelector("[data-testid='reopen-report-form']");
-    assert.ok(
-      form !== null,
-      "reopen-report-form must be present when canMutate=true (family B)",
-    );
-    await unmount();
+    try {
+      assert.ok(
+        form !== null,
+        "reopen-report-form must be present when canMutate=true (family B)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family C: enforcement-cancel-btn must be present ──
@@ -4234,11 +4257,14 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     const cancelBtn = container.querySelector(
       "[data-testid='enforcement-cancel-btn']",
     );
-    assert.ok(
-      cancelBtn !== null,
-      "enforcement-cancel-btn must be present when canMutate=true (family C)",
-    );
-    await unmount();
+    try {
+      assert.ok(
+        cancelBtn !== null,
+        "enforcement-cancel-btn must be present when canMutate=true (family C)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family D: feedback-status-control must be present ──
@@ -4276,11 +4302,14 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     const ctrl = container.querySelector(
       "[data-testid='feedback-status-control']",
     );
-    assert.ok(
-      ctrl !== null,
-      "feedback-status-control must be present when canMutate=true (family D)",
-    );
-    await unmount();
+    try {
+      assert.ok(
+        ctrl !== null,
+        "feedback-status-control must be present when canMutate=true (family D)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 
   // ── Family E: staffing add/remove must be present ──
@@ -4301,17 +4330,20 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     await doRender();
     await settle(30);
     const addBtn = container.querySelector("[data-testid='staffing-add-btn']");
-    assert.ok(
-      addBtn !== null,
-      "staffing-add-btn must be present when canMutate=true (family E add)",
-    );
     const removeBtn = container.querySelector(
       `[data-testid='staffing-remove-btn-${opPubkey}']`,
     );
-    assert.ok(
-      removeBtn !== null,
-      "staffing-remove-btn must be present when canMutate=true (family E remove)",
-    );
-    await unmount();
+    try {
+      assert.ok(
+        addBtn !== null,
+        "staffing-add-btn must be present when canMutate=true (family E add)",
+      );
+      assert.ok(
+        removeBtn !== null,
+        "staffing-remove-btn must be present when canMutate=true (family E remove)",
+      );
+    } finally {
+      await unmount();
+    }
   }
 });
