@@ -16,6 +16,10 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import { useChannelsQuery } from "@/features/channels/hooks";
+import {
+  CHANNEL_FORM_FIELD_CONTROL_CLASS,
+  CHANNEL_FORM_FIELD_SHELL_CLASS,
+} from "@/features/channels/ui/channelFormStyles";
 import { buildChannelLink } from "@/features/messages/lib/channelLink";
 import { uploadMediaFile } from "@/shared/api/tauriMedia";
 import type { Channel } from "@/shared/api/types";
@@ -350,14 +354,20 @@ function InlineChipEditor({
           <X className="h-4 w-4" />
         </Button>
       </div>
-      <Input
-        aria-label={insert.type === "link" ? "Link title" : "Image alt text"}
-        className="bg-muted/50"
-        onChange={(event) => onChange({ ...insert, title: event.target.value })}
-        placeholder={insert.type === "link" ? "Community guide" : "Team photo"}
-        value={insert.title}
-      />
-      <div className="relative">
+      <div className={CHANNEL_FORM_FIELD_SHELL_CLASS}>
+        <Input
+          aria-label={insert.type === "link" ? "Link title" : "Image alt text"}
+          className={cn("h-10", CHANNEL_FORM_FIELD_CONTROL_CLASS)}
+          onChange={(event) =>
+            onChange({ ...insert, title: event.target.value })
+          }
+          placeholder={
+            insert.type === "link" ? "Community guide" : "Team photo"
+          }
+          value={insert.title}
+        />
+      </div>
+      <div className={cn("relative", CHANNEL_FORM_FIELD_SHELL_CLASS)}>
         <span className="pointer-events-none absolute inset-y-0 left-2.5 z-10 flex items-center text-muted-foreground">
           {insert.type === "link" ? (
             <Link2 className="h-4 w-4" />
@@ -370,7 +380,7 @@ function InlineChipEditor({
             insert.type === "link" ? "Link destination" : "Image source"
           }
           autoCapitalize="off"
-          className="bg-muted/50 pl-8"
+          className={cn("h-10 pl-8", CHANNEL_FORM_FIELD_CONTROL_CLASS)}
           onChange={(event) => onChange({ ...insert, url: event.target.value })}
           placeholder={
             insert.type === "link"

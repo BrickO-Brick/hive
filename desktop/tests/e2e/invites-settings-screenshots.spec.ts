@@ -407,11 +407,18 @@ test("channel inserts search the community channel list", async ({ page }) => {
   await expect(channelSearch).toBeVisible();
   await expect(page.getByLabel("Channel name")).toHaveCount(0);
   await expect(page.getByLabel("Channel destination")).toHaveCount(0);
+  await expect(channelEditor.getByRole("listbox")).toHaveCount(0);
+
+  const pickerBeforeSearch = await channelEditor.boundingBox();
 
   await channelSearch.fill("rand");
+  const pickerWithResults = await channelEditor.boundingBox();
+  expect(pickerWithResults?.height).toBeCloseTo(
+    pickerBeforeSearch?.height ?? 0,
+    0,
+  );
   const randomResult = channelEditor.getByRole("option", {
-    name: "random",
-    exact: true,
+    name: /^random/,
   });
   await expect(randomResult).toBeVisible();
   await waitForAnimations(page);
@@ -426,7 +433,7 @@ test("channel inserts search the community channel list", async ({ page }) => {
   await expect(
     page
       .getByRole("dialog", { name: "Edit channel" })
-      .getByRole("option", { name: "random", exact: true }),
+      .getByRole("option", { name: /^random/ }),
   ).toHaveAttribute("aria-selected", "true");
 });
 
