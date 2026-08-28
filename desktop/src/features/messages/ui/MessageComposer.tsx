@@ -157,14 +157,10 @@ function MessageComposerImpl({
   const internalMedia = useMediaUpload({ deferUploadsUntilSend: true });
   const media = mediaController ?? internalMedia;
   const voiceNote = useComposerVoiceNote({
-    hasAttachments: () =>
-      media.pendingImetaRef.current.length > 0 ||
-      media.queuedAttachmentsRef.current.length > 0,
-    onBeforeStart: () => {
-      setIsEmojiPickerOpen(false);
-      setIsFormattingOpen(false);
-    },
-    uploadFile: media.uploadFile,
+    draftKey: effectiveDraftKey,
+    media,
+    setFormattingOpen: setIsFormattingOpen,
+    setEmojiPickerOpen: setIsEmojiPickerOpen,
   });
   const {
     handleAttachmentEditSave,
@@ -803,8 +799,10 @@ function MessageComposerImpl({
       media.pendingImeta.length === 0 &&
       media.queuedAttachments.length === 0);
   const handleCaptureSelection = React.useCallback(() => {}, []);
-  const handlePaperclipClick = media.handlePaperclip;
-  const acceptsDrop = ownsDropZone && voiceNote.isIdle;
+  const handlePaperclipClick = React.useCallback(() => {
+    if (!voiceNote.hasAttachmentRef.current) void media.handlePaperclip();
+  }, [media.handlePaperclip, voiceNote.hasAttachmentRef]);
+  const acceptsDrop = ownsDropZone && voiceNote.acceptsAttachment;
   return (
     <>
       <footer
@@ -969,6 +967,7 @@ function MessageComposerImpl({
               isUploading={media.isUploading}
               isVoiceNoteProcessing={voiceNote.status === "processing"}
               isVoiceNoteRecording={voiceNote.status !== "idle"}
+              hasVoiceNoteAttachment={voiceNote.hasAttachment}
               voiceNoteRecorder={voiceNote.recorderElement}
               onCaptureSelection={handleCaptureSelection}
               onAutoPinConfirmationDismiss={dismissAutoPinConfirmation}

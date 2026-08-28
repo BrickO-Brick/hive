@@ -46,6 +46,7 @@ export const MessageComposerToolbar = React.memo(
     isUploading,
     isVoiceNoteProcessing = false,
     isVoiceNoteRecording = false,
+    hasVoiceNoteAttachment = false,
     voiceNoteRecorder,
     onCaptureSelection,
     onAutoPinConfirmationDismiss,
@@ -76,6 +77,7 @@ export const MessageComposerToolbar = React.memo(
     isUploading: boolean;
     isVoiceNoteProcessing?: boolean;
     isVoiceNoteRecording?: boolean;
+    hasVoiceNoteAttachment?: boolean;
     voiceNoteRecorder?: React.ReactNode;
     onCaptureSelection: () => void;
     onAutoPinConfirmationDismiss?: () => void;
@@ -239,7 +241,10 @@ export const MessageComposerToolbar = React.memo(
                     <Button
                       aria-label="Attach file"
                       disabled={
-                        composerDisabled || isUploading || isVoiceNoteRecording
+                        composerDisabled ||
+                        isUploading ||
+                        isVoiceNoteRecording ||
+                        hasVoiceNoteAttachment
                       }
                       onClick={onPaperclip}
                       onMouseDown={onCaptureSelection}

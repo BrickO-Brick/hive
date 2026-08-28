@@ -19,17 +19,29 @@ export type VoiceNoteRecording = {
   file: File;
 };
 
+type RecordingSession = {
+  cancelled: boolean;
+  chunks: Blob[];
+  context: AudioContext | null;
+  recorder: MediaRecorder | null;
+  resolveStop: ((recording: VoiceNoteRecording | null) => void) | null;
+  startedAt: number;
+  stream: MediaStream | null;
+};
+
+function releaseSessionAudio(session: RecordingSession) {
+  session.stream?.getTracks().forEach((track) => {
+    track.stop();
+  });
+  session.stream = null;
+  const context = session.context;
+  session.context = null;
+  if (context) void context.close().catch(() => undefined);
+}
+
 export function useVoiceNoteRecorder() {
-  const startInFlightRef = React.useRef(false);
-  const recorderRef = React.useRef<MediaRecorder | null>(null);
-  const streamRef = React.useRef<MediaStream | null>(null);
-  const contextRef = React.useRef<AudioContext | null>(null);
-  const chunksRef = React.useRef<Blob[]>([]);
-  const startedAtRef = React.useRef(0);
-  const cancelRef = React.useRef(false);
-  const resolveStopRef = React.useRef<
-    ((recording: VoiceNoteRecording | null) => void) | null
-  >(null);
+  const mountedRef = React.useRef(true);
+  const sessionRef = React.useRef<RecordingSession | null>(null);
   const [status, setStatus] = React.useState<
     "idle" | "recording" | "processing"
   >("idle");
@@ -37,29 +49,40 @@ export function useVoiceNoteRecorder() {
   const [levels, setLevels] = React.useState<number[]>([]);
   const [error, setError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    if (status !== "idle") startInFlightRef.current = false;
-  }, [status]);
-
-  const releaseAudio = React.useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => {
-      track.stop();
-    });
-    streamRef.current = null;
-    const context = contextRef.current;
-    contextRef.current = null;
-    if (context) void context.close().catch(() => undefined);
+  const cancel = React.useCallback(() => {
+    const session = sessionRef.current;
+    if (!session) return;
+    session.cancelled = true;
+    sessionRef.current = null;
+    session.resolveStop?.(null);
+    session.resolveStop = null;
+    const recorder = session.recorder;
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+    releaseSessionAudio(session);
+    if (mountedRef.current) {
+      setStatus("idle");
+      setElapsedSeconds(0);
+    }
   }, []);
 
   const start = React.useCallback(async () => {
-    if (status !== "idle" || startInFlightRef.current) return;
-    startInFlightRef.current = true;
+    if (status !== "idle" || sessionRef.current) return;
     setError(null);
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      startInFlightRef.current = false;
       setError("Voice recording is not available in this environment.");
       return;
     }
+
+    const session: RecordingSession = {
+      cancelled: false,
+      chunks: [],
+      context: null,
+      recorder: null,
+      resolveStop: null,
+      startedAt: 0,
+      stream: null,
+    };
+    sessionRef.current = session;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -69,72 +92,100 @@ export function useVoiceNoteRecorder() {
           noiseSuppression: true,
         },
       });
+      session.stream = stream;
+      if (
+        session.cancelled ||
+        !mountedRef.current ||
+        sessionRef.current !== session
+      ) {
+        releaseSessionAudio(session);
+        return;
+      }
+
       const mimeType = supportedMimeType();
       const recorder = mimeType
         ? new MediaRecorder(stream, { mimeType })
         : new MediaRecorder(stream);
+      session.recorder = recorder;
       const context = new AudioContext();
+      session.context = context;
       const analyser = context.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.72;
       context.createMediaStreamSource(stream).connect(analyser);
-
-      chunksRef.current = [];
-      cancelRef.current = false;
-      recorderRef.current = recorder;
-      streamRef.current = stream;
-      contextRef.current = context;
-      startedAtRef.current = performance.now();
+      session.startedAt = performance.now();
       setElapsedSeconds(0);
       setLevels([]);
 
       recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (event.data.size > 0) session.chunks.push(event.data);
       });
       recorder.addEventListener("stop", () => {
         void (async () => {
           const actualMime = recorder.mimeType || mimeType || "audio/webm";
-          const blob = new Blob(chunksRef.current, { type: actualMime });
+          const blob = new Blob(session.chunks, { type: actualMime });
+          session.chunks = [];
           let recording: VoiceNoteRecording | null = null;
-          if (!cancelRef.current && blob.size > 0) {
+          if (!session.cancelled && blob.size > 0) {
             try {
               const encoded = await blob.arrayBuffer();
               const decoded = await context.decodeAudioData(encoded.slice(0));
-              const channels = Array.from(
-                { length: decoded.numberOfChannels },
-                (_, index) => decoded.getChannelData(index),
-              );
-              const wav = encodeVoiceNoteWav(channels, decoded.sampleRate);
-              const wavBuffer = new ArrayBuffer(wav.byteLength);
-              new Uint8Array(wavBuffer).set(wav);
-              recording = {
-                duration: decoded.duration,
-                file: new File([wavBuffer], `voice-note-${Date.now()}.wav`, {
-                  type: "audio/wav",
-                }),
-              };
+              if (
+                !session.cancelled &&
+                mountedRef.current &&
+                sessionRef.current === session
+              ) {
+                const channels = Array.from(
+                  { length: decoded.numberOfChannels },
+                  (_, index) => decoded.getChannelData(index),
+                );
+                const wav = encodeVoiceNoteWav(channels, decoded.sampleRate);
+                const wavBuffer = new ArrayBuffer(wav.byteLength);
+                new Uint8Array(wavBuffer).set(wav);
+                recording = {
+                  duration: decoded.duration,
+                  file: new File([wavBuffer], `voice-note-${Date.now()}.wav`, {
+                    type: "audio/wav",
+                  }),
+                };
+              }
             } catch {
-              setError("Buzz could not prepare this voice note for upload.");
+              if (
+                !session.cancelled &&
+                mountedRef.current &&
+                sessionRef.current === session
+              ) {
+                setError("Buzz could not prepare this voice note for upload.");
+              }
             }
           }
-          chunksRef.current = [];
-          recorderRef.current = null;
-          releaseAudio();
-          setStatus("idle");
-          setElapsedSeconds(0);
-          resolveStopRef.current?.(recording);
-          resolveStopRef.current = null;
+          releaseSessionAudio(session);
+          if (sessionRef.current === session) {
+            sessionRef.current = null;
+            if (mountedRef.current) {
+              setStatus("idle");
+              setElapsedSeconds(0);
+            }
+          }
+          session.resolveStop?.(recording);
+          session.resolveStop = null;
         })();
       });
       recorder.addEventListener("error", () => {
-        setError("The voice recording was interrupted.");
+        if (mountedRef.current && sessionRef.current === session) {
+          setError("The voice recording was interrupted.");
+        }
       });
       recorder.start(250);
       setStatus("recording");
 
       const samples = new Uint8Array(analyser.fftSize);
       const levelTimer = window.setInterval(() => {
-        if (recorder.state !== "recording") {
+        if (
+          recorder.state !== "recording" ||
+          session.cancelled ||
+          sessionRef.current !== session
+        ) {
           window.clearInterval(levelTimer);
           return;
         }
@@ -146,12 +197,20 @@ export function useVoiceNoteRecorder() {
         }
         const rms = Math.sqrt(sumSquares / samples.length);
         const level = Math.min(1, rms * 5.5);
+        if (!mountedRef.current) return;
         setLevels((previous) => [...previous, level]);
-        setElapsedSeconds((performance.now() - startedAtRef.current) / 1000);
+        setElapsedSeconds((performance.now() - session.startedAt) / 1000);
       }, 90);
     } catch (cause) {
-      startInFlightRef.current = false;
-      releaseAudio();
+      releaseSessionAudio(session);
+      if (
+        session.cancelled ||
+        !mountedRef.current ||
+        sessionRef.current !== session
+      ) {
+        return;
+      }
+      sessionRef.current = null;
       const denied =
         cause instanceof DOMException &&
         (cause.name === "NotAllowedError" || cause.name === "SecurityError");
@@ -161,35 +220,38 @@ export function useVoiceNoteRecorder() {
           : "Buzz could not start the voice recorder.",
       );
     }
-  }, [releaseAudio, status]);
+  }, [status]);
 
   const stop = React.useCallback(
-    (cancel = false): Promise<VoiceNoteRecording | null> => {
-      const recorder = recorderRef.current;
-      if (!recorder || recorder.state === "inactive") {
+    (discard = false): Promise<VoiceNoteRecording | null> => {
+      if (discard) {
+        cancel();
         return Promise.resolve(null);
       }
-      cancelRef.current = cancel;
+      const session = sessionRef.current;
+      const recorder = session?.recorder;
+      if (!session || !recorder || recorder.state === "inactive") {
+        return Promise.resolve(null);
+      }
       setStatus("processing");
       return new Promise((resolve) => {
-        resolveStopRef.current = resolve;
+        session.resolveStop = resolve;
         recorder.stop();
       });
     },
-    [],
+    [cancel],
   );
 
-  React.useEffect(
-    () => () => {
-      cancelRef.current = true;
-      const recorder = recorderRef.current;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      releaseAudio();
-    },
-    [releaseAudio],
-  );
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      cancel();
+    };
+  }, [cancel]);
 
   return {
+    cancel,
     elapsedSeconds,
     error,
     levels,
