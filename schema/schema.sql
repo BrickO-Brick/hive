@@ -3120,14 +3120,10 @@ BEGIN
         OR NEW.selector_fingerprint IS DISTINCT FROM OLD.selector_fingerprint
         OR NEW.floor_generation < OLD.floor_generation
         OR COALESCE(NEW.binding_version_floor, 0) < COALESCE(OLD.binding_version_floor, 0)
-        OR COALESCE(NEW.relationship_revision_floor, 0)
-            < COALESCE(OLD.relationship_revision_floor, 0)
         OR (
             NEW.floor_generation = OLD.floor_generation
             AND COALESCE(NEW.binding_version_floor, 0)
                 = COALESCE(OLD.binding_version_floor, 0)
-            AND COALESCE(NEW.relationship_revision_floor, 0)
-                = COALESCE(OLD.relationship_revision_floor, 0)
         )
         OR NEW.operation_id IS NOT DISTINCT FROM OLD.operation_id
         OR NEW.updated_at <= OLD.updated_at

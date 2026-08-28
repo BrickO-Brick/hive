@@ -2838,4 +2838,136 @@ mod tests {
             "expected immutability rejection, got: {rejected}"
         );
     }
+
+    /// NIP-FI monotonic invalidation-floor advancement must actually run
+    /// through the `BEFORE UPDATE` guard. PL/pgSQL defers record-field
+    /// resolution to execution, so a guard that references a column absent from
+    /// its Phase-A table passes every catalog/parity test yet aborts the first
+    /// real advancement. This test exercises live UPDATEs: legitimate forward
+    /// moves on `floor_generation` and `binding_version_floor` must commit, and
+    /// equal/regressive moves must be rejected.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn authorization_invalidation_floor_advances_through_guard() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(41, &pool)
+            .await
+            .expect("apply migrations 1-41");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("floor-guard-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Each floor state points at an operation receipt via
+        // (community_id, operation_id, request_fingerprint). Seed one receipt
+        // per operation the test advances through.
+        let operations: [(uuid::Uuid, u8); 4] = [
+            (uuid::Uuid::new_v4(), 0x11),
+            (uuid::Uuid::new_v4(), 0x22),
+            (uuid::Uuid::new_v4(), 0x33),
+            (uuid::Uuid::new_v4(), 0x44),
+        ];
+        for (operation_id, fp_byte) in operations {
+            sqlx::query(
+                "INSERT INTO authorization_operation_receipts \
+                 (community_id, operation_id, request_fingerprint, operation_kind, \
+                  actor_fingerprint, outcome_code, result_digest) \
+                 VALUES ($1, $2, $3, 12, $4, 1, $5)",
+            )
+            .bind(community_id)
+            .bind(operation_id)
+            .bind(vec![fp_byte; 32])
+            .bind(vec![0xAA_u8; 32])
+            .bind(vec![0xBB_u8; 32])
+            .execute(&pool)
+            .await
+            .expect("seed operation receipt");
+        }
+
+        // selector_kind 3 requires binding_version_floor, so this row exercises
+        // both monotonic dimensions the guard still governs.
+        let selector_fingerprint = vec![0xCC_u8; 32];
+        sqlx::query(
+            "INSERT INTO authorization_invalidation_floors \
+             (community_id, selector_kind, selector_fingerprint, floor_generation, \
+              binding_version_floor, operation_id, request_fingerprint, updated_at) \
+             VALUES ($1, 3, $2, 1, 1, $3, $4, '2026-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(&selector_fingerprint)
+        .bind(operations[0].0)
+        .bind(vec![operations[0].1; 32])
+        .execute(&pool)
+        .await
+        .expect("insert initial invalidation floor");
+
+        let advance =
+            |generation: i64, binding_floor: i64, op_index: usize, updated_at: &'static str| {
+                sqlx::query(
+                    "UPDATE authorization_invalidation_floors \
+                 SET floor_generation = $1, binding_version_floor = $2, \
+                     operation_id = $3, request_fingerprint = $4, updated_at = $5::timestamptz \
+                 WHERE community_id = $6 AND selector_kind = 3 AND selector_fingerprint = $7",
+                )
+                .bind(generation)
+                .bind(binding_floor)
+                .bind(operations[op_index].0)
+                .bind(vec![operations[op_index].1; 32])
+                .bind(updated_at)
+                .bind(community_id)
+                .bind(selector_fingerprint.clone())
+                .execute(&pool)
+            };
+
+        // Forward generation advance commits.
+        advance(2, 1, 1, "2026-01-01T00:01:00Z")
+            .await
+            .expect("forward floor_generation advance must pass the guard");
+
+        // Forward binding_version_floor advance commits (generation unchanged).
+        advance(2, 2, 2, "2026-01-01T00:02:00Z")
+            .await
+            .expect("forward binding_version_floor advance must pass the guard");
+
+        // Regressive generation is rejected.
+        let regressive = advance(1, 2, 3, "2026-01-01T00:03:00Z")
+            .await
+            .expect_err("regressive floor_generation must be rejected");
+        assert!(
+            regressive.to_string().contains("cannot move backward"),
+            "expected monotonic rejection, got: {regressive}"
+        );
+
+        // Equal floors with only a new operation is a rejected no-op advance.
+        let no_op = advance(2, 2, 3, "2026-01-01T00:03:00Z")
+            .await
+            .expect_err("equal-floor no-op advance must be rejected");
+        assert!(
+            no_op.to_string().contains("cannot move backward"),
+            "expected no-op rejection, got: {no_op}"
+        );
+
+        // The committed state reflects only the two accepted advances.
+        let (generation, binding_floor): (i64, i64) = sqlx::query_as(
+            "SELECT floor_generation, binding_version_floor \
+             FROM authorization_invalidation_floors \
+             WHERE community_id = $1 AND selector_kind = 3 AND selector_fingerprint = $2",
+        )
+        .bind(community_id)
+        .bind(&selector_fingerprint)
+        .fetch_one(&pool)
+        .await
+        .expect("read final floor state");
+        assert_eq!(
+            (generation, binding_floor),
+            (2, 2),
+            "only the accepted forward advances may persist"
+        );
+    }
 }
