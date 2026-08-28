@@ -340,6 +340,16 @@ fn content_matches_nip_ap_vector() {
         "serialized content drifted from the NIP-AP Event 1 vector"
     );
 
+    let mut with_transport = content.clone();
+    with_transport.acp_command = Some("buzz-janet-acp".into());
+    assert_eq!(
+        serde_json::to_string(&with_transport).unwrap(),
+        VECTOR.replace(
+            "\"avatar_url\":",
+            "\"acp_command\":\"buzz-janet-acp\",\"avatar_url\":"
+        )
+    );
+
     // Hash invariance across the unified-model widening: REAL pre-revision
     // content bytes (fixture string, not a round-trip through the new
     // struct) must parse and re-serialize byte-identically, so

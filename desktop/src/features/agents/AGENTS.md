@@ -270,6 +270,9 @@ with a TypeScript lookup table or an id comparison in a component.
     Foreign artifacts with other command values are rejected; exports omit
     legacy machine-local commands. Owner-native and owner-device synchronization
     retain custom-command compatibility and are not an execution sandbox.
+    Shared persona heads redact nonportable commands and emit explicit stock
+    for resets; owner replay of a redacted head preserves only a nonportable
+    local override. That local path is not synchronized through catalog heads.
 
 ## The tests that enforce this
 

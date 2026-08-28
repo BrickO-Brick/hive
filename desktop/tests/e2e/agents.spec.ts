@@ -516,12 +516,13 @@ test("an ACP-only edit publishes the selected transport", async ({ page }) => {
         systemPrompt: "Review changes.",
         runtime: "goose",
         model: "claude-opus-4-5",
-        shared: true,
+        provider: "anthropic",
       },
     ],
   });
   await gotoApp(page);
   await page.getByTestId("open-agents-view").click();
+  await sharePersonaToCatalog(page, "ACP Only");
   await page.getByLabel("Open actions for ACP Only").click();
   await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
   const dialog = page.getByTestId("persona-dialog");

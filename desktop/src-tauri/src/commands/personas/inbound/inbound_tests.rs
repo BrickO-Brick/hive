@@ -920,3 +920,56 @@ fn inbound_definition_less_agent_accepts_visible_multiline_prompt() {
 
     assert!(validate_inbound_managed_agent_definition(&inbound).is_ok());
 }
+
+#[test]
+fn shared_transport_redaction_preserves_local_override_but_explicit_stock_resets() {
+    use crate::managed_agents::persona_events::{build_persona_event, persona_from_event};
+    let keys = nostr::Keys::generate();
+    let mut local = local_in_app();
+    local.acp_command = Some("/opt/custom-acp".into());
+    let mut published = local.clone();
+    published.shared = true;
+    let event = build_persona_event(&published)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert!(!event.content.contains("/opt/custom-acp"));
+    let mut personas = vec![local];
+    for _ in 0..2 {
+        apply_inbound_persona(&mut personas, persona_from_event(&event).unwrap());
+        assert_eq!(personas[0].acp_command.as_deref(), Some("/opt/custom-acp"));
+    }
+    let mut fresh_device = Vec::new();
+    apply_inbound_persona(&mut fresh_device, persona_from_event(&event).unwrap());
+    assert_eq!(fresh_device[0].acp_command, None);
+    // Redaction must not preserve a stale portable wrapper.
+    personas[0].acp_command = Some("buzz-old-acp".into());
+    apply_inbound_persona(&mut personas, persona_from_event(&event).unwrap());
+    assert_eq!(personas[0].acp_command, None);
+    // Stock is normalized to None by the store, but shared publication makes
+    // the reset explicit so it also replaces an owner's legacy local command.
+    personas[0].acp_command = Some("/opt/custom-acp".into());
+    published.acp_command = None;
+    let reset = build_persona_event(&published)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    apply_inbound_persona(&mut personas, persona_from_event(&reset).unwrap());
+    assert_eq!(personas[0].acp_command.as_deref(), Some("buzz-acp"));
+    // Non-catalog owner-sync keeps both legacy custom values and clears.
+    published.shared = false;
+    published.acp_command = Some("/opt/other-acp".into());
+    let custom = build_persona_event(&published)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    apply_inbound_persona(&mut personas, persona_from_event(&custom).unwrap());
+    assert_eq!(personas[0].acp_command.as_deref(), Some("/opt/other-acp"));
+    published.acp_command = None;
+    let clear = build_persona_event(&published)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    apply_inbound_persona(&mut personas, persona_from_event(&clear).unwrap());
+    assert_eq!(personas[0].acp_command, None);
+}

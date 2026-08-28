@@ -63,6 +63,7 @@ The `content` field is a **plaintext** (unencrypted) JSON object:
 {
   "display_name": "<string>",
   "system_prompt": "<string | null>",
+  "acp_command": "<string | null>",
   "avatar_url": "<string | null>",
   "runtime": "<string | null>",
   "model": "<string | null>",
@@ -85,6 +86,7 @@ The `content` field is a **plaintext** (unencrypted) JSON object:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `system_prompt` | string \| null | `null` | The system prompt injected into agent sessions. Optional since the unified agent model: a definition can be pure configuration (e.g. provider/model only). Readers MUST treat an absent or `null` prompt as "no prompt". |
+| `acp_command` | string \| null | `"buzz-acp"` | ACP transport command, distinct from the runtime/harness. See transport portability below. |
 | `avatar_url` | string \| null | `null` | URL to an avatar image. |
 | `runtime` | string \| null | `null` | ACP runtime identifier (e.g. `"goose"`, `"claude-code"`). |
 | `model` | string \| null | `null` | Model identifier (e.g. `"claude-opus-4"`). |
@@ -109,6 +111,31 @@ carrying these fields round-trips through the wire type but the values do not
 survive a local edit-and-republish cycle.
 
 Unknown fields MUST be ignored by readers (forward compatibility).
+
+### Transport portability
+
+`acp_command` is optional; legacy absence/null selects stock `buzz-acp` for
+new definitions. Portable commands are `buzz-acp` or a name of at most 255
+ASCII bytes matching `buzz-[A-Za-z0-9_-]+-acp`. Discovery resolves these aliases
+on the receiving device; publication does not guarantee local availability.
+
+Catalog publications carry `["shared", "true"]`. Their writers MUST omit
+nonportable commands (including machine-local paths), and MUST emit explicit
+`"buzz-acp"` when stock is selected. Foreign catalog readers MUST reject a
+present nonportable value, and use stock when the field is omitted/null.
+
+Owner-to-self synchronization of non-catalog heads retains existing custom
+command compatibility; it is not a foreign adoption path or a sandbox. On an
+owner's existing definition, absent/null transport on a shared head MUST
+preserve an existing nonportable local command, because that value may have
+been redacted. Otherwise absence selects stock. An explicit portable value,
+including `"buzz-acp"`, replaces the previous command. A shared custom command
+therefore remains local rather than synchronizing its path to another device.
+The `shared` tag is catalog presentation, not confidentiality: all kind:30175
+content remains plaintext, including non-catalog heads.
+
+Writers serialize optional `acp_command` after `system_prompt` and before
+`avatar_url`; omission preserves the existing reference vector's bytes.
 
 ### Prohibited: secrets in content
 

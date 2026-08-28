@@ -59,8 +59,8 @@ const PUBLISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// The JSON body stored in a persona event's content field.
 ///
 /// Field order MUST match the NIP-AP reference vectors (`docs/nips/NIP-AP.md`
-/// content body: `display_name, system_prompt, avatar_url, runtime, model,
-/// provider, name_pool`). serde emits fields in declaration order, so this
+/// content body: `display_name, system_prompt, acp_command, avatar_url, runtime,
+/// model, provider, name_pool, respond_to, respond_to_allowlist, parallelism`). serde emits fields in declaration order, so this
 /// order pins the exact content bytes and therefore the NIP-01 event id — a
 /// reorder here breaks cross-implementation interop. Guarded by
 /// `content_matches_nip_ap_vector`.
@@ -178,7 +178,18 @@ pub fn monotonic_created_at(prior_head_created_at: Option<i64>) -> nostr::Timest
 pub fn build_persona_event(record: &AgentDefinition) -> Result<EventBuilder, String> {
     // Single projection point — persona_event_content owns the field mapping
     // (and the hash-stability rules that come with it).
-    let content = persona_event_content(record);
+    let mut content = persona_event_content(record);
+    if record.shared {
+        // Public catalog heads carry only portable aliases. Explicit stock
+        // distinguishes a reset from an omitted machine-local owner override.
+        content.acp_command = match record.acp_command.as_deref() {
+            None => Some(super::DEFAULT_ACP_COMMAND.to_string()),
+            Some(command) if super::backend::is_portable_acp_command(command) => {
+                Some(command.to_string())
+            }
+            Some(_) => None,
+        };
+    }
 
     let content_json = serde_json::to_string(&content)
         .map_err(|e| format!("failed to serialize persona content: {e}"))?;
