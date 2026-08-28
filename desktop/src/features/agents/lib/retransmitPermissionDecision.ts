@@ -13,13 +13,16 @@ import type { ControlResultFrame } from "@/shared/api/types";
  * fail-closed timeout even though the owner decided promptly.
  *
  * This orchestrator resends the decision on a fixed cadence until it observes a
- * `control_result` for THIS nonce, then stops. Any matching frame settles the
- * loop — the harness has an authoritative answer (`sent` / `already_decided` =
- * applied; a failure status is handled by the card's retry path), and resending
- * cannot change it. If no reply arrives before the card's own `expiresAt`
- * deadline the loop resolves `"expired"`: the card times out on its own and a
- * decision applied past expiry would be rejected anyway, so retransmitting past
- * it is pointless.
+ * `control_result` for THIS nonce, then stops. The outcome depends on the frame's
+ * status: `sent` and `already_decided` mean the harness routed or already applied
+ * the decision — the loop resolves `"acked"`. The four failure statuses
+ * (`no_active_turn`, `channel_full`, `channel_closed`, `no_channel`) mean the
+ * harness received the frame but could not route it — the loop resolves
+ * `"failed"`, stopping retransmission (re-sending the same nonce cannot change an
+ * authoritative routing refusal), and the card returns to the actionable state for
+ * owner retry. If no reply arrives before the card's own `expiresAt` deadline the
+ * loop resolves `"expired"`: the card times out on its own and a decision applied
+ * past expiry would be rejected anyway, so retransmitting past it is pointless.
  *
  * A nonce guard scopes the settling frame to this exact decision: a replayed or
  * concurrent `control_result` for a different card carries a different nonce and
@@ -60,11 +63,11 @@ export function retransmitPermissionDecision({
    * retransmit so the loop never resends past expiry.
    */
   deadlineReached: () => boolean;
-}): Promise<"acked" | "expired"> {
-  return new Promise<"acked" | "expired">((resolve) => {
+}): Promise<"acked" | "expired" | "failed"> {
+  return new Promise<"acked" | "expired" | "failed">((resolve) => {
     let unsubscribe = () => {};
     let cancelRetransmit = () => {};
-    const finish = (outcome: "acked" | "expired") => {
+    const finish = (outcome: "acked" | "expired" | "failed") => {
       cancelRetransmit();
       unsubscribe();
       resolve(outcome);
@@ -90,7 +93,13 @@ export function retransmitPermissionDecision({
       ) {
         return;
       }
-      finish("acked");
+      // `sent` and `already_decided` are both success: the harness routed or
+      // has already applied the decision. The four failure statuses indicate the
+      // harness received the frame but could not route it — retransmitting the
+      // same nonce cannot change that, so stop and let the card retry.
+      const success =
+        frame.status === "sent" || frame.status === "already_decided";
+      finish(success ? "acked" : "failed");
     });
     cancelRetransmit = scheduleRetransmit(transmit);
 

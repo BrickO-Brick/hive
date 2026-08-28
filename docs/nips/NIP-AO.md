@@ -284,15 +284,19 @@ event to confirm receipt. This is an `acp_read`-style telemetry frame (kind =
 ```json
 {
   "type":         "permission_decision",
-  "status":       "sent" | "no_active_turn" | "channel_full" | "channel_closed" | "no_channel",
+  "status":       "sent" | "already_decided" | "no_active_turn" | "channel_full" | "channel_closed" | "no_channel",
   "requestNonce": "<nonce>",
   "optionId":     "<optionId>"
 }
 ```
 
 `status: "sent"` means the decision was delivered to the in-flight read loop.
-Other statuses indicate delivery failure; the per-request timeout will fail the
-entry closed.
+`status: "already_decided"` means the nonce was already applied by a prior delivery
+(a retransmit reached the harness after the first copy was accepted); treat it as
+success. The four remaining statuses (`no_active_turn`, `channel_full`,
+`channel_closed`, `no_channel`) indicate delivery failure — the harness received
+the frame but could not route the decision; the desktop should re-enable the card
+so the owner can retry.
 
 ## Ephemerality Contract
 

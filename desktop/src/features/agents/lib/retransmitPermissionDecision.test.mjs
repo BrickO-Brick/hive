@@ -204,3 +204,77 @@ test("retransmitPermissionDecision expires cleanly when every send rejects", asy
   }
   assert.deepEqual(unhandled, [], "rejected sends must not surface unhandled");
 });
+
+test("retransmitPermissionDecision resolves failed on a negative control_result status", async () => {
+  // Carl's regression: a failure status (no_active_turn / channel_full /
+  // channel_closed / no_channel) means the harness answered authoritatively but
+  // could not route the decision. The loop must stop retransmitting (re-sending
+  // the same nonce cannot change the routing refusal) and resolve "failed" so
+  // the card can re-enable for owner retry.
+  for (const status of [
+    "no_active_turn",
+    "channel_full",
+    "channel_closed",
+    "no_channel",
+  ]) {
+    const h = harness();
+    await drainMicrotasks();
+    assert.equal(h.sendCalls, 1, `first send fired (${status})`);
+
+    h.push(frame({ status }));
+    assert.equal(
+      await h.outcome,
+      "failed",
+      `negative status "${status}" must resolve "failed"`,
+    );
+    assert.equal(h.unsubscribeCalls, 1, `listener torn down on "${status}"`);
+    assert.equal(
+      h.cancelRetransmitCalls,
+      1,
+      `scheduler torn down on "${status}"`,
+    );
+
+    // A tick after failure must NOT resend — the loop has settled.
+    h.tick();
+    await drainMicrotasks();
+    assert.equal(
+      h.sendCalls,
+      1,
+      `no resend after failure settle on "${status}"`,
+    );
+  }
+});
+
+test("retransmitPermissionDecision: negative result then retry delivers acked", async () => {
+  // Carl's exact regression: a failure reply leaves the card actionable, the
+  // owner retries (new harness() = fresh loop), and the second attempt succeeds.
+  const first = harness();
+  await drainMicrotasks();
+  first.push(frame({ status: "no_active_turn" }));
+  assert.equal(await first.outcome, "failed");
+
+  // Owner retries — fresh orchestrator instance.
+  const second = harness();
+  await drainMicrotasks();
+  second.push(frame({ status: "sent" }));
+  assert.equal(await second.outcome, "acked");
+  assert.equal(second.unsubscribeCalls, 1);
+  assert.equal(second.cancelRetransmitCalls, 1);
+});
+
+test("retransmitPermissionDecision: frame after failure settlement is inert", async () => {
+  // A late duplicate `control_result` for the same nonce arriving after the
+  // loop has already settled (via a failure status) must not re-resolve.
+  const h = harness();
+  await drainMicrotasks();
+  h.push(frame({ status: "no_active_turn" }));
+  assert.equal(await h.outcome, "failed");
+
+  // The unsubscribe detaches the listener, so a late push is dropped.
+  // Verify the loop doesn't try to double-resolve or re-enable a second loop.
+  h.push(frame({ status: "sent" })); // arrives after settle — inert
+  h.tick(); // tick after settle must not resend
+  await drainMicrotasks();
+  assert.equal(h.sendCalls, 1, "no resend after settled failure");
+  assert.equal(h.unsubscribeCalls, 1, "listener detached exactly once");
+});

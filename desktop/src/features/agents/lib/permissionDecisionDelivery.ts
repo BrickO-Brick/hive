@@ -41,9 +41,10 @@ export function resolveDecisionDeadlineSecs(
  * the pure {@link retransmitPermissionDecision} orchestrator.
  *
  * Fire-and-forget from the caller's view: the returned promise resolves when
- * the harness acknowledges the nonce or the card's deadline passes. The card's
- * UI reaction (resolve / retry) is driven separately by the `control_result`
- * reducer path, so callers need not await this.
+ * the harness acknowledges the nonce, the harness returns an authoritative
+ * failure (the card re-enables for retry), or the card's deadline passes.
+ * The card's UI reaction (resolve / retry) is driven separately by the
+ * `control_result` reducer path, so callers need not await this.
  */
 export function startPermissionDecisionDelivery({
   agentPubkey,
@@ -57,7 +58,7 @@ export function startPermissionDecisionDelivery({
   requestNonce: string;
   optionId: string;
   deadlineSecs: number;
-}): Promise<"acked" | "expired"> {
+}): Promise<"acked" | "expired" | "failed"> {
   return retransmitPermissionDecision({
     requestNonce,
     send: () =>

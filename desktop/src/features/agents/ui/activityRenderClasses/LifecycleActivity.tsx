@@ -152,12 +152,22 @@ function PermissionDecisionButtons({
                 requestNonce,
                 optionId,
                 deadlineSecs,
-              }).catch(() => {
-                // The delivery loop never rejects on a failed send — it retries
-                // until ack or the card's 300 s fail-closed expiry. This only
-                // fires on an unexpected error; re-enable so the user can retry.
-                setPending(null);
-              });
+              })
+                .then((outcome) => {
+                  // `"failed"` means the harness received the frame but could
+                  // not route it — re-enable so the user can retry. The reducer
+                  // `deliveryFailed` path also re-enables via the `control_result`
+                  // frame; this fast path handles the case before the reducer
+                  // fires. `"acked"` / `"expired"` are terminal; the transcript
+                  // item updates via the observer relay and no retry is needed.
+                  if (outcome === "failed") setPending(null);
+                })
+                .catch(() => {
+                  // The delivery loop never rejects — it resolves one of
+                  // "acked" | "expired" | "failed". This branch guards against
+                  // any unexpected error and re-enables for safety.
+                  setPending(null);
+                });
             }}
           >
             {pending === optionId ? "…" : displayLabel}

@@ -112,13 +112,25 @@ function PermissionButtons({
 
   if (expired) {
     return (
-      <div className="mt-1.5 text-xs text-muted-foreground">Timed out</div>
+      <div
+        aria-live="polite"
+        className="mt-1.5 text-xs text-muted-foreground"
+        role="status"
+      >
+        Timed out
+      </div>
     );
   }
 
   if (submitted !== null) {
     return (
-      <div className="mt-1.5 text-xs text-muted-foreground">Decision sent</div>
+      <div
+        aria-live="polite"
+        className="mt-1.5 text-xs text-muted-foreground"
+        role="status"
+      >
+        Decision sent
+      </div>
     );
   }
 
@@ -144,12 +156,22 @@ function PermissionButtons({
                   requestNonce: request.requestNonce,
                   optionId,
                   deadlineSecs: request.expiresAt,
-                }).catch(() => {
-                  // The delivery loop never rejects on a failed send — it
-                  // retries until ack or expiry. This only fires on an
-                  // unexpected error; re-enable so the user can retry.
-                  setSubmitted(null);
-                });
+                })
+                  .then((outcome) => {
+                    // `"failed"` means the harness received the frame but could
+                    // not route it (no_active_turn / channel_full / etc.) —
+                    // re-enable so the owner can retry. `"acked"` and `"expired"`
+                    // are terminal: the harness applied the decision or the card
+                    // timed out; the card transitions away via the kind-40003 edit
+                    // or expiry countdown and no retry is needed.
+                    if (outcome === "failed") setSubmitted(null);
+                  })
+                  .catch(() => {
+                    // The delivery loop never rejects — it resolves one of
+                    // "acked" | "expired" | "failed". This branch guards against
+                    // any unexpected error and re-enables for safety.
+                    setSubmitted(null);
+                  });
               }}
             >
               {label}
