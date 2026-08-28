@@ -271,15 +271,56 @@ pub fn load_managed_agents<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Vec<ManagedAgentRecord>, String> {
     let mut records = load_agent_store(app)?;
-    records.retain(|record| !record.pubkey.is_empty());
+    filter_managed_agents_for_build(
+        &mut records,
+        crate::managed_agents::personas::bestie_build_enabled(),
+    );
     hydrate_keys(&mut records);
     Ok(records)
+}
+
+pub(crate) fn filter_managed_agents_for_build(
+    records: &mut Vec<ManagedAgentRecord>,
+    include_bestie: bool,
+) {
+    records.retain(|record| {
+        !record.pubkey.is_empty()
+            && record.persona_id.as_deref().is_none_or(|persona_id| {
+                crate::managed_agents::personas::persona_available_in_build(
+                    persona_id,
+                    include_bestie,
+                )
+            })
+    });
 }
 
 /// Load the key-less agent *definitions* (former personas) from the unified
 /// store. The persona compatibility shim (`load_personas`) presents these in
 /// the legacy shape via `to_definition_view`.
 pub(crate) fn load_agent_definitions<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Vec<ManagedAgentRecord>, String> {
+    let mut records = load_agent_definitions_unfiltered(app)?;
+    filter_agent_definitions_for_build(
+        &mut records,
+        crate::managed_agents::personas::bestie_build_enabled(),
+    );
+    Ok(records)
+}
+
+pub(crate) fn filter_agent_definitions_for_build(
+    records: &mut Vec<ManagedAgentRecord>,
+    include_bestie: bool,
+) {
+    records.retain(|record| {
+        record.pubkey.is_empty()
+            && record.slug.as_deref().is_none_or(|slug| {
+                crate::managed_agents::personas::persona_available_in_build(slug, include_bestie)
+            })
+    });
+}
+
+pub(crate) fn load_agent_definitions_unfiltered<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Vec<ManagedAgentRecord>, String> {
     let mut records = load_agent_store(app)?;
@@ -376,8 +417,14 @@ pub fn save_managed_agents<R: tauri::Runtime>(
     app: &AppHandle<R>,
     records: &[ManagedAgentRecord],
 ) -> Result<(), String> {
-    let definitions = load_agent_definitions(app).unwrap_or_default();
-    let mut sorted = records.to_vec();
+    let existing = load_agent_store(app).unwrap_or_default();
+    let definitions = existing
+        .iter()
+        .filter(|record| record.pubkey.is_empty())
+        .cloned()
+        .collect();
+    let include_bestie = crate::managed_agents::personas::bestie_build_enabled();
+    let mut sorted = instances_for_save(records, &existing, include_bestie);
     // A caller-supplied key-less record would collide with the definition
     // half re-read below; instances always carry a pubkey.
     sorted.retain(|record| !record.pubkey.is_empty());
@@ -394,6 +441,48 @@ pub fn save_managed_agents<R: tauri::Runtime>(
     persist_agent_keys(&mut sorted);
 
     write_agent_store(app, definitions, sorted)
+}
+
+fn instances_for_save(
+    records: &[ManagedAgentRecord],
+    existing: &[ManagedAgentRecord],
+    include_bestie: bool,
+) -> Vec<ManagedAgentRecord> {
+    let mut complete: Vec<_> = records
+        .iter()
+        .filter(|record| {
+            !record.pubkey.is_empty()
+                && record.persona_id.as_deref().is_none_or(|persona_id| {
+                    crate::managed_agents::personas::persona_available_in_build(
+                        persona_id,
+                        include_bestie,
+                    )
+                })
+        })
+        .cloned()
+        .collect();
+
+    if !include_bestie {
+        let hidden: Vec<_> = existing
+            .iter()
+            .filter(|record| {
+                !record.pubkey.is_empty()
+                    && record.persona_id.as_deref().is_some_and(|persona_id| {
+                        !crate::managed_agents::personas::persona_available_in_build(
+                            persona_id,
+                            include_bestie,
+                        )
+                    })
+                    && !complete
+                        .iter()
+                        .any(|candidate| candidate.pubkey == record.pubkey)
+            })
+            .cloned()
+            .collect();
+        complete.extend(hidden);
+    }
+
+    complete
 }
 
 /// Save the key-less agent *definitions*, preserving the keyed instances —

@@ -1,6 +1,6 @@
 use super::{
-    built_in_persona_records, built_in_persona_records_for_build, definitions_for_save,
-    ensure_persona_ids_are_active, ensure_persona_is_active, merge_personas,
+    bestie_build_enabled, built_in_persona_records, built_in_persona_records_for_build,
+    definitions_for_save, ensure_persona_ids_are_active, ensure_persona_is_active, merge_personas,
     merge_personas_for_build, migrate_retired_personas, validate_persona_activation_change,
     validate_persona_deletion, visible_personas_for_build, BUILT_IN_PERSONAS, RETIRED_PERSONAS,
 };
@@ -35,7 +35,7 @@ fn custom_persona(id: &str, display_name: &str) -> AgentDefinition {
 
 #[test]
 fn merge_personas_adds_missing_built_ins() {
-    let (records, changed) = merge_personas(Vec::new(), "2026-03-19T00:00:00Z");
+    let (records, changed) = merge_personas_for_build(Vec::new(), "2026-03-19T00:00:00Z", false);
 
     assert!(changed);
     assert_eq!(records.len(), BUILT_IN_PERSONAS.len() - 1);
@@ -74,6 +74,16 @@ fn bestie_persona_requires_the_internal_build_capability() {
     assert_eq!(bestie.display_name, "Bestie");
     assert!(bestie.is_builtin);
     assert!(bestie.is_active);
+}
+
+#[test]
+#[ignore = "run explicitly in both compiled feature states"]
+fn compiled_bestie_flag_matches_expected() {
+    let expected = std::env::var("BUZZ_TEST_EXPECTED_BESTIE")
+        .expect("BUZZ_TEST_EXPECTED_BESTIE must be set")
+        .parse::<bool>()
+        .expect("BUZZ_TEST_EXPECTED_BESTIE must be true or false");
+    assert_eq!(bestie_build_enabled(), expected);
 }
 
 #[test]

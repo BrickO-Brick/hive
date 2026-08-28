@@ -94,7 +94,7 @@ const BUILT_IN_PERSONAS: &[BuiltInPersona] = &[
     },
 ];
 
-fn bestie_build_enabled() -> bool {
+pub(crate) fn bestie_build_enabled() -> bool {
     option_env!("VITE_BUZZ_BESTIE") == Some("1")
 }
 
@@ -195,7 +195,7 @@ fn built_in_order(id: &str) -> Option<usize> {
         .position(|persona| persona.id == id)
 }
 
-fn persona_available_in_build(id: &str, include_bestie: bool) -> bool {
+pub(crate) fn persona_available_in_build(id: &str, include_bestie: bool) -> bool {
     include_bestie || id != BESTIE_PERSONA_ID
 }
 
