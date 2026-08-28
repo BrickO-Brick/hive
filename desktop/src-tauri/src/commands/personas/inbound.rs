@@ -671,9 +671,10 @@ fn event_d_tag(event: &nostr::Event) -> Result<String, String> {
 /// in place, or push it when none matches.
 ///
 /// The match key is `persona_d_tag` — the same derivation the outbound path
-/// uses — so the inbound and outbound keys can never drift. On match, only the
-/// projected fields are overwritten; local `id`, `env_vars`, `source_team`, and
-/// `created_at` survive. On no match, the parsed record is inserted as-is; since
+/// uses — so the inbound and outbound keys can never drift. On match, every
+/// field projected by `PersonaEventContent` is overwritten, while local `id`,
+/// `env_vars`, `source_team`, and `created_at` survive. On no match, the parsed
+/// record is inserted as-is; since
 /// `persona_from_event` sets `id = d_tag`, an in-app persona reuses its d-tag as
 /// the id and a re-received event stays idempotent (no duplicate row).
 fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefinition) {
@@ -686,6 +687,7 @@ fn apply_inbound_persona(personas: &mut Vec<AgentDefinition>, inbound: AgentDefi
             local.display_name = inbound.display_name;
             local.avatar_url = inbound.avatar_url;
             local.system_prompt = inbound.system_prompt;
+            local.acp_command = inbound.acp_command;
             local.runtime = inbound.runtime;
             local.model = inbound.model;
             local.provider = inbound.provider;

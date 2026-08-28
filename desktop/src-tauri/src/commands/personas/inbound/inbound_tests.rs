@@ -67,13 +67,16 @@ fn inbound_for(d_tag: &str, display_name: &str) -> AgentDefinition {
 #[test]
 fn in_app_persona_matches_existing_uuid_and_patches() {
     let mut personas = vec![local_in_app()];
-    apply_inbound_persona(&mut personas, inbound_for(UUID, "Remote"));
+    let mut inbound = inbound_for(UUID, "Remote");
+    inbound.acp_command = Some("buzz-janet-acp".to_string());
+    apply_inbound_persona(&mut personas, inbound);
 
     assert_eq!(personas.len(), 1, "no duplicate row");
     let p = &personas[0];
     // Projected fields patched.
     assert_eq!(p.display_name, "Remote");
     assert_eq!(p.system_prompt, "remote prompt");
+    assert_eq!(p.acp_command.as_deref(), Some("buzz-janet-acp"));
     assert_eq!(p.provider, Some("openai".to_string()));
     // Local identity + secrets + lineage preserved.
     assert_eq!(p.id, UUID);
