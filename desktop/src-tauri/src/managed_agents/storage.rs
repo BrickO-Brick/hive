@@ -17,9 +17,12 @@ mod build_filter;
 
 use build_filter::instances_for_save;
 pub use build_filter::load_managed_agents;
+#[cfg(test)]
 pub(crate) use build_filter::{
-    filter_agent_definitions_for_build, filter_managed_agents_for_build, load_agent_definitions,
-    load_agent_definitions_unfiltered, load_agent_store_from_path,
+    filter_agent_definitions_for_build, filter_managed_agents_for_build,
+};
+pub(crate) use build_filter::{
+    load_agent_definitions, load_agent_definitions_unfiltered, load_agent_store_from_path,
 };
 
 /// Keyring key name for an agent's nsec, namespaced from the human identity
