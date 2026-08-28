@@ -15,7 +15,10 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 
+import { useChannelsQuery } from "@/features/channels/hooks";
+import { buildChannelLink } from "@/features/messages/lib/channelLink";
 import { uploadMediaFile } from "@/shared/api/tauriMedia";
+import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { useMediaProxyPort } from "@/shared/lib/useMediaProxyPort";
@@ -35,6 +38,7 @@ import {
   MENTION_CHIP_HOVER_CLASSES,
 } from "@/shared/ui/mentionChip";
 import { POPOVER_CUSTOM_ENTER_MOTION_CLASS } from "@/shared/ui/popoverSurface";
+import { WelcomeChannelChipPicker } from "./WelcomeChannelChipPicker";
 type WelcomeInsertType = "link" | "image" | "channel";
 
 type WelcomeInsert = {
@@ -273,18 +277,40 @@ function readEditorContent(root: HTMLElement): string {
 }
 
 function InlineChipEditor({
+  channels,
   insert,
   onChange,
   onClose,
   onRemove,
   position,
 }: {
+  channels: Channel[];
   insert: WelcomeInsert;
   onChange: (insert: WelcomeInsert) => void;
   onClose: () => void;
   onRemove: () => void;
   position: CaretPosition;
 }) {
+  if (insert.type === "channel") {
+    return (
+      <WelcomeChannelChipPicker
+        channels={channels}
+        insert={insert}
+        onClose={onClose}
+        onRemove={onRemove}
+        onSelect={(channel) => {
+          onChange({
+            ...insert,
+            title: channel.name,
+            url: buildChannelLink(channel.id),
+          });
+          onClose();
+        }}
+        position={position}
+      />
+    );
+  }
+
   return (
     <div
       aria-label={`Edit ${insert.type}`}
@@ -325,41 +351,23 @@ function InlineChipEditor({
         </Button>
       </div>
       <Input
-        aria-label={
-          insert.type === "link"
-            ? "Link title"
-            : insert.type === "image"
-              ? "Image alt text"
-              : "Channel name"
-        }
+        aria-label={insert.type === "link" ? "Link title" : "Image alt text"}
         className="bg-muted/50"
         onChange={(event) => onChange({ ...insert, title: event.target.value })}
-        placeholder={
-          insert.type === "link"
-            ? "Community guide"
-            : insert.type === "image"
-              ? "Team photo"
-              : "introductions"
-        }
+        placeholder={insert.type === "link" ? "Community guide" : "Team photo"}
         value={insert.title}
       />
       <div className="relative">
         <span className="pointer-events-none absolute inset-y-0 left-2.5 z-10 flex items-center text-muted-foreground">
           {insert.type === "link" ? (
             <Link2 className="h-4 w-4" />
-          ) : insert.type === "image" ? (
-            <ImageIcon className="h-4 w-4" />
           ) : (
-            <Hash className="h-4 w-4" />
+            <ImageIcon className="h-4 w-4" />
           )}
         </span>
         <Input
           aria-label={
-            insert.type === "link"
-              ? "Link destination"
-              : insert.type === "image"
-                ? "Image source"
-                : "Channel destination"
+            insert.type === "link" ? "Link destination" : "Image source"
           }
           autoCapitalize="off"
           className="bg-muted/50 pl-8"
@@ -367,9 +375,7 @@ function InlineChipEditor({
           placeholder={
             insert.type === "link"
               ? "https://example.com"
-              : insert.type === "image"
-                ? "https://example.com/image.png"
-                : "Channel ID or link"
+              : "https://example.com/image.png"
           }
           spellCheck={false}
           value={insert.url}
@@ -489,6 +495,7 @@ export function WelcomeComposer({
   onChange: React.Dispatch<React.SetStateAction<WelcomeMessage>>;
   onUploadCountChange: React.Dispatch<React.SetStateAction<number>>;
 }) {
+  const channels = useChannelsQuery().data ?? [];
   const wrapperRef = React.useRef<HTMLDivElement>(null);
   const editorRef = React.useRef<HTMLDivElement>(null);
   const savedRangeRef = React.useRef<Range | null>(null);
@@ -602,7 +609,7 @@ export function WelcomeComposer({
             ? "New link"
             : type === "image"
               ? "New image"
-              : "introductions"),
+              : "Choose a channel"),
         url: "",
       };
       insertedId = insert.id;
@@ -624,7 +631,25 @@ export function WelcomeComposer({
     onChange({ text: readEditorContent(editor), inserts });
     setSelectionToolbar(null);
     editor.focus();
+    if (type === "channel" && insertedId) {
+      window.requestAnimationFrame(() => openChipEditor(node, insertedId));
+    }
     return insertedId;
+  }
+
+  function openChipEditor(chip: HTMLElement, id: string) {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const chipRect = chip.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    setChipEditor({
+      id,
+      left: Math.min(
+        chipRect.left - wrapperRect.left,
+        Math.max(0, wrapperRect.width - 320),
+      ),
+      top: chipRect.bottom - wrapperRect.top + 6,
+    });
   }
 
   function imageDropRangeAtPoint(clientX: number, clientY: number) {
@@ -742,22 +767,11 @@ export function WelcomeComposer({
     const chip = (event.target as HTMLElement).closest<HTMLElement>(
       "[data-insert-id]",
     );
-    const wrapper = wrapperRef.current;
-    if (!chip?.dataset.insertId || !wrapper) {
+    if (!chip?.dataset.insertId) {
       setChipEditor(null);
       return;
     }
-
-    const chipRect = chip.getBoundingClientRect();
-    const wrapperRect = wrapper.getBoundingClientRect();
-    setChipEditor({
-      id: chip.dataset.insertId,
-      left: Math.min(
-        chipRect.left - wrapperRect.left,
-        Math.max(0, wrapperRect.width - 320),
-      ),
-      top: chipRect.bottom - wrapperRect.top + 6,
-    });
+    openChipEditor(chip, chip.dataset.insertId);
   }
 
   const selectedInsert = chipEditor
@@ -857,7 +871,9 @@ export function WelcomeComposer({
           </ContextMenuItem>
           <ContextMenuItem
             className="hover:bg-muted/50 hover:text-foreground"
-            onSelect={() => insertAtCaret("channel")}
+            onSelect={() => {
+              window.setTimeout(() => insertAtCaret("channel"));
+            }}
           >
             <Hash className="h-4 w-4" />
             Channel
@@ -898,6 +914,7 @@ export function WelcomeComposer({
 
       {selectedInsert && chipEditor ? (
         <InlineChipEditor
+          channels={channels}
           insert={selectedInsert}
           onChange={(nextInsert) =>
             onChange({

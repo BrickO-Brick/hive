@@ -390,6 +390,46 @@ test("builds a personalized welcome sequence", async ({ page }) => {
   await expect(builder.getByRole("button", { name: "Save" })).toBeDisabled();
 });
 
+test("channel inserts search the community channel list", async ({ page }) => {
+  const welcomeRow = page.getByTestId("welcome-channel-row");
+  await welcomeRow.scrollIntoViewIfNeeded();
+  await welcomeRow.getByRole("button", { name: "Create" }).click();
+
+  const builder = page.getByTestId("welcome-message-builder");
+  const editor = builder.getByTestId("welcome-inline-message");
+  await editor.click({ button: "right", position: { x: 100, y: 22 } });
+  await page.getByRole("menuitem", { name: "Channel" }).click();
+
+  const channelEditor = page.getByRole("dialog", { name: "Edit channel" });
+  const channelSearch = channelEditor.getByRole("combobox", {
+    name: "Search channels",
+  });
+  await expect(channelSearch).toBeVisible();
+  await expect(page.getByLabel("Channel name")).toHaveCount(0);
+  await expect(page.getByLabel("Channel destination")).toHaveCount(0);
+
+  await channelSearch.fill("rand");
+  const randomResult = channelEditor.getByRole("option", {
+    name: "random",
+    exact: true,
+  });
+  await expect(randomResult).toBeVisible();
+  await waitForAnimations(page);
+  await builder.screenshot({
+    path: `${OUTDIR}/07-welcome-channel-search.png`,
+  });
+  await randomResult.click();
+
+  const randomChip = editor.locator("[data-insert-id]", { hasText: "random" });
+  await expect(randomChip).toBeVisible();
+  await randomChip.click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Edit channel" })
+      .getByRole("option", { name: "random", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
 test("capture: share-style community invite dialog", async ({ page }) => {
   await page.getByTestId("community-invite-dialog-trigger").click();
 
