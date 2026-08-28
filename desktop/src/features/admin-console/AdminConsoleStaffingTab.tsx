@@ -10,6 +10,7 @@ import { useState } from "react";
 import { LoaderCircle, Trash2 } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import {
   deleteAdminOperator,
   listAdminOperators,
@@ -54,10 +55,16 @@ export function StaffingTab({
   origin,
   pubkey,
   generation,
+  canMutate,
 }: {
   origin: string;
   pubkey: string;
   generation: number;
+  /**
+   * When false (disabled-auth probe), all write affordances are hidden.
+   * The operator list is still readable; only add/remove controls are absent.
+   */
+  canMutate: boolean;
 }) {
   const [listGen, setListGen] = useState(0);
   const [addPubkey, setAddPubkey] = useState("");
@@ -105,7 +112,7 @@ export function StaffingTab({
       const msg = e instanceof Error ? e.message : String(e);
       setActionError(
         msg.includes("409")
-          ? `Cannot remove ${opPubkey.slice(0, 16)}…: config-backed key.`
+          ? `Cannot remove ${truncatePubkey(opPubkey)}: config-backed key.`
           : msg,
       );
     } finally {
@@ -115,49 +122,51 @@ export function StaffingTab({
 
   return (
     <div className="space-y-4" data-testid="staffing-tab">
-      {/* Add operator form */}
-      <div className="rounded-md border border-border/60 px-3 py-2.5 space-y-2">
-        <p className="text-xs font-medium text-muted-foreground">
-          Add operator
-        </p>
-        <div className="flex gap-2">
-          <input
-            className="flex-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-mono"
-            data-testid="staffing-add-pubkey-input"
-            disabled={isAdding}
-            onChange={(e) => setAddPubkey(e.target.value)}
-            placeholder="64-hex pubkey"
-            type="text"
-            value={addPubkey}
-          />
-          <select
-            className="rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
-            data-testid="staffing-add-role-select"
-            disabled={isAdding}
-            onChange={(e) =>
-              setAddRole(e.target.value as "operator" | "moderator")
-            }
-            value={addRole}
-          >
-            <option value="moderator">moderator</option>
-            <option value="operator">operator</option>
-          </select>
-          <Button
-            data-testid="staffing-add-btn"
-            disabled={isAdding || !addPubkey.trim()}
-            onClick={() => void handleAdd()}
-            size="sm"
-            type="button"
-          >
-            {isAdding ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              "Add"
-            )}
-          </Button>
+      {/* Add operator form — hidden in read-only (disabled-auth) mode */}
+      {canMutate && (
+        <div className="rounded-md border border-border/60 px-3 py-2.5 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            Add operator
+          </p>
+          <div className="flex gap-2">
+            <input
+              className="flex-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-mono"
+              data-testid="staffing-add-pubkey-input"
+              disabled={isAdding}
+              onChange={(e) => setAddPubkey(e.target.value)}
+              placeholder="64-hex pubkey"
+              type="text"
+              value={addPubkey}
+            />
+            <select
+              className="rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
+              data-testid="staffing-add-role-select"
+              disabled={isAdding}
+              onChange={(e) =>
+                setAddRole(e.target.value as "operator" | "moderator")
+              }
+              value={addRole}
+            >
+              <option value="moderator">moderator</option>
+              <option value="operator">operator</option>
+            </select>
+            <Button
+              data-testid="staffing-add-btn"
+              disabled={isAdding || !addPubkey.trim()}
+              onClick={() => void handleAdd()}
+              size="sm"
+              type="button"
+            >
+              {isAdding ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                "Add"
+              )}
+            </Button>
+          </div>
+          {addError && <p className="text-xs text-destructive">{addError}</p>}
         </div>
-        {addError && <p className="text-xs text-destructive">{addError}</p>}
-      </div>
+      )}
 
       {/* Operator list */}
       {listState.status === "loading" && <LoadingSpinner />}
@@ -191,26 +200,29 @@ export function StaffingTab({
                     ))}
                   </div>
                 </div>
-                <Button
-                  aria-label={`Remove ${op.pubkey}`}
-                  data-testid={`staffing-remove-btn-${op.pubkey}`}
-                  disabled={isConfigBacked || workingPubkey === op.pubkey}
-                  onClick={() => void handleRemove(op.pubkey)}
-                  size="icon-xs"
-                  title={
-                    isConfigBacked
-                      ? "Config-backed — cannot be removed via API"
-                      : "Remove operator"
-                  }
-                  type="button"
-                  variant="ghost"
-                >
-                  {workingPubkey === op.pubkey ? (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-3.5 w-3.5" />
-                  )}
-                </Button>
+                {/* Remove button — hidden in read-only (disabled-auth) mode */}
+                {canMutate && (
+                  <Button
+                    aria-label={`Remove ${op.pubkey}`}
+                    data-testid={`staffing-remove-btn-${op.pubkey}`}
+                    disabled={isConfigBacked || workingPubkey === op.pubkey}
+                    onClick={() => void handleRemove(op.pubkey)}
+                    size="icon-xs"
+                    title={
+                      isConfigBacked
+                        ? "Config-backed — cannot be removed via API"
+                        : "Remove operator"
+                    }
+                    type="button"
+                    variant="ghost"
+                  >
+                    {workingPubkey === op.pubkey ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                )}
               </li>
             );
           })}

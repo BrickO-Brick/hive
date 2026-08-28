@@ -878,7 +878,12 @@ export function AdminConsolePanel({
         />
       )}
       {activeTab === "staffing" && isOperator && (
-        <StaffingTab origin={origin} pubkey={pubkey} generation={generation} />
+        <StaffingTab
+          canMutate={canMutate}
+          origin={origin}
+          pubkey={pubkey}
+          generation={generation}
+        />
       )}
     </div>
   );

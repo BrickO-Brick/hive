@@ -175,7 +175,13 @@ function mountCard(qc) {
   return { container, doRender, unmount };
 }
 
-function mountPanel({ origin, pubkey, canMutate = true }) {
+function mountPanel({
+  origin,
+  pubkey,
+  canMutate = true,
+  role = undefined,
+  initialTab = undefined,
+}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -186,6 +192,8 @@ function mountPanel({ origin, pubkey, canMutate = true }) {
           canMutate,
           origin: o,
           pubkey: p,
+          ...(role !== undefined ? { role } : {}),
+          ...(initialTab !== undefined ? { initialTab } : {}),
         }),
       );
     });
@@ -3647,4 +3655,663 @@ test("resolve-rejection-surfaces-parsed-message: a rejected resolve toasts the r
   );
 
   await unmount();
+});
+
+// ── P1-2: attachment budget enforced at the component seam ─────────────────
+//
+// Carl finding P1-2: the regression must prove excess attachments are NEVER
+// requested, not just that the pure helper truncates them. The test renders
+// FeedbackDetail with 7 image imeta entries, counts native IPC calls, and
+// asserts that exactly 5 hashes are requested and 2 are never seen.
+//
+// Fails if `applyAttachmentBudget` is bypassed at AdminConsoleFeedbackTab.tsx
+// (e.g. by mapping `allAttachments` directly instead of the `shown` slice).
+
+test("attachment-budget-seam: only 5 of 7 image attachments trigger native fetch", async () => {
+  const origin = "https://admin.example.com";
+  const pubkey = "ab".repeat(32);
+
+  // Build 7 distinct image attachments — sha256s are deterministic so we can
+  // assert which hashes were and were not requested.
+  const makeAttachment = (n) => {
+    const sha = String(n).repeat(64).slice(0, 64);
+    return {
+      sha256: sha,
+      mime: "image/png",
+      size: 1024,
+      url: `https://relay.example.com/files/${sha}`,
+    };
+  };
+  const attachments = [0, 1, 2, 3, 4, 5, 6].map(makeAttachment);
+
+  const feedbackId = "00000000-0000-0000-0000-000000000077";
+  const summary = {
+    id: feedbackId,
+    communityId: "comm-budget",
+    communityHost: "relay.example.com",
+    submitterPubkey: "submitter-budget",
+    category: null,
+    bodySummary: "Budget test feedback",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+  const detail = {
+    id: feedbackId,
+    communityId: "comm-budget",
+    communityHost: "relay.example.com",
+    eventId: "budgetevent",
+    submitterPubkey: "submitter-budget",
+    category: null,
+    body: "Budget test feedback full body",
+    status: "new",
+    tags: attachments.map((a) => [
+      "imeta",
+      `url ${a.url}`,
+      `m ${a.mime}`,
+      `x ${a.sha256}`,
+      `size ${a.size}`,
+    ]),
+    eventCreatedAt: "2024-01-01T00:00:00Z",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([summary]));
+  setIpcHandler("admin_get_feedback", () => Promise.resolve(detail));
+
+  // Track every sha256 that is actually requested via the native IPC command.
+  const requestedSha256s = [];
+  if (!globalThis.URL) globalThis.URL = {};
+  globalThis.URL.createObjectURL = () => "blob:test-budget";
+  globalThis.URL.revokeObjectURL = () => {};
+  setIpcHandler("admin_fetch_feedback_attachment", (args) => {
+    requestedSha256s.push(args?.sha256);
+    // Return a minimal ArrayBuffer so fetchAdminAttachmentBlobUrl can create a
+    // Blob and call URL.createObjectURL without throwing.
+    return Promise.resolve(new Uint8Array([1, 2, 3]).buffer);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  // Navigate to the Feedback tab.
+  const feedbackTab = container.querySelector(
+    "[data-testid='admin-tab-feedback']",
+  );
+  assert.ok(feedbackTab, "Feedback tab must be present");
+  await act(async () => {
+    fireEvent.click(feedbackTab);
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await settle(30);
+
+  // Click the feedback list item to open detail — the first non-tab button.
+  const listButtons = Array.from(container.querySelectorAll("button")).filter(
+    (b) => !(b.getAttribute("data-testid") ?? "").startsWith("admin-tab"),
+  );
+  assert.ok(
+    listButtons.length > 0,
+    "feedback list item button must be present",
+  );
+  await act(async () => {
+    fireEvent.click(listButtons[0]);
+    await new Promise((r) => setTimeout(r, 50));
+  });
+  await settle(50);
+
+  // After detail loads, all 7 AttachmentViewers would mount if the budget were
+  // bypassed — each auto-loads image/* on mount. With the budget in place only
+  // 5 mount and issue fetches.
+  assert.equal(
+    requestedSha256s.length,
+    5,
+    `exactly 5 attachment fetches must fire; got ${requestedSha256s.length}: ${JSON.stringify(requestedSha256s)}`,
+  );
+
+  // The 6th and 7th items (sha256 of attachments[5] and attachments[6]) must
+  // never appear in the fetch log — the budget silently drops them.
+  const excessHashes = [attachments[5].sha256, attachments[6].sha256];
+  for (const excess of excessHashes) {
+    assert.ok(
+      !requestedSha256s.includes(excess),
+      `excess attachment sha256 ${excess.slice(0, 8)}… must never be requested (budget bypass detected)`,
+    );
+  }
+
+  // Truncation notice must be visible.
+  const notice = container.querySelector(
+    "[data-testid='attachment-truncated-notice']",
+  );
+  assert.ok(
+    notice !== null,
+    "truncation notice must render when attachments are capped",
+  );
+
+  await unmount();
+});
+
+// ── P2-1: canMutate gates every mutation affordance ────────────────────────
+//
+// Carl finding P2-1: "every mutation affordance in the panel" must be gated
+// on canMutate. Families covered:
+//   A. Report resolve form (open report → ResolveReportForm)
+//   B. Report reopen form (resolved report → ReopenReportForm)
+//   C. Enforcement cancel button (failed activeAction → EnforcementStateBlock)
+//   D. Feedback status control (FeedbackDetail)
+//   E. Staffing add/remove (role=operator, staffing tab)
+//
+// These two tests are NOT vacuous: each control-presence assertion fails if
+// the corresponding {canMutate && …} guard is removed.
+
+test("canMutate-false: all five mutation affordances are absent in disabled mode", async () => {
+  const origin = "https://admin-readonly.example.com";
+  const pubkey = "cc".repeat(32);
+  const opPubkey = "dd".repeat(32);
+
+  // Open report for family A.
+  const openReportId = "00000000-0000-0000-0000-000000000001";
+  const openReport = {
+    id: openReportId,
+    communityId: "comm-1",
+    communityHost: "relay.example.com",
+    reportEventId: "ev001",
+    reporterPubkey: "rp001",
+    targetKind: "event",
+    target: "tgt001",
+    reportType: "spam",
+    status: "open",
+    activeAction: null,
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openReport,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  // Resolved report for family B.
+  const resolvedReportId = "00000000-0000-0000-0000-000000000002";
+  const resolvedReport = {
+    ...openReport,
+    id: resolvedReportId,
+    status: "resolved",
+  };
+  const resolvedDetail = {
+    ...resolvedReport,
+    channelId: null,
+    note: null,
+    resolvedBy: "someone",
+    resolvedAt: "2024-01-02T00:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  // Report with failed enforcement for family C.
+  const failedReportId = "00000000-0000-0000-0000-000000000003";
+  const failedActiveAction = {
+    id: "act003",
+    requestId: "req003",
+    actorPubkey: "ac".repeat(32),
+    actorRole: "operator",
+    action: "ban",
+    status: "failed",
+    reason: null,
+    expiresAt: null,
+    errorMessage: "relay error",
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T01:00:00Z",
+  };
+  const failedReport = {
+    ...openReport,
+    id: failedReportId,
+    status: "open",
+    activeAction: failedActiveAction,
+  };
+  const failedDetail = {
+    ...failedReport,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: "act003",
+    message: null,
+  };
+
+  // Feedback for family D.
+  const feedbackId = "00000000-0000-0000-0000-000000000099";
+  const feedbackSummary = {
+    id: feedbackId,
+    communityId: "comm-1",
+    communityHost: "relay.example.com",
+    submitterPubkey: "sub001",
+    category: null,
+    bodySummary: "readonly feedback",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+  const feedbackDetail = {
+    id: feedbackId,
+    communityId: "comm-1",
+    communityHost: "relay.example.com",
+    eventId: "fev001",
+    submitterPubkey: "sub001",
+    category: null,
+    body: "readonly feedback full",
+    status: "new",
+    tags: [],
+    eventCreatedAt: "2024-01-01T00:00:00Z",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+
+  setIpcHandler("admin_list_reports", () =>
+    Promise.resolve([openReport, resolvedReport, failedReport]),
+  );
+  setIpcHandler("admin_list_feedback", () =>
+    Promise.resolve([feedbackSummary]),
+  );
+  setIpcHandler("admin_list_operators", () =>
+    Promise.resolve([
+      {
+        pubkey: opPubkey,
+        effectiveRole: "moderator",
+        sources: ["db"],
+      },
+    ]),
+  );
+  // getAdminReport returns the right detail based on which ID is queried.
+  setIpcHandler("admin_get_report", (args) => {
+    const id = args?.id;
+    if (id === openReportId) return Promise.resolve(openDetail);
+    if (id === resolvedReportId) return Promise.resolve(resolvedDetail);
+    if (id === failedReportId) return Promise.resolve(failedDetail);
+    return Promise.reject(new Error(`unknown report id: ${id}`));
+  });
+  setIpcHandler("admin_get_feedback", () => Promise.resolve(feedbackDetail));
+
+  // ── Family A: resolve-report-form must be absent ──
+  {
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: false,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const form = container.querySelector("[data-testid='resolve-report-form']");
+    assert.equal(
+      form,
+      null,
+      "resolve-report-form must be absent when canMutate=false (family A)",
+    );
+    await unmount();
+  }
+
+  // ── Family B: reopen-report-form must be absent ──
+  {
+    setIpcHandler("admin_list_reports", () =>
+      Promise.resolve([resolvedReport]),
+    );
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: false,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const form = container.querySelector("[data-testid='reopen-report-form']");
+    assert.equal(
+      form,
+      null,
+      "reopen-report-form must be absent when canMutate=false (family B)",
+    );
+    await unmount();
+  }
+
+  // ── Family C: enforcement-cancel-btn must be absent ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([failedReport]));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: false,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const cancelBtn = container.querySelector(
+      "[data-testid='enforcement-cancel-btn']",
+    );
+    assert.equal(
+      cancelBtn,
+      null,
+      "enforcement-cancel-btn must be absent when canMutate=false (family C)",
+    );
+    await unmount();
+  }
+
+  // ── Family D: feedback-status-control must be absent ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: false,
+    });
+    await doRender();
+    await settle(30);
+    const feedbackTab = container.querySelector(
+      "[data-testid='admin-tab-feedback']",
+    );
+    assert.ok(feedbackTab, "Feedback tab must be present");
+    await act(async () => {
+      fireEvent.click(feedbackTab);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await settle(30);
+    // Click the feedback list item to open detail.
+    const listBtns = Array.from(container.querySelectorAll("button")).filter(
+      (b) => !(b.getAttribute("data-testid") ?? "").startsWith("admin-tab"),
+    );
+    assert.ok(listBtns.length > 0, "feedback list item must be present");
+    await act(async () => {
+      fireEvent.click(listBtns[0]);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await settle(30);
+    const ctrl = container.querySelector(
+      "[data-testid='feedback-status-control']",
+    );
+    assert.equal(
+      ctrl,
+      null,
+      "feedback-status-control must be absent when canMutate=false (family D)",
+    );
+    await unmount();
+  }
+
+  // ── Family E: staffing add/remove must be absent ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+    setIpcHandler("admin_list_operators", () =>
+      Promise.resolve([
+        { pubkey: opPubkey, effectiveRole: "moderator", sources: ["db"] },
+      ]),
+    );
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: false,
+      role: "operator",
+      initialTab: "staffing",
+    });
+    await doRender();
+    await settle(30);
+    const addBtn = container.querySelector("[data-testid='staffing-add-btn']");
+    assert.equal(
+      addBtn,
+      null,
+      "staffing-add-btn must be absent when canMutate=false (family E add)",
+    );
+    const removeBtn = container.querySelector(
+      `[data-testid='staffing-remove-btn-${opPubkey}']`,
+    );
+    assert.equal(
+      removeBtn,
+      null,
+      "staffing-remove-btn must be absent when canMutate=false (family E remove)",
+    );
+    await unmount();
+  }
+});
+
+test("canMutate-true: all five mutation affordances are present in authorized mode", async () => {
+  const origin = "https://admin-rw.example.com";
+  const pubkey = "ee".repeat(32);
+  const opPubkey = "ff".repeat(32);
+
+  const openReportId = "00000000-0000-0000-0000-0000000000a1";
+  const openReport = {
+    id: openReportId,
+    communityId: "comm-rw",
+    communityHost: "relay.example.com",
+    reportEventId: "eva1",
+    reporterPubkey: "rpa1",
+    targetKind: "event",
+    target: "tgta1",
+    reportType: "spam",
+    status: "open",
+    activeAction: null,
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openReport,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  const resolvedReportId = "00000000-0000-0000-0000-0000000000a2";
+  const resolvedReport = {
+    ...openReport,
+    id: resolvedReportId,
+    status: "resolved",
+  };
+  const resolvedDetail = {
+    ...resolvedReport,
+    channelId: null,
+    note: null,
+    resolvedBy: "someone",
+    resolvedAt: "2024-01-02T00:00:00Z",
+    actionId: null,
+    message: null,
+  };
+
+  const failedReportId = "00000000-0000-0000-0000-0000000000a3";
+  const failedActiveAction = {
+    id: "acta3",
+    requestId: "reqa3",
+    actorPubkey: "ac".repeat(32),
+    actorRole: "operator",
+    action: "ban",
+    status: "failed",
+    reason: null,
+    expiresAt: null,
+    errorMessage: "relay error",
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T01:00:00Z",
+  };
+  const failedReport = {
+    ...openReport,
+    id: failedReportId,
+    status: "open",
+    activeAction: failedActiveAction,
+  };
+  const failedDetail = {
+    ...failedReport,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: "acta3",
+    message: null,
+  };
+
+  const feedbackId = "00000000-0000-0000-0000-0000000000b9";
+  const feedbackSummary = {
+    id: feedbackId,
+    communityId: "comm-rw",
+    communityHost: "relay.example.com",
+    submitterPubkey: "subrw",
+    category: null,
+    bodySummary: "rw feedback",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+  const feedbackDetail = {
+    id: feedbackId,
+    communityId: "comm-rw",
+    communityHost: "relay.example.com",
+    eventId: "fevrw",
+    submitterPubkey: "subrw",
+    category: null,
+    body: "rw feedback full",
+    status: "new",
+    tags: [],
+    eventCreatedAt: "2024-01-01T00:00:00Z",
+    receivedAt: "2024-01-01T00:00:00Z",
+  };
+
+  // ── Family A: resolve-report-form must be present ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([openReport]));
+    setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+    setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: true,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const form = container.querySelector("[data-testid='resolve-report-form']");
+    assert.ok(
+      form !== null,
+      "resolve-report-form must be present when canMutate=true (family A)",
+    );
+    await unmount();
+  }
+
+  // ── Family B: reopen-report-form must be present ──
+  {
+    setIpcHandler("admin_list_reports", () =>
+      Promise.resolve([resolvedReport]),
+    );
+    setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+    setIpcHandler("admin_get_report", () => Promise.resolve(resolvedDetail));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: true,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const form = container.querySelector("[data-testid='reopen-report-form']");
+    assert.ok(
+      form !== null,
+      "reopen-report-form must be present when canMutate=true (family B)",
+    );
+    await unmount();
+  }
+
+  // ── Family C: enforcement-cancel-btn must be present ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([failedReport]));
+    setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+    setIpcHandler("admin_get_report", () => Promise.resolve(failedDetail));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: true,
+    });
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+    const cancelBtn = container.querySelector(
+      "[data-testid='enforcement-cancel-btn']",
+    );
+    assert.ok(
+      cancelBtn !== null,
+      "enforcement-cancel-btn must be present when canMutate=true (family C)",
+    );
+    await unmount();
+  }
+
+  // ── Family D: feedback-status-control must be present ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+    setIpcHandler("admin_list_feedback", () =>
+      Promise.resolve([feedbackSummary]),
+    );
+    setIpcHandler("admin_get_feedback", () => Promise.resolve(feedbackDetail));
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: true,
+    });
+    await doRender();
+    await settle(30);
+    const feedbackTab = container.querySelector(
+      "[data-testid='admin-tab-feedback']",
+    );
+    assert.ok(feedbackTab, "Feedback tab must be present");
+    await act(async () => {
+      fireEvent.click(feedbackTab);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await settle(30);
+    const listBtns = Array.from(container.querySelectorAll("button")).filter(
+      (b) => !(b.getAttribute("data-testid") ?? "").startsWith("admin-tab"),
+    );
+    assert.ok(listBtns.length > 0, "feedback list item must be present");
+    await act(async () => {
+      fireEvent.click(listBtns[0]);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await settle(30);
+    const ctrl = container.querySelector(
+      "[data-testid='feedback-status-control']",
+    );
+    assert.ok(
+      ctrl !== null,
+      "feedback-status-control must be present when canMutate=true (family D)",
+    );
+    await unmount();
+  }
+
+  // ── Family E: staffing add/remove must be present ──
+  {
+    setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+    setIpcHandler("admin_list_operators", () =>
+      Promise.resolve([
+        { pubkey: opPubkey, effectiveRole: "moderator", sources: ["db"] },
+      ]),
+    );
+    const { container, doRender, unmount } = mountPanel({
+      origin,
+      pubkey,
+      canMutate: true,
+      role: "operator",
+      initialTab: "staffing",
+    });
+    await doRender();
+    await settle(30);
+    const addBtn = container.querySelector("[data-testid='staffing-add-btn']");
+    assert.ok(
+      addBtn !== null,
+      "staffing-add-btn must be present when canMutate=true (family E add)",
+    );
+    const removeBtn = container.querySelector(
+      `[data-testid='staffing-remove-btn-${opPubkey}']`,
+    );
+    assert.ok(
+      removeBtn !== null,
+      "staffing-remove-btn must be present when canMutate=true (family E remove)",
+    );
+    await unmount();
+  }
 });
