@@ -8,6 +8,7 @@ import {
   makeFakeWindow,
   installFakeWindow,
   installTauriMock,
+  installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
 
 function makeStore(groups = {}) {
@@ -215,15 +216,19 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
 
 // 4b. Local edit wins (no newer remote head): publishes and clears the outbox.
 test("adopt-winner: local edit at/ahead of head publishes and clears outbox", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
+  // The relay retains our own write, so the post-ACK confirmation fetch reads
+  // it back and confirms — clearing the outbox.
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
   const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls.push(event);
+    storedHead = [event];
     return Promise.resolve();
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-win");
   try {
     const manager = new ChannelSortSyncManager("pk-win", RELAY);
     manager.publishSortPrefs(makeStore({ channels: "recent" }));
@@ -233,7 +238,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
     assert.equal(
       readChannelSortOutbox("pk-win", RELAY),
       null,
-      "outbox must be cleared once the edit is published",
+      "outbox must be cleared once the edit is confirmed retained",
     );
   } finally {
     tauri.restore();
@@ -516,15 +521,19 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
 //    publishes it — the edit is not silently dropped at teardown.
 // Mutation: dropping writeChannelSortOutbox leaves the outbox null → no resume.
 test("durable outbox: edit destroyed inside the debounce resumes and publishes on remount", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
+  // The relay retains the resumed write; the post-ACK confirmation reads it
+  // back and confirms, clearing the outbox.
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
   const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls.push(event);
+    storedHead = [event];
     return Promise.resolve();
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-resume");
   try {
     // Window 1: edit then destroy before the debounce fires.
     const m1 = new ChannelSortSyncManager("pk-resume", RELAY);
@@ -559,16 +568,18 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
 // Mutation: reverting scheduleRetry to a bare console.warn leaves pending null
 // and never re-publishes.
 test("failed publish retries the retained edit without a later edit", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
   let attempts = 0;
-  mock.method(relayClient, "publishEvent", () => {
+  mock.method(relayClient, "publishEvent", (event) => {
     attempts++;
     if (attempts === 1) return Promise.reject(new Error("socket timeout"));
+    storedHead = [event];
     return Promise.resolve();
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-retry");
   try {
     const manager = new ChannelSortSyncManager("pk-retry", RELAY);
     manager.publishSortPrefs(makeStore({ channels: "recent" }));
@@ -790,6 +801,102 @@ test("revert-fix: undecryptable live event advances watermark before decrypt att
       "live undecryptable event must advance the watermark before decrypt is attempted",
     );
   } finally {
+    restore();
+    mock.reset();
+  }
+});
+
+// Same-second whole-blob collision (Carl r6 P1): two windows publish distinct
+// sort blobs stamped at the same created_at; the relay retains only the lower
+// event id and OKs the loser as a no-op (`Duplicate`). A publish OK is NOT proof
+// of retention. The loser must fetch the authoritative head, see a DIFFERENT
+// readable event, and ADOPT it — never record its own non-retained tuple as the
+// baseline. Its NEXT edit must then survive: it publishes above the adopted
+// winner rather than being mistaken for a competing remote and adopted away.
+// Mutation: recording the attempted tuple on OK alone (dropping
+// confirmRetainedHead) makes the loser fold a nonexistent head and erase its
+// next edit.
+test("same-second collision: loser adopts the winner and its next edit survives", async () => {
+  let publishCalls = 0;
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  const storage = new Map();
+  const timers = new Map();
+  let nextId = 1;
+  const win = {
+    localStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+    },
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const fireDelay = async (ms) => {
+    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
+    timers.delete(entry[0]);
+    entry[1].fn();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  };
+  const restore = installFakeWindow(win);
+  const tauri = installEchoTauri("pk-collide");
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls++;
+    if (publishCalls === 1) {
+      // Our blob is OK'd but immediately superseded: the retained head is a
+      // peer window's distinct blob at the same second (lower event id wins).
+      storedHead = [
+        tauri.mintHead(makeStore({ channels: "alpha" }), event.created_at),
+      ];
+      return Promise.resolve();
+    }
+    storedHead = [event];
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelSortSyncManager("pk-collide", RELAY);
+    const adopted = [];
+    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
+
+    manager.publishSortPrefs(makeStore({ channels: "recent" }));
+    await fireDelay(2000); // publish OK, but the peer blob is what's retained
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(adopted.length, 1, "loser adopts the true retained winner");
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "the losing edit is resolved by adopting the winner, not left dangling",
+    );
+
+    manager.publishSortPrefs(makeStore({ channels: "name" }));
+    await fireDelay(2000);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(publishCalls, 2, "the next edit publishes above the winner");
+    assert.equal(
+      adopted.length,
+      1,
+      "the next edit is NOT adopted away — no phantom-baseline poisoning",
+    );
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "the next edit clears via its own confirmed publish",
+    );
+    assert.equal(
+      readChannelSortOutbox("pk-collide", RELAY),
+      null,
+      "the next edit's durable outbox is cleared on confirmation",
+    );
+    manager.destroy();
+  } finally {
+    tauri.restore();
     restore();
     mock.reset();
   }

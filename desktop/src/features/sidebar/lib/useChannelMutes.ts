@@ -38,7 +38,7 @@ export function useChannelMutes(
     if (!pubkey) {
       return DEFAULT_STORE;
     }
-    return readChannelMutesStore(pubkey);
+    return readChannelMutesStore(pubkey, relayUrl);
   });
 
   const managerRef = React.useRef<ChannelMuteSyncManager | null>(null);
@@ -48,7 +48,7 @@ export function useChannelMutes(
       setStore(DEFAULT_STORE);
       return;
     }
-    setStore(readChannelMutesStore(pubkey));
+    setStore(readChannelMutesStore(pubkey, relayUrl));
     managerRef.current = new ChannelMuteSyncManager(pubkey, relayUrl);
     return () => {
       managerRef.current?.destroy();
@@ -63,12 +63,12 @@ export function useChannelMutes(
     if (!pubkey) {
       return;
     }
-    const key = storageKey(pubkey);
+    const key = storageKey(pubkey, relayUrl);
     const handler = (e: StorageEvent) => {
       if (e.key !== key) {
         return;
       }
-      const incoming = readChannelMutesStore(pubkey);
+      const incoming = readChannelMutesStore(pubkey, relayUrl);
       managerRef.current?.observe(incoming);
       setStore((prev) => mergeStores(prev, incoming));
     };
@@ -76,7 +76,7 @@ export function useChannelMutes(
     return () => {
       window.removeEventListener("storage", handler);
     };
-  }, [pubkey]);
+  }, [pubkey, relayUrl]);
 
   // Every remote payload is observed by the manager before it reaches here
   // (fetch/subscribe paths call observe() internally; the storage handler
@@ -92,18 +92,19 @@ export function useChannelMutes(
         const persisted = writeChannelMutesStore(
           pubkey,
           mergeStores(prev, remote.store),
+          relayUrl,
         );
         if (!persisted) return prev;
         return persisted;
       };
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   React.useEffect(() => {
     if (!pubkey || !relayUrl) return;
     let cancelled = false;
-    const local = readChannelMutesStore(pubkey);
+    const local = readChannelMutesStore(pubkey, relayUrl);
     void managerRef.current?.bootstrap(local).then((result) => {
       if (cancelled) return;
       if (result.action === "apply-remote") {
@@ -276,13 +277,18 @@ export function useChannelMutes(
         // store into both React state and the publish so neither window's edit
         // is dropped (Carl prong b). Preserve the clicked channel through the
         // re-bound so a same-second mutation is not evicted at capacity.
-        const persisted = writeChannelMutesStore(pubkey, next, channelId);
+        const persisted = writeChannelMutesStore(
+          pubkey,
+          next,
+          relayUrl,
+          channelId,
+        );
         if (!persisted) return prev;
         manager?.publishMutes(persisted);
         return persisted;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const muteChannel = React.useCallback(

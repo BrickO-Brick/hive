@@ -3,11 +3,31 @@ import test from "node:test";
 
 import {
   boundStarStore,
+  DEFAULT_STORE,
   MAX_CHANNEL_STAR_ENTRIES,
   mergeStores,
   parseStarPayload,
+  readChannelStarsStore,
   starredChannelIdsFromStore,
+  storageKey,
+  writeChannelStarsStore,
 } from "./channelStarsStorage.ts";
+import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
+
+if (typeof globalThis.window === "undefined") {
+  const storage = new Map();
+  globalThis.window = {
+    localStorage: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: (key) => storage.delete(key),
+    },
+  };
+}
+
+function makeStarStore(channels = {}) {
+  return { version: 1, channels };
+}
 
 // ── parseStarPayload ──────────────────────────────────────────────────────────
 
@@ -526,4 +546,100 @@ test("starredChannelIdsFromStore: all-false / empty returns empty set", () => {
     starredChannelIdsFromStore({ version: 1, channels: {} }).size,
     0,
   );
+});
+
+// ─── Relay-scoped key + one-time legacy migration (Carl r6 P1) ────────────────
+// The primary star cache was pubkey-only keyed, so a non-empty store from relay
+// A could seed-publish onto a first-visited relay B. Scoping the key per relay
+// and migrating the legacy key exactly once (then deleting it) closes that leak.
+
+const STAR_E = (starred, updatedAt, rev) => ({ starred, updatedAt, rev });
+
+test("storageKey: with relayUrl includes normalized+encoded relay in key", () => {
+  const relay = "wss://relay.example.com";
+  assert.equal(
+    storageKey("pk1", relay),
+    `buzz-channel-stars.v1:pk1:${encodeURIComponent(normalizeRelayUrl(relay))}`,
+  );
+});
+
+test("storageKey: without relayUrl returns legacy pubkey-only key", () => {
+  assert.equal(storageKey("pk1"), "buzz-channel-stars.v1:pk1");
+  assert.equal(storageKey("pk1", undefined), "buzz-channel-stars.v1:pk1");
+});
+
+test("storageKey: two different relays produce different keys for same pubkey", () => {
+  assert.notEqual(
+    storageKey("pk1", "wss://relay-a.example.com"),
+    storageKey("pk1", "wss://relay-b.example.com"),
+  );
+});
+
+test("storageKey: equivalent relay URLs (case + trailing slash) map to the same key", () => {
+  assert.equal(
+    storageKey("pk1", "WSS://Relay.Example/"),
+    storageKey("pk1", "wss://relay.example"),
+  );
+});
+
+test("readChannelStarsStore + writeChannelStarsStore: scoped write/read roundtrip", () => {
+  const pubkey = "pk-star-roundtrip";
+  const relay = "wss://relay.example.com";
+  const store = makeStarStore({ chan1: STAR_E(true, 1000, 1) });
+  assert.ok(writeChannelStarsStore(pubkey, store, relay) !== null);
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), store);
+});
+
+test("readChannelStarsStore: scoped key is isolated from other relay's data (A→B no seed leak)", () => {
+  const pubkey = "pk-star-isolation";
+  const relayA = "wss://relay-a.example.com";
+  const relayB = "wss://relay-b.example.com";
+  writeChannelStarsStore(
+    pubkey,
+    makeStarStore({ cha: STAR_E(true, 100, 1) }),
+    relayA,
+  );
+  // Relay B sees an empty store — relay A's stars must not seed onto B.
+  assert.deepEqual(readChannelStarsStore(pubkey, relayB), DEFAULT_STORE);
+});
+
+test("readChannelStarsStore: migrates legacy unscoped data on first scoped read", () => {
+  const pubkey = "pk-star-migrate";
+  const relay = "wss://relay-migrate.example.com";
+  const legacy = makeStarStore({ chl: STAR_E(true, 500, 2) });
+  writeChannelStarsStore(pubkey, legacy); // legacy pubkey-only key
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
+  // Legacy key deleted after migration (globally one-time guarantee).
+  assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
+  // Subsequent scoped reads hit the scoped key directly.
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
+});
+
+test("readChannelStarsStore: migration is globally one-time — relay B sees DEFAULT_STORE after relay A migrates", () => {
+  const pubkey = "pk-star-migrate-once";
+  const relayA = "wss://relay-a-once.example.com";
+  const relayB = "wss://relay-b-once.example.com";
+  writeChannelStarsStore(pubkey, makeStarStore({ chm: STAR_E(true, 1, 1) }));
+  readChannelStarsStore(pubkey, relayA); // migrates + deletes legacy key
+  // Relay B must not inherit relay A's migrated stars.
+  assert.deepEqual(readChannelStarsStore(pubkey, relayB), DEFAULT_STORE);
+  assert.equal(window.localStorage.getItem(storageKey(pubkey, relayB)), null);
+});
+
+test("readChannelStarsStore: migration only copies non-empty legacy stores", () => {
+  const pubkey = "pk-star-migrate-empty";
+  const relay = "wss://relay-empty.example.com";
+  writeChannelStarsStore(pubkey, DEFAULT_STORE); // empty legacy store
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
+  // An empty legacy store is not consumed, so it is not deleted either.
+  assert.notEqual(window.localStorage.getItem(storageKey(pubkey)), null);
+});
+
+test("readChannelStarsStore: scoped key takes precedence over legacy key", () => {
+  const pubkey = "pk-star-precedence";
+  const relay = "wss://relay-precedence.example.com";
+  writeChannelStarsStore(pubkey, makeStarStore({ old: STAR_E(true, 1, 1) }));
+  const scoped = makeStarStore({ new: STAR_E(true, 2, 1) });
+  writeChannelStarsStore(pubkey, scoped, relay);
+  assert.deepEqual(readChannelStarsStore(pubkey, relay), scoped);
 });

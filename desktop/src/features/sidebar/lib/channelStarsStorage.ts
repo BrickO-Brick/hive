@@ -29,8 +29,21 @@ export const DEFAULT_STORE: ChannelStarStore = Object.freeze({
   channels: {},
 });
 
-export function storageKey(pubkey: string): string {
-  return `${STORAGE_KEY_PREFIX}:${pubkey}`;
+/**
+ * Returns the localStorage key for channel stars.
+ *
+ * When `relayUrl` is provided the key is scoped to that relay (normalized via
+ * the same `normalizeRelayUrl` used by all relay-scoped local stores) so stars
+ * from different communities/relays don't bleed across each other — in
+ * particular so a non-empty store from relay A can never seed-publish onto a
+ * first-visited relay B (Carl P1). When omitted the legacy pubkey-only key is
+ * returned (used only during one-time migration in `readChannelStarsStore`).
+ */
+export function storageKey(pubkey: string, relayUrl?: string): string {
+  if (!relayUrl) return `${STORAGE_KEY_PREFIX}:${pubkey}`;
+  const normalized = normalizeRelayUrl(relayUrl);
+  // Encode the normalized relay so it can't contain the `:` delimiter.
+  return `${STORAGE_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalized)}`;
 }
 
 export function parseStarPayload(json: unknown): ChannelStarStore | null {
@@ -88,17 +101,61 @@ export function parseStarPayload(json: unknown): ChannelStarStore | null {
   return boundStarStore({ version: 1, channels });
 }
 
-export function readChannelStarsStore(pubkey: string): ChannelStarStore {
+function parseRaw(raw: string | null): ChannelStarStore | null {
+  if (!raw) return null;
   try {
-    const raw = window.localStorage.getItem(storageKey(pubkey));
-    if (!raw) {
-      return DEFAULT_STORE;
-    }
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || parsed.version !== 1) {
-      return DEFAULT_STORE;
+      return null;
     }
-    return parseStarPayload(parsed) ?? DEFAULT_STORE;
+    return parseStarPayload(parsed);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the star store for `pubkey` scoped to `relayUrl`.
+ *
+ * On first access for a scoped key, migrates any existing data from the legacy
+ * pubkey-only key so users don't lose their stars on upgrade. After a
+ * successful migration write the legacy key is deleted, making this a globally
+ * one-time operation — a subsequent empty scoped-key read on a DIFFERENT relay
+ * won't see legacy data, so a non-empty store from relay A can never seed onto
+ * a first-visited relay B (Carl P1).
+ */
+export function readChannelStarsStore(
+  pubkey: string,
+  relayUrl?: string,
+): ChannelStarStore {
+  try {
+    const key = storageKey(pubkey, relayUrl);
+    const raw = window.localStorage.getItem(key);
+
+    // Scoped key already has data — use it directly.
+    if (raw !== null) {
+      return parseRaw(raw) ?? DEFAULT_STORE;
+    }
+
+    // No scoped data yet. If we were given a relay scope, attempt a one-time
+    // migration from the legacy pubkey-only key.
+    if (relayUrl) {
+      const legacyKey = storageKey(pubkey);
+      const migrated = parseRaw(window.localStorage.getItem(legacyKey));
+      if (migrated && Object.keys(migrated.channels).length > 0) {
+        // Persist under the scoped key and remove the legacy key so this
+        // migration cannot fire again for any other relay scope.
+        try {
+          window.localStorage.setItem(key, JSON.stringify(migrated));
+          window.localStorage.removeItem(legacyKey);
+        } catch {
+          // Ignore write failures — we still return the migrated value.
+        }
+        return migrated;
+      }
+    }
+
+    return DEFAULT_STORE;
   } catch {
     return DEFAULT_STORE;
   }
@@ -147,11 +204,15 @@ export function boundStarStore(
 export function writeChannelStarsStore(
   pubkey: string,
   store: ChannelStarStore,
+  relayUrl?: string,
   preservedKey?: string,
 ): ChannelStarStore | null {
   try {
     const bounded = boundStarStore(store, preservedKey);
-    window.localStorage.setItem(storageKey(pubkey), JSON.stringify(bounded));
+    window.localStorage.setItem(
+      storageKey(pubkey, relayUrl),
+      JSON.stringify(bounded),
+    );
     return bounded;
   } catch {
     return null;

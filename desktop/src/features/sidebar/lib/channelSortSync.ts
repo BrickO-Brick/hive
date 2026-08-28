@@ -66,6 +66,22 @@ type PublishDecision =
 type PublishBaseline = { createdAt: number; eventId: string };
 
 /**
+ * Outcome of the post-publish retained-head confirmation (Carl P1).
+ *
+ * - `confirmed` — the retained head is exactly our event; the write won LWW.
+ * - `adopt`     — a different, readable event is the head; our write was
+ *                 superseded (a peer's same-second blob with a lower id won, or
+ *                 a strictly-newer head landed). The caller adopts the winner.
+ * - `retain`    — the fetch failed, returned no/foreign head, or the head was
+ *                 unreadable; retention cannot be proven, so keep the durable
+ *                 edit and retry.
+ */
+type RetentionConfirmation =
+  | { kind: "confirmed" }
+  | { kind: "adopt"; remote: RemoteSortPrefs }
+  | { kind: "retain" };
+
+/**
  * True when `head` is the canonical winner over the baseline the edit was queued
  * against — i.e. the head advanced since the edit began. Canonical order is
  * `created_at DESC, id ASC`: a strictly-later head wins, and a same-second head
@@ -403,6 +419,53 @@ export class ChannelSortSyncManager {
     }
   }
 
+  /**
+   * After a publish OK, fetch the authoritative retained head and decide whether
+   * our event actually became it. The relay OKs a superseded NIP-33 write as a
+   * no-op (`Duplicate`), so a resolved publish is NOT proof of retention: two
+   * windows stamping the same `created_at` both get OK while only the lower
+   * event id is retained (Carl P1). Only an exact event-id match proves our
+   * whole-blob write won LWW.
+   *
+   *  - head id === ours               → `confirmed`
+   *  - head is our own accepted prior  → `retain` (a lost-ACK / same-second
+   *    attempt (ambiguousAttemptIds)     lower-id attempt of ours won; the retry
+   *                                      folds it forward and republishes above)
+   *  - head is a different readable    → `adopt` (our blob lost; adopt the
+   *    event                             winner so UI and relay converge)
+   *  - fetch failed / no head / head   → `retain` (retention unprovable or the
+   *    unreadable                        winner unreadable — keep the durable
+   *                                      edit and retry)
+   */
+  private async confirmRetainedHead(
+    ourEventId: string,
+  ): Promise<RetentionConfirmation> {
+    try {
+      const events = await relayClient.fetchEvents({
+        kinds: [KIND_CHANNEL_SORT],
+        authors: [this.pubkey],
+        "#d": [D_TAG],
+        limit: 1,
+      });
+      if (events.length === 0 || events[0].pubkey !== this.pubkey)
+        return { kind: "retain" };
+      const event = events[0];
+      this.recordRemoteHead(event.created_at, event.id);
+      if (event.id === ourEventId) return { kind: "confirmed" };
+      // A different event is the head. If it is one of OUR OWN accepted prior
+      // attempts (a lost-ACK write the relay retained, or a same-second lower-id
+      // attempt that won over this one), it is not a competing remote — retain
+      // so the retry's pre-publish folds it forward and publishes above it,
+      // rather than adopting our own older blob and dropping the current edit.
+      if (this.ambiguousAttemptIds.has(event.id)) return { kind: "retain" };
+      const remote = await decryptAndParse(event);
+      if (!remote) return { kind: "retain" };
+      return { kind: "adopt", remote };
+    } catch {
+      return { kind: "retain" };
+    }
+  }
+
   private isIdenticalToLastPublished(store: ChannelSortStore): boolean {
     if (!this.lastPublishedStore) return false;
     const lastGroups = this.lastPublishedStore.groups;
@@ -490,9 +553,35 @@ export class ChannelSortSyncManager {
         "Failed to publish channel sort preferences.",
       );
       this.recordRemoteHead(event.created_at, event.id);
-      // This write is now the confirmed accepted head; it dominates every prior
+      // A publish OK is NOT proof of retention: the relay OKs a superseded
+      // NIP-33 write as a no-op (`Duplicate`), so two windows stamping the same
+      // `created_at` both get OK while only the lower event id is retained (Carl
+      // P1). Fetch the authoritative head; only an exact id match proves our
+      // whole-blob write won. Anything else must keep the durable edit — never
+      // fold a nonexistent head into the baseline, which would poison the next
+      // edit into adopting the true winner away.
+      if (this.destroyed) return;
+      const confirmation = await this.confirmRetainedHead(event.id);
+      if (this.destroyed) return;
+      if (confirmation.kind === "adopt") {
+        // A different readable event is the head — our blob lost the same-second
+        // collision. Adopt the winner so UI and relay converge (CAS on gen
+        // inside adoptRemote leaves a newer edit untouched).
+        this.adoptRemote(confirmation.remote, gen);
+        return;
+      }
+      if (confirmation.kind === "retain") {
+        // Retention unprovable (fetch failed / no head), or the head is our own
+        // accepted prior attempt whose ACK was lost. Keep the durable edit and
+        // retry: the retry's pre-publish folds our own accepted predecessor
+        // forward (ambiguousAttemptIds) and republishes above it. Leave
+        // ambiguousAttemptIds intact so that fold still recognises our writes.
+        this.scheduleRetry(gen);
+        return;
+      }
+      // Confirmed: our event is the retained head. It dominates every prior
       // attempt (`created_at DESC, id ASC`), so no earlier ambiguous id can ever
-      // be the canonical head again. Clear the set to keep it bounded.
+      // be the canonical head again — clear the set to keep it bounded.
       this.ambiguousAttemptIds.clear();
       // Fold our own accepted head into the pending edit's baseline —
       // unconditional across generations so a newer edit's pre-publish check

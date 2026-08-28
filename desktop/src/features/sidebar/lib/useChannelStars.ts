@@ -38,7 +38,7 @@ export function useChannelStars(
     if (!pubkey) {
       return DEFAULT_STORE;
     }
-    return readChannelStarsStore(pubkey);
+    return readChannelStarsStore(pubkey, relayUrl);
   });
 
   const managerRef = React.useRef<ChannelStarSyncManager | null>(null);
@@ -48,7 +48,7 @@ export function useChannelStars(
       setStore(DEFAULT_STORE);
       return;
     }
-    setStore(readChannelStarsStore(pubkey));
+    setStore(readChannelStarsStore(pubkey, relayUrl));
     managerRef.current = new ChannelStarSyncManager(pubkey, relayUrl);
     return () => {
       managerRef.current?.destroy();
@@ -63,12 +63,12 @@ export function useChannelStars(
     if (!pubkey) {
       return;
     }
-    const key = storageKey(pubkey);
+    const key = storageKey(pubkey, relayUrl);
     const handler = (e: StorageEvent) => {
       if (e.key !== key) {
         return;
       }
-      const incoming = readChannelStarsStore(pubkey);
+      const incoming = readChannelStarsStore(pubkey, relayUrl);
       managerRef.current?.observe(incoming);
       setStore((prev) => mergeStores(prev, incoming));
     };
@@ -76,7 +76,7 @@ export function useChannelStars(
     return () => {
       window.removeEventListener("storage", handler);
     };
-  }, [pubkey]);
+  }, [pubkey, relayUrl]);
 
   // Every remote payload is observed by the manager before it reaches here
   // (fetch/subscribe paths call observe() internally; the storage handler
@@ -92,18 +92,19 @@ export function useChannelStars(
         const persisted = writeChannelStarsStore(
           pubkey,
           mergeStores(prev, remote.store),
+          relayUrl,
         );
         if (!persisted) return prev;
         return persisted;
       };
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   React.useEffect(() => {
     if (!pubkey || !relayUrl) return;
     let cancelled = false;
-    const local = readChannelStarsStore(pubkey);
+    const local = readChannelStarsStore(pubkey, relayUrl);
     void managerRef.current?.bootstrap(local).then((result) => {
       if (cancelled) return;
       if (result.action === "apply-remote") {
@@ -277,13 +278,18 @@ export function useChannelStars(
         // store into both React state and the publish so neither window's edit
         // is dropped (Carl prong b). Preserve the clicked channel through the
         // re-bound so a same-second mutation is not evicted at capacity.
-        const persisted = writeChannelStarsStore(pubkey, next, channelId);
+        const persisted = writeChannelStarsStore(
+          pubkey,
+          next,
+          relayUrl,
+          channelId,
+        );
         if (!persisted) return prev;
         manager?.publishStars(persisted);
         return persisted;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const starChannel = React.useCallback(

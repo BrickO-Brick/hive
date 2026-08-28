@@ -3,11 +3,31 @@ import test from "node:test";
 
 import {
   boundMuteStore,
+  DEFAULT_STORE,
   MAX_CHANNEL_MUTE_ENTRIES,
   mergeStores,
   parseMutePayload,
   mutedChannelIdsFromStore,
+  readChannelMutesStore,
+  storageKey,
+  writeChannelMutesStore,
 } from "./channelMutesStorage.ts";
+import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
+
+if (typeof globalThis.window === "undefined") {
+  const storage = new Map();
+  globalThis.window = {
+    localStorage: {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: (key) => storage.delete(key),
+    },
+  };
+}
+
+function makeMuteStore(channels = {}) {
+  return { version: 1, channels };
+}
 
 // ── parseMutePayload ──────────────────────────────────────────────────────────
 
@@ -523,4 +543,100 @@ test("mutedChannelIdsFromStore: all-false / empty returns empty set", () => {
     0,
   );
   assert.equal(mutedChannelIdsFromStore({ version: 1, channels: {} }).size, 0);
+});
+
+// ─── Relay-scoped key + one-time legacy migration (Carl r6 P1) ────────────────
+// The primary mute cache was pubkey-only keyed, so a non-empty store from relay
+// A could seed-publish onto a first-visited relay B. Scoping the key per relay
+// and migrating the legacy key exactly once (then deleting it) closes that leak.
+
+const MUTE_E = (muted, updatedAt, rev) => ({ muted, updatedAt, rev });
+
+test("storageKey: with relayUrl includes normalized+encoded relay in key", () => {
+  const relay = "wss://relay.example.com";
+  assert.equal(
+    storageKey("pk1", relay),
+    `buzz-channel-mutes.v1:pk1:${encodeURIComponent(normalizeRelayUrl(relay))}`,
+  );
+});
+
+test("storageKey: without relayUrl returns legacy pubkey-only key", () => {
+  assert.equal(storageKey("pk1"), "buzz-channel-mutes.v1:pk1");
+  assert.equal(storageKey("pk1", undefined), "buzz-channel-mutes.v1:pk1");
+});
+
+test("storageKey: two different relays produce different keys for same pubkey", () => {
+  assert.notEqual(
+    storageKey("pk1", "wss://relay-a.example.com"),
+    storageKey("pk1", "wss://relay-b.example.com"),
+  );
+});
+
+test("storageKey: equivalent relay URLs (case + trailing slash) map to the same key", () => {
+  assert.equal(
+    storageKey("pk1", "WSS://Relay.Example/"),
+    storageKey("pk1", "wss://relay.example"),
+  );
+});
+
+test("readChannelMutesStore + writeChannelMutesStore: scoped write/read roundtrip", () => {
+  const pubkey = "pk-mute-roundtrip";
+  const relay = "wss://relay.example.com";
+  const store = makeMuteStore({ chan1: MUTE_E(true, 1000, 1) });
+  assert.ok(writeChannelMutesStore(pubkey, store, relay) !== null);
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), store);
+});
+
+test("readChannelMutesStore: scoped key is isolated from other relay's data (A→B no seed leak)", () => {
+  const pubkey = "pk-mute-isolation";
+  const relayA = "wss://relay-a.example.com";
+  const relayB = "wss://relay-b.example.com";
+  writeChannelMutesStore(
+    pubkey,
+    makeMuteStore({ cha: MUTE_E(true, 100, 1) }),
+    relayA,
+  );
+  // Relay B sees an empty store — relay A's mutes must not seed onto B.
+  assert.deepEqual(readChannelMutesStore(pubkey, relayB), DEFAULT_STORE);
+});
+
+test("readChannelMutesStore: migrates legacy unscoped data on first scoped read", () => {
+  const pubkey = "pk-mute-migrate";
+  const relay = "wss://relay-migrate.example.com";
+  const legacy = makeMuteStore({ chl: MUTE_E(true, 500, 2) });
+  writeChannelMutesStore(pubkey, legacy); // legacy pubkey-only key
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), legacy);
+  // Legacy key deleted after migration (globally one-time guarantee).
+  assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
+  // Subsequent scoped reads hit the scoped key directly.
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), legacy);
+});
+
+test("readChannelMutesStore: migration is globally one-time — relay B sees DEFAULT_STORE after relay A migrates", () => {
+  const pubkey = "pk-mute-migrate-once";
+  const relayA = "wss://relay-a-once.example.com";
+  const relayB = "wss://relay-b-once.example.com";
+  writeChannelMutesStore(pubkey, makeMuteStore({ chm: MUTE_E(true, 1, 1) }));
+  readChannelMutesStore(pubkey, relayA); // migrates + deletes legacy key
+  // Relay B must not inherit relay A's migrated mutes.
+  assert.deepEqual(readChannelMutesStore(pubkey, relayB), DEFAULT_STORE);
+  assert.equal(window.localStorage.getItem(storageKey(pubkey, relayB)), null);
+});
+
+test("readChannelMutesStore: migration only copies non-empty legacy stores", () => {
+  const pubkey = "pk-mute-migrate-empty";
+  const relay = "wss://relay-empty.example.com";
+  writeChannelMutesStore(pubkey, DEFAULT_STORE); // empty legacy store
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), DEFAULT_STORE);
+  // An empty legacy store is not consumed, so it is not deleted either.
+  assert.notEqual(window.localStorage.getItem(storageKey(pubkey)), null);
+});
+
+test("readChannelMutesStore: scoped key takes precedence over legacy key", () => {
+  const pubkey = "pk-mute-precedence";
+  const relay = "wss://relay-precedence.example.com";
+  writeChannelMutesStore(pubkey, makeMuteStore({ old: MUTE_E(true, 1, 1) }));
+  const scoped = makeMuteStore({ new: MUTE_E(true, 2, 1) });
+  writeChannelMutesStore(pubkey, scoped, relay);
+  assert.deepEqual(readChannelMutesStore(pubkey, relay), scoped);
 });

@@ -65,14 +65,14 @@ test("same-second star and unstar mutations survive at capacity", async () => {
       ["pk-unstar", "unstarChannel", false],
     ]) {
       window.localStorage.setItem(
-        storageKey(pubkey),
+        storageKey(pubkey, relayUrl),
         JSON.stringify({ version: 1, channels }),
       );
       const { result, unmount } = renderHook(() =>
         useChannelStars(pubkey, relayUrl),
       );
       act(() => result.current[action]("a-target"));
-      const persisted = readChannelStarsStore(pubkey);
+      const persisted = readChannelStarsStore(pubkey, relayUrl);
       assert.equal(
         Object.keys(persisted.channels).length,
         MAX_CHANNEL_STAR_ENTRIES,
@@ -106,7 +106,7 @@ test("persisted-local first click mints seen+1 on both dimensions", async () => 
   Date.now = () => 100 * 1_000;
   const pubkey = "pk-persist";
   window.localStorage.setItem(
-    storageKey(pubkey),
+    storageKey(pubkey, "wss://r"),
     starPayload({ shared: { starred: true, updatedAt: 500, rev: 4 } }),
   );
   try {
@@ -114,7 +114,7 @@ test("persisted-local first click mints seen+1 on both dimensions", async () => 
       useChannelStars(pubkey, "wss://r"),
     );
     act(() => result.current.unstarChannel("shared"));
-    const persisted = readChannelStarsStore(pubkey);
+    const persisted = readChannelStarsStore(pubkey, "wss://r");
     assert.equal(persisted.channels.shared.starred, false, "unstar applied");
     assert.equal(
       persisted.channels.shared.updatedAt,
@@ -190,7 +190,7 @@ test("fast-clock veto fix: click after observing a future-stamped head wins", as
       true,
       "click must win despite the observed future timestamp",
     );
-    const persisted = readChannelStarsStore(pubkey);
+    const persisted = readChannelStarsStore(pubkey, "wss://r");
     assert.equal(
       persisted.channels.shared.updatedAt,
       400,
@@ -251,12 +251,12 @@ test("far-future observation: timestamp stays fixed, rev advances, latest click 
       for (let i = 0; i < 20; i++) await Promise.resolve();
     });
     await act(async () => hook.result.current.unstarChannel("shared"));
-    let p = readChannelStarsStore(pubkey);
+    let p = readChannelStarsStore(pubkey, "wss://r");
     assert.equal(p.channels.shared.starred, false, "first click applied");
     assert.equal(p.channels.shared.updatedAt, FUTURE, "timestamp stays fixed");
     assert.equal(p.channels.shared.rev, 2, "rev advanced 1→2");
     await act(async () => hook.result.current.starChannel("shared"));
-    p = readChannelStarsStore(pubkey);
+    p = readChannelStarsStore(pubkey, "wss://r");
     assert.equal(p.channels.shared.starred, true, "latest click wins");
     assert.equal(p.channels.shared.updatedAt, FUTURE, "timestamp still fixed");
     assert.equal(p.channels.shared.rev, 3, "rev advanced 2→3");
@@ -411,12 +411,14 @@ test("cross-window storage event is observed and max-merged", async () => {
     });
     // A peer window wrote a higher-rev entry for `shared` at updatedAt 900.
     window.localStorage.setItem(
-      storageKey(pubkey),
+      storageKey(pubkey, "wss://r"),
       starPayload({ shared: { starred: true, updatedAt: 900, rev: 12 } }),
     );
     await act(async () => {
       window.dispatchEvent(
-        new dom.window.StorageEvent("storage", { key: storageKey(pubkey) }),
+        new dom.window.StorageEvent("storage", {
+          key: storageKey(pubkey, "wss://r"),
+        }),
       );
       for (let i = 0; i < 20; i++) await Promise.resolve();
     });
@@ -428,7 +430,7 @@ test("cross-window storage event is observed and max-merged", async () => {
     // A following click sees the peer's high-water: updatedAt held at 900,
     // rev minted to 13.
     await act(async () => hook.result.current.unstarChannel("shared"));
-    const p = readChannelStarsStore(pubkey);
+    const p = readChannelStarsStore(pubkey, "wss://r");
     assert.equal(p.channels.shared.starred, false, "click applied");
     assert.equal(p.channels.shared.updatedAt, 900, "held at peer high-water");
     assert.equal(p.channels.shared.rev, 13, "rev = peer rev + 1");

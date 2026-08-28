@@ -8,6 +8,7 @@ import {
   makeFakeWindow,
   installFakeWindow,
   installTauriMock,
+  installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
 
 function makeStore(overrides = {}) {
@@ -250,15 +251,19 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
 
 // 4b. Local edit wins (no newer remote head): publishes and clears the outbox.
 test("adopt-winner: local edit at/ahead of head publishes and clears outbox", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
+  // The relay retains our own write, so the post-ACK confirmation fetch reads
+  // it back and confirms — clearing the outbox.
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
   const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls.push(event);
+    storedHead = [event];
     return Promise.resolve();
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
+  const tauri = installEchoTauri("pk-win");
   try {
     const manager = new ChannelSectionSyncManager("pk-win", RELAY);
     manager.publishSections(
@@ -270,7 +275,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
     assert.equal(
       readChannelSectionsOutbox("pk-win", RELAY),
       null,
-      "outbox must be cleared once the edit is published",
+      "outbox must be cleared once the edit is confirmed retained",
     );
   } finally {
     tauri.restore();
@@ -756,21 +761,12 @@ test("serialized generations: older completion does not make the newer edit adop
       // the next pre-publish fetch will return.
       return new Promise((res) => {
         releaseFirst = () => {
-          storedHead = [
-            {
-              id: "event-a",
-              pubkey: "pk-serial",
-              content: "good-cipher",
-              created_at: event.created_at,
-              kind: 30078,
-              tags: [["d", "channel-sections"]],
-              sig: "s",
-            },
-          ];
+          storedHead = [event];
           res();
         };
       });
     }
+    storedHead = [event];
     return Promise.resolve();
   });
   const storage = new Map();
@@ -797,14 +793,9 @@ test("serialized generations: older completion does not make the newer edit adop
     for (let i = 0; i < 100; i++) await Promise.resolve();
   };
   const restore = installFakeWindow(fakeWindow);
-  // A's decrypted head must parse; the pre-publish check reads its created_at/id.
-  const tauri = installTauriMock(
-    JSON.stringify({
-      version: 1,
-      sections: [{ id: "a", name: "A", order: 0 }],
-      assignments: {},
-    }),
-  );
+  // A and B round-trip through the echo seam so each publish becomes a
+  // decryptable retained head the post-ACK confirmation can read back.
+  const tauri = installEchoTauri("pk-serial");
   try {
     const manager = new ChannelSectionSyncManager("pk-serial", RELAY);
     const adopted = [];
@@ -841,7 +832,7 @@ test("serialized generations: older completion does not make the newer edit adop
     assert.equal(
       manager.getPendingStore(),
       null,
-      "B's pending clears via its own successful publish, not A's completion",
+      "B's pending clears via its own confirmed publish, not A's completion",
     );
     manager.destroy();
   } finally {
@@ -1014,6 +1005,19 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
         };
       });
     }
+    // B publishes above A and is retained; its post-ACK confirmation reads it
+    // back (same signed id, our pubkey) and confirms, clearing B's pending edit.
+    storedHead = [
+      {
+        id: "event-b",
+        pubkey: "pk-ambiguous",
+        content: "good-cipher",
+        created_at: event.created_at,
+        kind: 30078,
+        tags: [["d", "channel-sections"]],
+        sig: "s",
+      },
+    ];
     return Promise.resolve();
   });
   const storage = new Map();
@@ -1262,6 +1266,119 @@ test("serialized generations: a newer edit during encrypt/sign aborts the pre-si
       publishCalls[0].id,
       "event-b",
       "the surviving publish is B, not the stale A",
+    );
+    manager.destroy();
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
+// 13. Same-second whole-blob collision (Carl r6 P1): two windows publish
+//     distinct blobs stamped at the same created_at; the relay retains only the
+//     lower event id and OKs the loser as a no-op (`Duplicate`). A publish OK is
+//     therefore NOT proof of retention. The losing window must fetch the
+//     authoritative head, see a DIFFERENT readable event, and ADOPT it — never
+//     record its own non-retained tuple as the baseline. Critically, its NEXT
+//     edit must then survive: it must publish above the adopted winner, not be
+//     mistaken for a competing remote and adopted away. Mutation: recording the
+//     attempted tuple on OK alone (dropping confirmRetainedHead) makes the loser
+//     fold a nonexistent head into its baseline and erase its next edit.
+test("same-second collision: loser adopts the winner and its next edit survives", async () => {
+  let publishCalls = 0;
+  let storedHead = [];
+  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
+  const t = (() => {
+    const storage = new Map();
+    const timers = new Map();
+    let nextId = 1;
+    return {
+      win: {
+        localStorage: {
+          getItem: (k) => storage.get(k) ?? null,
+          setItem: (k, v) => storage.set(k, v),
+          removeItem: (k) => storage.delete(k),
+        },
+        setTimeout: (fn, ms) => {
+          const id = nextId++;
+          timers.set(id, { fn, ms });
+          return id;
+        },
+        clearTimeout: (id) => timers.delete(id),
+      },
+      fireDelay: async (ms) => {
+        const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+        assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
+        timers.delete(entry[0]);
+        entry[1].fn();
+        for (let i = 0; i < 100; i++) await Promise.resolve();
+      },
+    };
+  })();
+  const restore = installFakeWindow(t.win);
+  const tauri = installEchoTauri("pk-collide");
+  mock.method(relayClient, "publishEvent", (event) => {
+    publishCalls++;
+    if (publishCalls === 1) {
+      // Our blob is OK'd but immediately superseded: the retained head is a
+      // peer window's distinct blob at the same second (lower event id wins).
+      // Minted through the echo seam so it decrypts back to a readable store.
+      storedHead = [
+        tauri.mintHead(
+          makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
+          event.created_at,
+        ),
+      ];
+      return Promise.resolve();
+    }
+    // Our second edit publishes above the adopted winner and is retained.
+    storedHead = [event];
+    return Promise.resolve();
+  });
+  try {
+    const manager = new ChannelSectionSyncManager("pk-collide", RELAY);
+    const adopted = [];
+    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
+
+    manager.publishSections(
+      makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
+    );
+    await t.fireDelay(2000); // publish OK, but the peer blob is what's retained
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    // The loser adopts the peer winner rather than recording its own
+    // non-retained tuple; its first edit is not silently kept as a phantom head.
+    assert.equal(adopted.length, 1, "loser adopts the true retained winner");
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "the losing edit is resolved by adopting the winner, not left dangling",
+    );
+
+    // The NEXT edit must survive: it publishes above the adopted winner and is
+    // confirmed retained — never adopted away as if it were a competing remote.
+    manager.publishSections(
+      makeSectionsStore([{ id: "next", name: "Next", order: 0 }]),
+    );
+    await t.fireDelay(2000);
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+
+    assert.equal(publishCalls, 2, "the next edit publishes above the winner");
+    assert.equal(
+      adopted.length,
+      1,
+      "the next edit is NOT adopted away — no phantom-baseline poisoning",
+    );
+    assert.equal(
+      manager.getPendingStore(),
+      null,
+      "the next edit clears via its own confirmed publish",
+    );
+    assert.equal(
+      readChannelSectionsOutbox("pk-collide", RELAY),
+      null,
+      "the next edit's durable outbox is cleared on confirmation",
     );
     manager.destroy();
   } finally {
