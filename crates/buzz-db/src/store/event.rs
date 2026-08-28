@@ -1380,7 +1380,6 @@ impl Db {
         crate::event::get_event_by_id_in_transaction(tx, community_id, id_bytes).await
     }
 
-
     /// Inserts an event. Returns `(StoredEvent, was_inserted)` — `false` on duplicate.
     #[datastore_span(name = "insert_event", system = "postgresql")]
     pub async fn insert_event(

@@ -1580,10 +1580,8 @@ mod tests {
             .connect(&url)
             .await
             .expect("connect workflow persistence test database");
+        // The harness prepares the schema (CI uses pgschema, not SQLx history).
         let db = buzz_db::Db::from_pool(pool);
-        db.migrate()
-            .await
-            .expect("migrate workflow persistence test database");
         let host = format!("workflow-cas-{}.example", Uuid::new_v4().simple());
         let community = db
             .ensure_configured_community(&host)
@@ -1603,11 +1601,8 @@ mod tests {
         let setup_pool = sqlx::PgPool::connect(&url)
             .await
             .expect("connect workflow trigger setup database");
+        // The harness prepares the schema (CI uses pgschema, not SQLx history).
         let setup_db = buzz_db::Db::from_pool(setup_pool.clone());
-        setup_db
-            .migrate()
-            .await
-            .expect("migrate workflow trigger test database");
 
         let host = format!("workflow-trigger-{}.example", Uuid::new_v4().simple());
         let community = setup_db

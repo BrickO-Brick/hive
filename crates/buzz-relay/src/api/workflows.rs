@@ -308,10 +308,8 @@ mod tests {
         let pool = sqlx::PgPool::connect(&database_url)
             .await
             .expect("connect workflow API test database");
+        // The harness prepares the schema (CI uses pgschema, not SQLx history).
         let db = buzz_db::Db::from_pool(pool.clone());
-        db.migrate()
-            .await
-            .expect("migrate workflow API test database");
         db.ensure_configured_community(host)
             .await
             .expect("create workflow API test community");
