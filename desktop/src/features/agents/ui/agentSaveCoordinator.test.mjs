@@ -1096,27 +1096,37 @@ test("test_mutation_throws_then_refetch_rejects_reports_unknown_not_failed", asy
   }
 });
 
-// ── Test family 8: concurrent-edit drift guard (P1-2) ────────────────────────
+// ── Test family 8: concurrent-edit drift guard (P1-2, Carl round-4) ──────────
 //
-// A definition write is built from the form baseline captured at seed time. If
-// another writer revised the definition while the form was open, the latest ctx
-// `updatedAt` differs from the seed-time value. Submitting the stale
-// full-replacement input would clobber the newer writer's values, so the
-// coordinator must abort BEFORE any write — nothing persisted, dialog stays
-// open (returns false), and the toast tells the user to reopen.
+// A definition write is built from the form baseline captured at seed time. The
+// guard must read the AUTHORITATIVE persisted revision before the first write
+// and compare it to the seed-time value — not the React-cached `ctx.updatedAt`,
+// which can lag a concurrent writer's update. If the persisted revision has
+// advanced, the stale full-replacement input would clobber the newer writer's
+// values, so the coordinator aborts BEFORE any write — nothing persisted,
+// dialog stays open (returns false), toast tells the user to reopen.
 
-test("test_definition_drift_aborts_before_any_write", async () => {
+test("test_stale_cache_lets_two_writer_overwrite_through_cache_only_guard", async () => {
+  // TOCTOU: writer B submits before its query cache received writer A's newer
+  // write, so B's CACHED ctx revision still equals the seed (no cache drift),
+  // but the persisted definition has advanced to R2. The authoritative
+  // pre-write refetch must observe R2 and abort — a cache-only comparison
+  // (ctx.updatedAt === seed) would pass and B would clobber A.
   const cap = captureToasts();
   try {
     const opts = makeOpts({
       ctx: {
         kind: "definition-only",
-        // Latest ctx definition was revised (updatedAt advanced).
-        definition: makeDefinition({ updatedAt: "2025-06-01T00:00:00Z" }),
+        // Cached revision is STILL the seed value — cache hasn't seen A's write.
+        definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
       },
       personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
-      // Form was seeded against the OLD revision.
       expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+      // Authoritative persisted state: writer A advanced it to R2.
+      refetchStores: async () => ({
+        persona: makeDefinition({ updatedAt: "2025-06-01T00:00:00Z" }),
+        agent: null,
+      }),
     });
 
     const result = await runAgentSaveCoordinator(opts);
@@ -1124,12 +1134,12 @@ test("test_definition_drift_aborts_before_any_write", async () => {
     assert.equal(
       result,
       false,
-      "drift must abort the save (dialog stays open)",
+      "persisted drift must abort the save (dialog stays open)",
     );
     assert.equal(
       opts._calls.updatePersona,
       0,
-      "no definition write may be attempted on drift",
+      "no definition write may be attempted when the persisted revision advanced",
     );
     assert.equal(opts._calls.onDone, 0, "onDone must NOT fire on drift abort");
     const errors = cap.captured.filter((c) => c.kind === "error");
@@ -1144,7 +1154,7 @@ test("test_definition_drift_aborts_before_any_write", async () => {
   }
 });
 
-test("test_no_drift_when_updatedAt_matches_proceeds_with_write", async () => {
+test("test_no_drift_when_persisted_revision_matches_proceeds_with_write", async () => {
   const updated = makeDefinition({
     displayName: "Alice-renamed",
     updatedAt: "2025-01-01T00:00:00Z",
@@ -1156,14 +1166,63 @@ test("test_no_drift_when_updatedAt_matches_proceeds_with_write", async () => {
     },
     personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
     expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+    // Authoritative pre-write fetch AND settlement both read this revision.
     refetchStores: async () => ({ persona: updated, agent: null }),
   });
 
   const result = await runAgentSaveCoordinator(opts);
 
-  assert.equal(result, true, "matching updatedAt must not block the write");
+  assert.equal(
+    result,
+    true,
+    "matching persisted revision must not block the write",
+  );
   assert.equal(opts._calls.updatePersona, 1, "definition write proceeds");
   assert.equal(opts._calls.onDone, 1, "onDone fires on success");
+});
+
+test("test_pre_write_refetch_failure_aborts_without_writing", async () => {
+  // The authoritative pre-write fetch itself rejects. Nothing was attempted, so
+  // this is a pre-save verification failure — abort without writing, and the
+  // toast must NOT claim the write may have persisted.
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+      refetchStores: async () => {
+        throw new Error("relay unreachable");
+      },
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "pre-write fetch failure aborts the save");
+    assert.equal(
+      opts._calls.updatePersona,
+      0,
+      "no write may be attempted when the pre-write fetch fails",
+    );
+    assert.equal(opts._calls.onDone, 0, "onDone must NOT fire");
+    const errors = cap.captured.filter((c) => c.kind === "error");
+    assert.equal(errors.length, 1, "exactly one error toast");
+    assert.match(
+      errors[0].message,
+      /nothing was changed/i,
+      "pre-write failure must state nothing was changed, not that persistence is unknown",
+    );
+    assert.doesNotMatch(
+      errors[0].message,
+      /may have been applied|whether .* saved/i,
+      "must not use the post-write unverified-persistence wording",
+    );
+  } finally {
+    cap.restore();
+  }
 });
 
 test("test_instance_only_save_skips_drift_guard", async () => {
@@ -1188,7 +1247,8 @@ test("test_instance_only_save_skips_drift_guard", async () => {
 
 test("test_drift_guard_inert_when_no_expected_updatedAt_supplied", async () => {
   // A personaInput with no expectedDefinitionUpdatedAt (null) must not abort —
-  // the guard is opt-in and skips when the seed-time value is absent.
+  // the guard is opt-in and skips the pre-write fetch when the seed-time value
+  // is absent.
   const updated = makeDefinition({ displayName: "Alice-renamed" });
   const opts = makeOpts({
     ctx: { kind: "definition-only", definition: makeDefinition() },

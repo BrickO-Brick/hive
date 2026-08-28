@@ -154,20 +154,33 @@ export async function runAgentSaveCoordinator(
 
   // ── Step 0: Validate ──────────────────────────────────────────────────────
   // Concurrent-edit guard: a submitted definition write is built from the form
-  // baseline captured at seed time. If the definition was revised by another
-  // writer since (the latest ctx `updatedAt` differs from the seed-time value),
-  // the stale full-replacement input would clobber the newer values. Abort
-  // before any write — nothing is persisted and the dialog stays open.
-  if (
-    personaInput &&
-    def &&
-    expectedDefinitionUpdatedAt != null &&
-    def.updatedAt !== expectedDefinitionUpdatedAt
-  ) {
-    toast.error(
-      `${def.displayName} changed while you were editing — reopen the editor to get the latest before saving.`,
-    );
-    return false;
+  // baseline captured at seed time. Before the first write, authoritatively
+  // refetch the persisted definition and compare ITS revision against the
+  // seed-time value. If another writer revised the definition since, the stale
+  // full-replacement input would clobber the newer values. Abort before any
+  // write — nothing is persisted and the dialog stays open.
+  //
+  // The cached `ctx.updatedAt` is NOT authoritative: writer B can submit before
+  // its React-query cache receives writer A's newer write, so both the cache
+  // and the seed still read the pre-A revision. A cache-only comparison passes
+  // (stale-equal) and B overwrites A. The forced refetch reads persisted state,
+  // closing that time-of-check/time-of-use window.
+  if (personaInput && def && expectedDefinitionUpdatedAt != null) {
+    const preCheck = await verifiedRefetch();
+    if (!preCheck.verified) {
+      // Refetch rejected BEFORE any write — nothing was attempted, so this is a
+      // pre-save verification failure, not an unknown-persistence state.
+      toast.error(
+        `Could not verify the latest version of ${def.displayName} before saving — nothing was changed. Try again.`,
+      );
+      return false;
+    }
+    if ((preCheck.persona?.updatedAt ?? null) !== expectedDefinitionUpdatedAt) {
+      toast.error(
+        `${def.displayName} changed while you were editing — reopen the editor to get the latest before saving.`,
+      );
+      return false;
+    }
   }
 
   if (personaInput && def && inst) {
