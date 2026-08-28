@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { toast } from "sonner";
-import { runAgentSaveCoordinator } from "./agentSaveCoordinator.ts";
+import {
+  PERSONA_REVISION_CONFLICT,
+  runAgentSaveCoordinator,
+} from "./agentSaveCoordinator.ts";
 
 // Capture toast calls by kind. The coordinator and this test import the same
 // `toast` object from sonner, so overriding its methods here intercepts the
@@ -1261,6 +1264,177 @@ test("test_drift_guard_inert_when_no_expected_updatedAt_supplied", async () => {
 
   assert.equal(result, true, "null expected updatedAt skips the guard");
   assert.equal(opts._calls.updatePersona, 1);
+});
+
+// ── Test family 8b: backend compare-and-swap threading + rejection (P1, Carl round-4) ──
+//
+// The pre-write refetch narrows but cannot close the check-to-write window: the
+// authoritative read releases the store lock before the write reacquires it. So
+// the coordinator threads the seed-time revision (`expectedUpdatedAt`) into the
+// write, and the backend compares it under the SAME lock that guards the write.
+// A rejection carries PERSONA_REVISION_CONFLICT and must surface as the drift
+// toast — the same user situation as the Step-0 abort.
+
+test("test_definition_write_carries_expected_updated_at_for_backend_cas", async () => {
+  // The seed-time revision must reach updatePersona so the backend can enforce
+  // its lock-held compare-and-swap. Capture the input the write received.
+  let received = null;
+  const updated = makeDefinition({
+    displayName: "Alice-renamed",
+    updatedAt: "2025-01-01T00:00:00Z",
+  });
+  const opts = makeOpts({
+    ctx: {
+      kind: "definition-only",
+      definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+    },
+    personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+    expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+    updatePersona: async (input) => {
+      received = input;
+    },
+    refetchStores: async () => ({ persona: updated, agent: null }),
+  });
+
+  const result = await runAgentSaveCoordinator(opts);
+
+  assert.equal(result, true, "matching revision proceeds");
+  assert.equal(
+    received?.expectedUpdatedAt,
+    "2025-01-01T00:00:00Z",
+    "the write must carry the seed-time revision for the backend CAS",
+  );
+});
+
+test("test_publish_path_carries_expected_updated_at_for_backend_cas", async () => {
+  // The publish path (updatePersonaAndPublish) must thread the revision too, so
+  // "Save and publish" gets identical concurrency protection.
+  let received = null;
+  const updated = makeDefinition({
+    displayName: "Alice-renamed",
+    shared: true,
+    updatedAt: "2025-01-01T00:00:00Z",
+  });
+  const opts = makeOpts({
+    ctx: {
+      kind: "definition-only",
+      definition: makeDefinition({
+        shared: true,
+        updatedAt: "2025-01-01T00:00:00Z",
+      }),
+    },
+    personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+    publishCatalogUpdates: true,
+    expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+    updatePersonaAndPublish: async (input) => {
+      received = input;
+      return { publicationStatus: "published" };
+    },
+    refetchStores: async () => ({ persona: updated, agent: null }),
+  });
+
+  const result = await runAgentSaveCoordinator(opts);
+
+  assert.equal(result, true, "matching revision proceeds on the publish path");
+  assert.equal(
+    received?.expectedUpdatedAt,
+    "2025-01-01T00:00:00Z",
+    "the publish write must carry the seed-time revision for the backend CAS",
+  );
+});
+
+test("test_backend_cas_rejection_surfaces_drift_toast_and_aborts", async () => {
+  // The window a concurrent writer slips through: the pre-write refetch reads
+  // the seed revision (passes), then a writer commits, then the backend write
+  // rejects with the conflict marker. The coordinator must map it to the drift
+  // toast and return false WITHOUT attempting settlement.
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+      updatePersona: async () => {
+        throw new Error(
+          `${PERSONA_REVISION_CONFLICT}Alice changed while you were editing`,
+        );
+      },
+      // Pre-write refetch sees the seed revision (passes); the write then loses
+      // the race under the backend lock.
+      refetchStores: async () => ({
+        persona: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+        agent: null,
+      }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "a CAS rejection aborts the save");
+    assert.equal(
+      opts._calls.onDone,
+      0,
+      "onDone must NOT fire on a CAS rejection",
+    );
+    const errors = cap.captured.filter((c) => c.kind === "error");
+    assert.equal(errors.length, 1, "exactly one error toast");
+    assert.match(
+      errors[0].message,
+      /changed while you were editing/i,
+      "a backend CAS rejection must surface the drift toast",
+    );
+    assert.doesNotMatch(
+      errors[0].message,
+      new RegExp(PERSONA_REVISION_CONFLICT),
+      "the raw conflict marker must not leak into the user-facing toast",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_generic_write_failure_is_not_treated_as_a_drift_conflict", async () => {
+  // A non-conflict throw must follow the ordinary settlement path (observed
+  // non-persist), NOT the drift toast — the marker guard must be specific.
+  const cap = captureToasts();
+  try {
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      expectedDefinitionUpdatedAt: "2025-01-01T00:00:00Z",
+      updatePersona: async () => {
+        throw new Error("disk full");
+      },
+      // Settlement observes the write did NOT persist (still the old name).
+      refetchStores: async () => ({
+        persona: makeDefinition({ updatedAt: "2025-01-01T00:00:00Z" }),
+        agent: null,
+      }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "a generic write failure returns false");
+    const errors = cap.captured.filter((c) => c.kind === "error");
+    assert.equal(errors.length, 1, "exactly one error toast");
+    assert.match(
+      errors[0].message,
+      /disk full/i,
+      "generic error surfaces its own message",
+    );
+    assert.doesNotMatch(
+      errors[0].message,
+      /changed while you were editing/i,
+      "a non-conflict failure must not claim a concurrent edit",
+    );
+  } finally {
+    cap.restore();
+  }
 });
 
 // ── Test family 9: success toast names the observed (persisted) agent (P2) ───

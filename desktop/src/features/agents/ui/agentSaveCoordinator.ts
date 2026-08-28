@@ -39,6 +39,15 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+/**
+ * Marker the backend prefixes onto a compare-and-swap rejection (see
+ * `commands/personas/update.rs::PERSONA_REVISION_CONFLICT`). A thrown error
+ * containing it means the persisted definition advanced past the revision this
+ * editor was seeded with — the coordinator maps it to the "changed while you
+ * were editing" affordance instead of a generic save failure.
+ */
+export const PERSONA_REVISION_CONFLICT = "persona-revision-conflict:";
+
 export type SaveCoordinatorOptions = {
   /** Current edit context (definition + optional instance). */
   ctx: AgentEditContext;
@@ -154,17 +163,23 @@ export async function runAgentSaveCoordinator(
 
   // ── Step 0: Validate ──────────────────────────────────────────────────────
   // Concurrent-edit guard: a submitted definition write is built from the form
-  // baseline captured at seed time. Before the first write, authoritatively
-  // refetch the persisted definition and compare ITS revision against the
-  // seed-time value. If another writer revised the definition since, the stale
-  // full-replacement input would clobber the newer values. Abort before any
-  // write — nothing is persisted and the dialog stays open.
+  // baseline captured at seed time. This pre-write refetch is a cheap early
+  // exit — it reads the persisted definition and aborts before any write when
+  // another writer has ALREADY committed a newer revision, which is the common
+  // stale-dialog case. It does NOT by itself close the check-to-write window:
+  // the authoritative read below releases the store lock before the write
+  // reacquires it, so a writer that commits in that interval would slip
+  // through. The backend `update_persona`/`update_persona_and_publish` carry
+  // `expectedUpdatedAt` and re-compare it under the SAME lock that guards the
+  // write (a compare-and-swap), which is what actually closes the window; a
+  // rejection there surfaces as the same "changed while you were editing"
+  // toast (see Step 1).
   //
   // The cached `ctx.updatedAt` is NOT authoritative: writer B can submit before
   // its React-query cache receives writer A's newer write, so both the cache
   // and the seed still read the pre-A revision. A cache-only comparison passes
-  // (stale-equal) and B overwrites A. The forced refetch reads persisted state,
-  // closing that time-of-check/time-of-use window.
+  // (stale-equal) and B would reach the write. The forced refetch reads
+  // persisted state, catching an already-committed A before any write.
   if (personaInput && def && expectedDefinitionUpdatedAt != null) {
     const preCheck = await verifiedRefetch();
     if (!preCheck.verified) {
@@ -210,17 +225,36 @@ export async function runAgentSaveCoordinator(
 
   // Step 1: Definition write — settle immediately, stop if not persisted.
   if (personaInput) {
+    // Carry the seed-time revision into the write so the backend can reject a
+    // concurrent overwrite under its store lock (compare-and-swap). This is the
+    // authoritative close of the check-to-write window; the Step-0 refetch only
+    // catches an already-committed writer.
+    const guardedInput: UpdatePersonaInput = {
+      ...personaInput,
+      expectedUpdatedAt: expectedDefinitionUpdatedAt ?? undefined,
+    };
     let caughtError: string | null = null;
     try {
       if (publishCatalogUpdates) {
-        const result = await updatePersonaAndPublish(personaInput);
+        const result = await updatePersonaAndPublish(guardedInput);
         publicationStatus = result.publicationStatus;
       } else {
-        await updatePersona(personaInput);
+        await updatePersona(guardedInput);
       }
     } catch (err) {
-      caughtError =
+      const message =
         err instanceof Error ? err.message : "Failed to save agent profile.";
+      // A backend compare-and-swap rejection means the definition advanced
+      // while this editor was open — the same user situation as the Step-0
+      // drift abort. Report it as such and bail without settling: nothing was
+      // written, so there is no persistence to verify.
+      if (message.includes(PERSONA_REVISION_CONFLICT)) {
+        toast.error(
+          `${def?.displayName ?? "This agent"} changed while you were editing — reopen the editor to get the latest before saving.`,
+        );
+        return false;
+      }
+      caughtError = message;
     }
     // Settle after definition write — re-fetch regardless of throw. Observed
     // persistence (not the command result) decides whether the step failed: a

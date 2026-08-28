@@ -739,8 +739,7 @@ export type AgentPersona = {
 
 /**
  * A catalog publication's coordinate: the owner who published it and the
- * `d`-tag identifying the persona within that owner's catalog. Mirrors the
- * backend `CatalogSource`.
+ * `d`-tag identifying the persona within that owner's catalog. Mirrors the backend `CatalogSource`.
  */
 export type CatalogSourceCoordinate = {
   ownerPubkey: string;
@@ -767,10 +766,7 @@ export type CreatePersonaInput = {
   namePool?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
-  /**
-   * Set when this persona is a copy of another owner's shared catalog entry,
-   * so the catalog can tell an already-added foreign entry from a new one.
-   */
+  /** Set when this persona is a copy of another owner's shared catalog entry, so the catalog can tell an already-added foreign entry from a new one. */
   catalogSource?: CatalogSourceCoordinate;
 };
 
@@ -785,6 +781,8 @@ export type UpdatePersonaInput = {
   namePool?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
+  /** Definition revision (`updatedAt`) at editor open; the backend compare-and-swaps it against the persisted value under the store lock and rejects the save if it advanced, so a stale full-replacement input cannot clobber a concurrent writer. Omitted = skip the check. */
+  expectedUpdatedAt?: string | null;
 };
 
 // ── Team types ────────────────────────────────────────────────────────────────
