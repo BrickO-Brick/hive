@@ -13,13 +13,13 @@ export const EFFORT_DEFAULT_DROPDOWN_VALUE = "__effort_default__";
 /**
  * Pure gating + option compute for the effort write control in the edit dialog.
  *
- * The picker is a LOCAL-only, direct-write control: it calls
- * `persistAgentEffortLevel`, which the Rust command rejects for non-local
- * backends (remote effort is set at deploy time via `policy_env`). So the UI
- * must not offer it for a provider backend, and there's nothing to pick until
- * the adapter has advertised a `thought_level` config option (discovered from
- * the running session — `effortConfigId` is absent pre-first-session and for
- * runtimes/models that don't support effort).
+ * The picker is a LOCAL-only, Save-gated write control: the dialog persists the
+ * selection via `persistAgentEffortLevel`, which the Rust command rejects for
+ * non-local backends (remote effort is set at deploy time via `policy_env`). So
+ * the UI must not offer it for a provider backend, and there's nothing to pick
+ * until the adapter has advertised a `thought_level` config option (discovered
+ * from the running session — `effortConfigId` is absent pre-first-session and
+ * for runtimes/models that don't support effort).
  *
  * `visible` is the single gate the dialog renders on: local backend AND a
  * discovered `effortConfigId`.

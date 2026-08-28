@@ -223,11 +223,10 @@ with a TypeScript lookup table or an id comparison in a component.
    has been discovered from the running session (absent pre-first-session and
    for runtimes/models without effort support). Local-only is load-bearing, not
    cosmetic — the Rust command rejects non-local backends because remote effort
-   is set at deploy time via `policy_env`. Because it reads its inputs from the
-   config surface the dialog already fetches (`useAgentConfigSurface`) and owns
-   its own mutation, it does **not** thread new props through the over-1000-line
-   dialog (see rule 11): keep effort state inside the section component, never
-   as dialog-level props. The read-only display is the `thinkingEffort`
+   is set at deploy time via `policy_env`. The field owns no mutation: the dialog
+   holds the pending selection and threads it as `value`/`onChange` props, and
+   the single write lives in `handleSubmit` (see the Save-gated setter above), so
+   there is exactly one effort write path and it is gated on Save. The read-only display is the `thinkingEffort`
    normalized field rendered by `AgentConfigPanel` via `NormalizedRow`, which
    already shows both facts — `field.value` (canonical: the effort the next
    spawn will launch with, projected to the runtime's native key) and, when a

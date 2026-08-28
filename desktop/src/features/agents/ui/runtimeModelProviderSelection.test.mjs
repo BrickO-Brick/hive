@@ -17,10 +17,10 @@ const base = {
 
 // --- selectionOnRuntimeChange ---
 
-test("runtime switch clears stale effort env aliases (native + ACP sentinel), preserving the direct-write column", () => {
+test("runtime switch clears stale effort env aliases (native + ACP sentinel), preserving the Save-gated column", () => {
   // Claude/buzz-agent → Goose: the previous runtime's effort env aliases are
   // stale under Goose. They are cleared; unrelated env survives. The canonical
-  // effort column is direct-write, not in this state, so it is untouched here.
+  // effort column is Save-gated, not in this state, so it is untouched here.
   const next = selectionOnRuntimeChange(
     {
       ...base,

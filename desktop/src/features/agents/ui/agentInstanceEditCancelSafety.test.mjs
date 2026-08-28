@@ -1,5 +1,5 @@
 /**
- * Cancel-safety acceptance pin (production seam).
+ * Cancel-safety + Save-gated effort acceptance pins (production seam).
  *
  * The pin→inherit effort/runtime clear is derived entirely inside the backend's
  * locked save, keyed off the `agentCommand: ""` sentinel that
@@ -19,6 +19,17 @@
  * so rewiring Cancel to handleSubmit() makes it fail. The companion test clicks
  * the REAL Save button and asserts the same boundary receives exactly one call
  * carrying the `agentCommand: ""` inherit sentinel.
+ *
+ * The effort-write tests (Carl r8 P1) pin the SUBMIT wiring the pure
+ * `resolveEffortSubmission` unit tests cannot reach: they mount the dialog with
+ * an effort-capable config surface, drive the REAL effort dropdown, and assert
+ * the `persist_agent_effort_level` IPC boundary against controlled deferred
+ * `update_managed_agent` promises. Selection alone and Cancel dispatch no effort
+ * call (a selection-time write would fail these); a failed main update dispatches
+ * none; the pin→inherit Save resolves the locked update and still dispatches no
+ * effort setter (dropping the inherit-transition guard fails it); and an ordinary
+ * effort Save proves the setter fires only AFTER `update_managed_agent` resolves
+ * (moving the write before the await fails the ordering assertion).
  */
 
 import assert from "node:assert/strict";
@@ -209,6 +220,53 @@ function installIpc() {
     ipcCalls.push({ cmd: "update_managed_agent", args });
     return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
   });
+}
+
+// An effort-capable local config surface: the picker renders only when the
+// backend is local AND the running session has advertised a `thought_level`
+// configId, so these must be present for the effort dropdown to mount.
+function effortConfigSurface() {
+  return {
+    ...configSurface(),
+    effortConfigId: "thought_level",
+    effortOptions: [
+      { value: "low", displayName: "Low" },
+      { value: "high", displayName: "High" },
+    ],
+  };
+}
+
+// Installs the effort-capable surface plus a CONTROLLABLE update boundary: the
+// caller decides when `update_managed_agent` resolves (or rejects) so the tests
+// can prove the effort setter fires strictly AFTER the locked update — never on
+// selection, never before the update settles, never on a failed update. Returns
+// `resolveUpdate` / `rejectUpdate` to settle the deferred update on demand.
+function installEffortIpc({ deferUpdate = false, failUpdate = false } = {}) {
+  installIpc();
+  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
+  set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
+
+  let resolveUpdate = () => {};
+  set("update_managed_agent", (args) => {
+    ipcCalls.push({ cmd: "update_managed_agent", args });
+    if (failUpdate) {
+      return Promise.reject(new Error("update failed"));
+    }
+    const response = { agent: rawAgent(), profile_sync_error: null };
+    if (!deferUpdate) {
+      return Promise.resolve(response);
+    }
+    return new Promise((resolve) => {
+      resolveUpdate = () => resolve(response);
+    });
+  });
+  set("persist_agent_effort_level", (args) => {
+    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
+    return Promise.resolve();
+  });
+  return {
+    resolveUpdate: () => resolveUpdate(),
+  };
 }
 
 function renderDialog(onOpenChange) {
@@ -428,5 +486,184 @@ test("inherit toggle then Save dispatches the agentCommand:'' inherit sentinel",
     updates[0].args.input.agentCommand,
     "",
     "Save on the pin→inherit transition must carry the empty-command sentinel the backend clears the column on",
+  );
+});
+
+// ── Effort write is Save-gated: real dialog wiring, controlled deferred IPC ────
+
+// Opens the effort dropdown (Radix DropdownMenu trigger) and selects the option
+// whose visible label matches `label`. Mirrors a real user pick — the seam the
+// pure resolveEffortSubmission unit tests never touch.
+async function selectEffort(label) {
+  const trigger = dom.window.document.getElementById("edit-agent-effort");
+  assert.ok(
+    trigger,
+    "effort picker trigger must render for a local + effort-capable agent",
+  );
+  await act(async () => {
+    fireEvent.pointerDown(
+      trigger,
+      new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    fireEvent.click(trigger);
+  });
+  const item = [
+    ...dom.window.document.querySelectorAll('[role="menuitemradio"]'),
+  ].find((node) => node.textContent?.trim() === label);
+  assert.ok(item, `effort option "${label}" must be offered`);
+  await act(async () => {
+    fireEvent.click(item);
+  });
+}
+
+function effortCalls() {
+  return ipcCalls.filter((c) => c.cmd === "persist_agent_effort_level");
+}
+
+test("effort selection alone dispatches no persist_agent_effort_level", async () => {
+  installEffortIpc();
+  await act(async () => {
+    renderDialog(() => {});
+  });
+
+  await selectEffort("High");
+
+  assert.equal(
+    effortCalls().length,
+    0,
+    "picking an effort value must not write until Save — a selection-time IPC is the r8 race",
+  );
+});
+
+test("effort selected then Cancel dispatches no persist_agent_effort_level", async () => {
+  installEffortIpc();
+  let openChange;
+  await act(async () => {
+    renderDialog((next) => {
+      openChange = next;
+    });
+  });
+
+  await selectEffort("High");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  });
+
+  assert.equal(
+    openChange,
+    false,
+    "Cancel must route through onOpenChange(false)",
+  );
+  assert.equal(
+    effortCalls().length,
+    0,
+    "Cancel after selecting an effort must discard the pending write",
+  );
+});
+
+test("effort Save with a rejected update dispatches no persist_agent_effort_level", async () => {
+  installEffortIpc({ failUpdate: true });
+  await act(async () => {
+    renderDialog(() => {});
+  });
+
+  await selectEffort("High");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  });
+
+  assert.equal(
+    ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
+    1,
+    "Save must attempt the locked update",
+  );
+  assert.equal(
+    effortCalls().length,
+    0,
+    "a failed update_managed_agent must abort before the sequenced effort setter",
+  );
+});
+
+test("effort Save fires persist_agent_effort_level only AFTER update_managed_agent resolves", async () => {
+  const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
+  await act(async () => {
+    renderDialog(() => {});
+  });
+
+  await selectEffort("High");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  });
+
+  // The locked update is still pending: the effort setter must not have fired,
+  // proving the write is sequenced strictly after the awaited update.
+  assert.equal(
+    ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
+    1,
+    "the locked update is dispatched",
+  );
+  assert.equal(
+    effortCalls().length,
+    0,
+    "the effort setter must not fire while the locked update is still pending",
+  );
+
+  await act(async () => {
+    resolveUpdate();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  });
+
+  const effort = effortCalls();
+  assert.equal(
+    effort.length,
+    1,
+    "the effort setter fires exactly once after the update resolves",
+  );
+  assert.equal(
+    effort[0].args.effortLevel,
+    "high",
+    "the persisted value is the picked effort level",
+  );
+  // Ordering: the update was recorded before the effort write in the same
+  // call log, so a setter moved ahead of the await would fail this.
+  const updateIndex = ipcCalls.findIndex(
+    (c) => c.cmd === "update_managed_agent",
+  );
+  const effortIndex = ipcCalls.findIndex(
+    (c) => c.cmd === "persist_agent_effort_level",
+  );
+  assert.ok(
+    updateIndex >= 0 && effortIndex > updateIndex,
+    "persist_agent_effort_level must be dispatched after update_managed_agent",
+  );
+});
+
+test("pin→inherit Save with a picked effort dispatches no persist_agent_effort_level", async () => {
+  installEffortIpc();
+  await act(async () => {
+    renderDialog(() => {});
+  });
+
+  await selectEffort("High");
+  await expandAdvancedAndToggleInherit();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  });
+
+  const updates = ipcCalls.filter((c) => c.cmd === "update_managed_agent");
+  assert.equal(
+    updates.length,
+    1,
+    "the pin→inherit Save dispatches the locked update",
+  );
+  assert.equal(
+    updates[0].args.input.agentCommand,
+    "",
+    "the pin→inherit transition carries the clear sentinel",
+  );
+  assert.equal(
+    effortCalls().length,
+    0,
+    "the inherit-transition guard must suppress the effort write so it cannot restore the just-cleared pin — dropping the guard fails this",
   );
 });

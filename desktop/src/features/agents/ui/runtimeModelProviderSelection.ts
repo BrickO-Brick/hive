@@ -29,8 +29,9 @@ import {
  *
  * On a runtime switch these aliases become stale — they express the *previous*
  * runtime's vocabulary — so they are cleared. The canonical persisted effort
- * (`record.effort_level`) is a direct-write column owned by `EffortPickerField`
- * (AGENTS.md rule 14), lives outside this env-state selection, and is therefore
+ * (`record.effort_level`) is a Save-gated column persisted by
+ * `AgentInstanceEditDialog` (AGENTS.md rule 14), lives outside this env-state
+ * selection, and is therefore
  * PRESERVED across the switch: the launch projection normalizes it (or skips it
  * as absent) for the destination runtime, and switching back restores it.
  */
@@ -66,7 +67,7 @@ export function selectionOnRuntimeChange(
 
   // F3 nondestructive switch policy: clear the previous runtime's stale
   // thinking-effort env aliases (all native keys + the ACP sentinel). The
-  // canonical `record.effort_level` column is direct-write and not part of this
+  // canonical `record.effort_level` column is Save-gated and not part of this
   // selection state, so it is preserved — the launch projection re-expresses it
   // for the destination runtime, and switching back restores the preference.
   if (params.previousRuntime !== params.nextRuntime) {
