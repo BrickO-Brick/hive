@@ -1904,7 +1904,7 @@ INSERT INTO _operator_global_tables (table_name, reason) VALUES
 
 
 -- ============================================================================
--- NIP-FI core identity + base-lifecycle foundation (mirror of migration 0040).
+-- NIP-FI core identity + base-lifecycle foundation (mirror of migration 0041).
 -- The community_write_fence_excluded_table definition above already folds in
 -- the NIP-FI ledger relations; the per-migration CREATE OR REPLACE bodies are
 -- intentionally omitted here (desired state keeps one consolidated definition).
@@ -2751,7 +2751,7 @@ CREATE TRIGGER identity_lifecycle_selectors_no_truncate
 
 
 -- ============================================================================
--- NIP-FI final-admission foundation (mirror of migration 0041).
+-- NIP-FI final-admission foundation (mirror of migration 0042).
 -- ============================================================================
 
 CREATE TABLE authorization_invalidation_domains (
@@ -2906,7 +2906,7 @@ CREATE TABLE authorization_event_capacity (
 -- 10 protected allowed, 11 protected denied, 14 invalidation advanced.
 -- The extended-lifecycle audit kinds (4 recovered, 5 principal enabled,
 -- 7 principal disabled, 8 admission lost) are deferred to the FI-LIFECYCLE
--- migration, matching 0040's core lifecycle carve. Kinds 12 and 13 are
+-- migration, matching 0041's core lifecycle carve. Kinds 12 and 13 are
 -- retired: kind 24244 publication/withdrawal is ephemeral connection state and
 -- never a durable authorization event.
 CREATE TABLE authorization_events (
