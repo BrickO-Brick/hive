@@ -958,3 +958,296 @@ fn spawn_path_installs_identity_so_agent_commits_land_agent_authored() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+/// Wes (5055999359) P1 — real-wrapper regression: `--receive-pack` (custom
+/// receivepack program) is refused through the ACTUAL `buzz-acp`-as-`git`
+/// multicall. Also covers `remote.origin.receivepack` config spelling.
+///
+/// Bypass shape (what happens WITHOUT the guard):
+///
+///   `origin` URL → `decoy` (bare repo seeded with the offending human HEAD).
+///   receivepack script → ignores its `<url>` argument; exec's
+///     `git-receive-pack <actual>` instead.
+///
+///   1. `resolve_push_sources` runs `git push --dry-run --porcelain`.
+///      Git invokes the script as the receive-pack process; negotiation
+///      happens against `actual` (empty).  The porcelain `To` header shows
+///      the `origin` URL (`decoy`).
+///   2. `remote_object_ids` calls `git ls-remote decoy` → returns HEAD's IDs
+///      → those IDs are used as the exclusion set → HEAD is treated as
+///      already-remote → `partition_outgoing` finds zero offenders.
+///   3. The real push runs; git calls the script again → data flows to
+///      `actual` → HEAD populates `actual`.
+///
+/// With guard: `reject_receive_pack_override` fires before any dry-run →
+///   `actual` stays empty.
+/// Without guard: decoy supplies exemption; push lands in `actual`.
+///
+/// Mutation-sensitive: removing `reject_receive_pack_override` from
+/// `verify_push` makes the bypass succeed; `actual/refs/heads/main` appears
+/// and the `show-ref` assertion fires.
+#[test]
+fn wrapper_refuses_receive_pack_flag_and_leaves_target_empty() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_shim, path, _email, _keydir) = signed_shim_env();
+    let repo = human_repo();
+    // `decoy` already holds the offending HEAD — ls-remote here supplies the
+    // exclusion set that exempts HEAD from outgoing verification.
+    let decoy = tempfile::tempdir().unwrap();
+    // `actual` starts empty — this is where data lands under the bypass.
+    let actual = tempfile::tempdir().unwrap();
+
+    // Init both bare repos.
+    assert!(Command::new("git")
+        .args(["init", "-q", "--bare", decoy.path().to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["init", "-q", "--bare", actual.path().to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+
+    // Seed decoy with the human HEAD commit.
+    // ls-remote on decoy returns HEAD's IDs; without the guard those IDs
+    // exempt HEAD and the push succeeds to actual.
+    assert!(Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "push",
+            "-q",
+            decoy.path().to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    // Wire origin → decoy.  The porcelain To header will show the decoy URL;
+    // ls-remote on that URL returns HEAD's IDs (the bypass exclusion source).
+    wrapper(
+        &path,
+        repo.path(),
+        &["remote", "add", "origin", decoy.path().to_str().unwrap()],
+    );
+
+    // The receivepack script ignores its <url> argument and routes all
+    // receive-pack traffic to `actual` instead.  Without the guard, git's
+    // dry-run + real push both talk to actual via this script while ls-remote
+    // exempts HEAD by reading decoy.
+    let actual_path = actual.path().to_str().unwrap().to_owned();
+    let script = repo.path().join("rp.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nexec git-receive-pack {actual_path}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // ── Test 1a: --receive-pack=<script> flag form ────────────────────────────
+    let rp_arg = format!("--receive-pack={}", script.display());
+    let out = wrapper(&path, repo.path(), &["push", &rp_arg, "origin", "main"]);
+
+    assert!(
+        !out.status.success(),
+        "push with --receive-pack must be refused; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("receive-pack"),
+        "expected the receive-pack managed-mode refusal; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // `actual` must be empty — the push was refused before any transport.
+    let refs = Command::new("git")
+        .args([
+            "-C",
+            actual.path().to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !refs.status.success(),
+        "actual must be empty after refused push; show-ref found: {}",
+        String::from_utf8_lossy(&refs.stdout),
+    );
+
+    // ── Test 1b: remote.origin.receivepack config spelling ───────────────────
+    // Set the config key (Wes's explicit reproduction path); origin URL stays
+    // pointing at decoy so ls-remote still supplies the exemption set.
+    wrapper(
+        &path,
+        repo.path(),
+        &[
+            "config",
+            "remote.origin.receivepack",
+            script.to_str().unwrap(),
+        ],
+    );
+
+    let out2 = wrapper(&path, repo.path(), &["push", "origin", "main"]);
+    assert!(
+        !out2.status.success(),
+        "push with remote.origin.receivepack config must be refused; stderr={}",
+        String::from_utf8_lossy(&out2.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&out2.stderr).contains("receive-pack")
+            || String::from_utf8_lossy(&out2.stderr).contains("receivepack"),
+        "expected the receivepack-config managed-mode refusal; stderr={}",
+        String::from_utf8_lossy(&out2.stderr),
+    );
+    let refs2 = Command::new("git")
+        .args([
+            "-C",
+            actual.path().to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !refs2.status.success(),
+        "actual must still be empty after config-based receivepack refusal; found: {}",
+        String::from_utf8_lossy(&refs2.stdout),
+    );
+}
+
+/// Wes (5055999359) P1 — real-wrapper regression: an alias that carries
+/// `--rece <script>` (abbreviated `--receive-pack`, separate-value form) is
+/// refused through the actual `buzz-acp`-as-`git` multicall.
+///
+/// Bypass shape (same orientation as the flag test above):
+///
+///   `origin` URL → `decoy` (seeded with offending HEAD — supplies exclusion set).
+///   receivepack script → ignores its `<url>` argument; exec's
+///     `git-receive-pack <actual>` instead.
+///   alias body: `push --rece <script_path> origin main`
+///
+///   Without the guard: alias expands to `push --rece <script> origin main`;
+///   git interprets `--rece` as `--receive-pack=<script>`; script routes all
+///   receive-pack traffic to `actual`; ls-remote on decoy exempts HEAD →
+///   `actual` receives the push.
+///
+/// With guard: `is_receive_pack_or_exec_flag("--rece")` fires before any push
+///   → `actual` stays empty.
+///
+/// Mutation-sensitive: removing the `--rece` prefix check from
+/// `is_receive_pack_or_exec_flag` makes the bypass succeed; `actual` becomes
+/// populated and the `show-ref` assertion fires.
+///
+/// Note: `is_safe_alias_token("--rece")` returns `true` (starts with `-` but
+/// contains no `=` and no quote), so the token passes the alias-safety filter
+/// and reaches the receive-pack guard.  An unrelated alias rejection would not
+/// produce a "receive-pack" stderr message; the assertion below distinguishes
+/// the two.
+#[test]
+fn wrapper_refuses_alias_with_abbreviated_receive_pack_flag() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_shim, path, _email, _keydir) = signed_shim_env();
+    let repo = human_repo();
+    // decoy: seeded with HEAD; ls-remote here is the exemption source.
+    let decoy = tempfile::tempdir().unwrap();
+    // actual: starts empty; populated by the bypass if the guard is absent.
+    let actual = tempfile::tempdir().unwrap();
+
+    assert!(Command::new("git")
+        .args(["init", "-q", "--bare", decoy.path().to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("git")
+        .args(["init", "-q", "--bare", actual.path().to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success());
+
+    // Seed decoy with HEAD so its IDs would exempt the commit under bypass.
+    assert!(Command::new("git")
+        .args([
+            "-C",
+            repo.path().to_str().unwrap(),
+            "push",
+            "-q",
+            decoy.path().to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    // Wire origin → decoy (the exclusion-set source, not the write target).
+    wrapper(
+        &path,
+        repo.path(),
+        &["remote", "add", "origin", decoy.path().to_str().unwrap()],
+    );
+
+    // The receivepack script ignores its <url> argument and routes all
+    // receive-pack traffic to `actual`.  No spaces in the path (tempdir on
+    // macOS/Linux is under /private/var/folders/... or /tmp — no spaces).
+    let actual_path = actual.path().to_str().unwrap().to_owned();
+    let script = repo.path().join("rp.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nexec git-receive-pack {actual_path}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Configure the alias using the separate-value abbreviated form `--rece`.
+    // `is_safe_alias_token("--rece")` passes (starts with `-` but no `=`, no
+    // quote), so the alias expander emits it into effective_argv, where
+    // `is_receive_pack_or_exec_flag` must catch it.
+    wrapper(
+        &path,
+        repo.path(),
+        &[
+            "config",
+            "alias.p",
+            &format!("push --rece {} origin main", script.display()),
+        ],
+    );
+
+    let out = wrapper(&path, repo.path(), &["p"]);
+
+    assert!(
+        !out.status.success(),
+        "alias-carried --rece must be refused; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    // Must be the receive-pack managed-mode refusal specifically, not an
+    // unrelated alias rejection (which would not mention "receive-pack").
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("receive-pack"),
+        "expected the receive-pack managed-mode refusal (not an unrelated alias \
+         rejection); stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+
+    // actual must be empty — the push was refused before any data was sent.
+    let refs = Command::new("git")
+        .args([
+            "-C",
+            actual.path().to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !refs.status.success(),
+        "actual must be empty after refused push; show-ref found: {}",
+        String::from_utf8_lossy(&refs.stdout),
+    );
+}

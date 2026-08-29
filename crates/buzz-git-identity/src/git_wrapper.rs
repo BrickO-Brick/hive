@@ -264,6 +264,7 @@ pub fn run() -> i32 {
     // literal argv below cannot catch alias-carried flags (`git human` expands to
     // `commit --author …`, but the literal subcommand is `human`); the expanded
     // preflight closes that gap by construction, with no alias-specific flag list.
+    let mut alias_expanded: Option<Vec<String>> = None;
     if let Some(auth) = &authority {
         match verify_alias_safety(&real_git, &argv, &ctx) {
             Ok(None) => {}
@@ -276,6 +277,7 @@ pub fn run() -> i32 {
                     eprintln!("{msg}");
                     return 1;
                 }
+                alias_expanded = Some(expanded);
             }
             Err(msg) => {
                 eprintln!("{msg}");
@@ -302,11 +304,18 @@ pub fn run() -> i32 {
     // aliases (config-defined and inline `-c alias.*`), because `git pub` with
     // `alias.pub = push` reaches the real push after we hand off — keying on the
     // literal token alone would let an alias slip a wrong-authored commit past.
+    // The alias-expanded argv (when an alias was involved) is used for the
+    // receive-pack guard so a bare-word alias like `alias.p = push --exec evil`
+    // does not bypass the flag scan. When no alias was involved, `effective_argv`
+    // is just the original argv.
     if let Some(auth) = &authority {
+        let effective_argv = alias_expanded.as_deref().unwrap_or(&argv);
         match is_push_command(&real_git, &argv, &ctx) {
             PushKind::NotPush => {}
             PushKind::Push => {
-                if let Err(msg) = verify_push(&real_git, &argv, &ctx, auth) {
+                if let Err(msg) =
+                    verify_push(&real_git, argv.as_slice(), effective_argv, &ctx, auth)
+                {
                     eprintln!("{msg}");
                     return 1;
                 }
@@ -786,6 +795,176 @@ fn partition_outgoing(
     Ok((offenders, agent_shas))
 }
 
+/// Returns `true` when `arg` is a git-push argv token that would resolve to
+/// `--receive-pack` or its alias `--exec`, in any spelling git accepts.
+///
+/// Git accepts unique prefix abbreviations of long options. Empirically verified
+/// against git 2.x on this host:
+/// - `--rece` is the shortest accepted prefix of `--receive-pack` (both attached
+///   `--rece=<cmd>` and separate-value `--rece <cmd>` are accepted). `--rec` and
+///   shorter are rejected by git as ambiguous with `--recurse-submodules`.
+/// - `--e` is the shortest accepted prefix of `--exec` (both `--e=<cmd>` and
+///   `--e <cmd>` are accepted). `--exec` is a documented alias for `--receive-pack`.
+///
+/// We reject conservatively: any token whose prefix matches a uniquely-resolving
+/// abbreviation. `--rece` covers `--rece`, `--recei`, `--receiv`, `--receive`,
+/// `--receive-`, `--receive-p`, …, `--receive-pack` (all by `starts_with`).
+/// The `--exec` family is covered by explicit arms down to `--e`.
+///
+/// This may refuse a future git-push option beginning with `rece` or `e`, but
+/// fail-closed is the correct trade-off for an attack surface.
+fn is_receive_pack_or_exec_flag(arg: &str) -> bool {
+    // Any prefix of `--receive-pack` starting at the shortest unique prefix `--rece`.
+    // (`--rec` is ambiguous with `--recurse-submodules` and rejected by git itself,
+    // so `--rece` is the boundary that matters.)
+    if arg.starts_with("--rece") {
+        return true;
+    }
+    // `--exec` and all its prefix abbreviations down to `--e` / `--e=`.
+    // Covers both bare form (separate value) and attached `=<cmd>` form.
+    if arg == "--exec"
+        || arg.starts_with("--exec=")
+        || arg == "--exe"
+        || arg.starts_with("--exe=")
+        || arg == "--ex"
+        || arg.starts_with("--ex=")
+        || arg == "--e"
+        || arg.starts_with("--e=")
+    {
+        return true;
+    }
+    false
+}
+
+/// Reject every receive-pack override form in managed mode. A caller-controlled
+/// `--receive-pack`/`--exec` program or `remote.<name>.receivepack` config key
+/// is executable code: it can answer with decoy old-OIDs (making git believe a
+/// commit is already on the remote) while writing to an entirely different
+/// endpoint. It is not an independent authority and must be refused before any
+/// push-plan probe.
+///
+/// Two surfaces:
+/// 1. Argv flags: `--receive-pack=<cmd>`, `--receive-pack <cmd>` (separate
+///    value), `--exec=<cmd>`, `--exec <cmd>`. These appear among the push
+///    subcommand args, not in the global position.
+/// 2. Config: `remote.<name>.receivepack` for any remote, under the caller's
+///    complete global ctx so includes, `-c` injections, and the effective repo
+///    config all apply exactly as they do for the real push. A query failure
+///    also fails closed — we cannot prove the config is clean.
+///
+/// Only enforces in a managed session; unmanaged pushes are unaffected.
+fn reject_receive_pack_override(
+    real_git: &Path,
+    argv: &[String],
+    ctx: &[String],
+) -> Result<(), String> {
+    // Surface 1 — argv flags.
+    //
+    // Git accepts any unique prefix of a long option. `--receive-pack` can be
+    // abbreviated as `--receive-p`, `--receive-pa`, `--receive=` (git also
+    // accepts `=` as a separator for all long options), etc. `--exec` is an
+    // alias for `--receive-pack` and likewise accepts prefix abbreviations:
+    // `--exe=`, `--exe`, `--ex=`, and even `--e=` (when no other `--e*` option
+    // would be ambiguous in this subcommand context). Rather than maintain an
+    // exhaustive list of accepted git abbreviations — which would need updating
+    // every time git adds a push option beginning with `e` or `receive` — we
+    // reject conservatively: any flag whose leading letters could resolve to
+    // `--receive-pack` or `--exec`.
+    //
+    // Specifically, an argument that begins with `--receive` (any prefix of
+    // `--receive-pack`, and only `--receive-pack` starts with `--receive` among
+    // git-push options) or `--exec` / `--exe=` / any `--e=` (sole `--e*`
+    // accepting a value in this subcommand) is rejected. The separate-value
+    // form (`--receive-p <cmd>`) is caught by the same prefix check because
+    // the token itself begins with `--receive`.
+    let (_, sub_idx) = split_globals(argv);
+    if let Some(si) = sub_idx {
+        let push_args = &argv[si + 1..];
+        let mut i = 0;
+        while i < push_args.len() {
+            let t = &push_args[i];
+            if is_receive_pack_or_exec_flag(t) {
+                return Err(format!(
+                    "buzz git wrapper: refusing `{t}` — custom receive-pack/exec programs \
+                     cannot be used in managed mode. They can advertise decoy old-OIDs and \
+                     redirect pushes to a different endpoint, bypassing push verification."
+                ));
+            }
+            i += 1;
+        }
+    }
+
+    // Surface 2 — `remote.<name>.receivepack` in effective config.
+    // `git config --get-regexp` semantics:
+    //   exit 0 + output  → at least one key matched (refuse)
+    //   exit 1 + no stdout → no key matched (clean, continue)
+    //   any other exit / stderr output → config parse error or unexpected (fail closed)
+    //
+    // We run under `ctx` (the caller's complete global set) so the probe sees
+    // the same repository, includes, and `-c` injections as the real push.
+    let mut args = ctx.to_vec();
+    args.extend(["config", "--get-regexp", r"remote\..+\.receivepack"].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = match capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT) {
+        Some(o) => o,
+        None => {
+            return Err(String::from(
+                "buzz git wrapper: refusing to push — could not query effective config for \
+                 `remote.*.receivepack`. Enforcement fails closed.",
+            ))
+        }
+    };
+    let stdout_bytes = out.stdout.trim_ascii();
+    let stderr_bytes = out.stderr.trim_ascii();
+    let exit_code = out.status.code();
+    if out.status.success() {
+        if !stdout_bytes.is_empty() {
+            // At least one remote has a custom receivepack.
+            let matched = String::from_utf8_lossy(stdout_bytes);
+            let first_line = matched.lines().next().unwrap_or(&matched);
+            return Err(format!(
+                "buzz git wrapper: refusing to push — effective config contains \
+                 `remote.*.receivepack` ({first_line}). Custom receive-pack programs \
+                 cannot be used in managed mode: they can advertise decoy old-OIDs and \
+                 redirect pushes to a different endpoint, bypassing push verification. \
+                 Remove the `receivepack` config key before pushing."
+            ));
+        }
+        // exit 0 + empty stdout is unexpected (get-regexp normally exits 1 on no match).
+        // Treat as clean — the key is genuinely absent.
+    } else {
+        // Non-success. Accept only exit code 1 with empty stdout as "no match".
+        // Anything else (exit code != 1, or unexpected stdout, or stderr) means
+        // a config parse error or unexpected condition — fail closed.
+        let is_no_match = exit_code == Some(1) && stdout_bytes.is_empty();
+        if !is_no_match {
+            let detail = if !stderr_bytes.is_empty() {
+                format!(
+                    ": {}",
+                    String::from_utf8_lossy(stderr_bytes)
+                        .lines()
+                        .next()
+                        .unwrap_or("(unknown error)")
+                )
+            } else {
+                format!(
+                    " (exit code {})",
+                    exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            };
+            return Err(format!(
+                "buzz git wrapper: refusing to push — querying effective config for \
+                 `remote.*.receivepack` produced an unexpected result{detail}. \
+                 Enforcement fails closed."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Verify that every commit being pushed that is not already on a remote is
 /// authored by the agent identity and carries a valid NIP-GS signature by the
 /// agent key. `Ok(())` allows the push. Every valid [`Authority`] enforces
@@ -813,10 +992,17 @@ fn partition_outgoing(
 fn verify_push(
     real_git: &Path,
     argv: &[String],
+    effective_argv: &[String],
     ctx: &[String],
     authority: &Authority,
 ) -> Result<(), String> {
     let expected = &authority.email;
+
+    // Reject every form of receive-pack customization in managed mode. Scanned
+    // against `effective_argv` (the alias-expanded command) so that a bare-word
+    // alias like `alias.p = push --exec evil` doesn't slip past a literal-argv
+    // scan.
+    reject_receive_pack_override(real_git, effective_argv, ctx)?;
 
     // git's resolved update plan. Unreachable remote / any dry-run failure =
     // fail closed with the loud message: the real push would fail anyway, and
@@ -832,31 +1018,46 @@ fn verify_push(
         }
     };
 
+    // The destination is read from the `To` header of the dry-run output.
+    // `parse_porcelain_destination_unique` returns `None` when there are zero
+    // headers (unexpected shape — fail closed) or more than one (multiple
+    // `pushurl`s — refused in managed mode rather than modeled, which prevents
+    // the A-has-HEAD/B-empty bypass).
+    let dest = match plan.destination.as_deref() {
+        Some(d) => d,
+        None => {
+            return Err(String::from(
+                "buzz git wrapper: refusing to push — could not identify a single push \
+                 destination from git's plan. Either no `To` header was present (unexpected \
+                 git output), or multiple `To` headers were present (multiple `pushurl`s are \
+                 not supported in managed mode — they create a bypass where a destination that \
+                 already holds a commit can mask it as already-remote, exempting it from \
+                 verification at other destinations). Enforcement fails closed.",
+            ))
+        }
+    };
+
+    // Before reading the destination's object ids, verify that replaying `dest`
+    // through `git ls-remote --get-url` does not produce a different URL. If it
+    // does, a chained `insteadOf` rule would make `ls-remote <dest>` read a
+    // different endpoint than the one git actually pushed to, poisoning the
+    // exclusion set. Fail closed on any rewrite or probe failure.
+    verify_destination_stable(real_git, ctx, dest)?;
+
     // The object ids the destination actually holds, read from the remote
     // itself. This is the ONLY trustworthy exclusion source: `refs/remotes/*` is
     // caller-writable local state, so deriving exclusions from it lets an agent
     // `git update-ref refs/remotes/forged/x HEAD` and hide an unsigned or
     // wrong-author commit from the walk. `git ls-remote` reflects the real
-    // destination. Fail closed when it cannot be established (no destination in
-    // the plan, or the remote read fails): an empty exclusion set would silently
-    // widen the walk, but an *unverifiable* one must refuse rather than trust
-    // whatever local refs happen to exist.
-    let remote_ids = match plan.destination.as_deref() {
-        Some(dest) => match remote_object_ids(real_git, ctx, dest) {
-            Some(ids) => ids,
-            None => {
-                return Err(String::from(
-                    "buzz git wrapper: refusing to push — could not read the destination's \
-                     commits (`git ls-remote` failed). Enforcement fails closed rather than \
-                     derive exclusions from forgeable local remote-tracking refs.",
-                ))
-            }
-        },
+    // destination and supplies the complete ref set (not just the pushed refs),
+    // which is required for the patch-id replay exemption to work correctly.
+    let remote_ids = match remote_object_ids(real_git, ctx, dest) {
+        Some(ids) => ids,
         None => {
             return Err(String::from(
-                "buzz git wrapper: refusing to push — could not identify the push destination \
-                 from git's plan. Enforcement fails closed rather than trust local \
-                 remote-tracking refs.",
+                "buzz git wrapper: refusing to push — could not read the destination's \
+                 commits (`git ls-remote` failed). Enforcement fails closed rather than \
+                 derive exclusions from forgeable local remote-tracking refs.",
             ))
         }
     };
@@ -934,11 +1135,10 @@ fn verify_push(
 }
 
 /// git's resolved push plan: the local source refs whose outgoing commits must
-/// be verified, plus the destination handle git itself resolved (the URL or
-/// remote name on the porcelain `To` line). The destination is read straight
-/// from git's own output, so it reflects `remote.<name>.pushurl`, `-C`, and
-/// alias expansion exactly — and it is the forge-proof handle for reading the
-/// remote's real object ids (via `git ls-remote`).
+/// be verified, plus the single destination git resolved for this push. The
+/// destination comes from the `To` header of git's own `--porcelain` output and
+/// is verified stable (no `insteadOf` replay) before being passed to
+/// `git ls-remote`.
 struct PushPlan {
     sources: Vec<String>,
     destination: Option<String>,
@@ -967,22 +1167,139 @@ fn resolve_push_sources(real_git: &Path, argv: &[String]) -> Option<PushPlan> {
     if !out.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Strict UTF-8 decode: a remote URL can contain arbitrary bytes. Lossy
+    // decoding would replace invalid sequences with U+FFFD, changing the `To`
+    // destination. If a U+FFFD path happened to exist as a decoy, the
+    // stability probe would validate and inventory the decoy while the real
+    // push updated the original-byte path — same wrong-endpoint bypass class
+    // as an insteadOf rewrite. Fail closed on any non-UTF-8 byte.
+    let stdout = match std::str::from_utf8(&out.stdout) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
     Some(PushPlan {
-        sources: parse_porcelain_sources(&stdout),
-        destination: parse_porcelain_destination(&stdout),
+        sources: parse_porcelain_sources(stdout),
+        destination: parse_porcelain_destination_unique(stdout),
     })
 }
 
-/// The destination handle from a `--porcelain` push plan's `To <dest>` header —
-/// the URL or remote name git resolved for this push. `None` when absent (older
-/// git or an unexpected shape); the caller fails closed rather than guess.
-fn parse_porcelain_destination(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("To "))
-        .map(|d| d.trim().to_string())
-        .filter(|d| !d.is_empty())
+/// The single destination handle from a `--porcelain` push plan. Returns `None`
+/// when there are zero `To` lines (unexpected shape) or MORE THAN ONE `To` line
+/// (multiple `pushurl`s). Multiple destinations are refused in managed mode
+/// rather than modeled — the A-has-HEAD/B-empty bypass cannot occur when at
+/// most one destination is in scope. The caller fails closed on `None`.
+///
+/// Parses raw `\n`-delimited lines without calling `str::lines()`. `str::lines()`
+/// silently strips `\r` before `\n`, so a destination `To /path/\r\n` would be
+/// parsed as `/path/` instead of `/path/\r`. We split on `\n` directly.
+///
+/// If ANY `To` payload is empty or contains `\r`, `None` is returned for the
+/// ENTIRE plan — the malformed destination is not filtered out silently.
+/// Filtering would recreate the multi-destination bypass: with two `pushurl`s, a
+/// CR-bearing destination silently dropped plus one clean destination would
+/// produce exactly one accepted destination, defeating the multiple-`To` guard.
+/// Fail closed on the whole plan instead.
+///
+/// The `To ` payload is otherwise taken verbatim — no `trim()` — preserving a
+/// legitimate destination whose URL ends with a plain space: `verify_destination_stable`
+/// compares it byte-for-byte against the `--get-url` output.
+fn parse_porcelain_destination_unique(stdout: &str) -> Option<String> {
+    let dests: Vec<&str> = stdout
+        .split('\n')
+        .filter_map(|l| l.strip_prefix("To "))
+        .collect();
+    // Any malformed payload (empty or containing CR) invalidates the entire plan.
+    // We do NOT filter malformed destinations out — that would recreate the
+    // multi-destination bypass (CR-bearing dest dropped → only one dest left →
+    // single-dest path accepted).
+    if dests.iter().any(|d| d.is_empty() || d.contains('\r')) {
+        return None;
+    }
+    if dests.len() == 1 {
+        Some(dests[0].to_string())
+    } else {
+        None // zero (missing/unexpected shape) or multiple (pushurl rejection)
+    }
+}
+
+/// Count the number of distinct `To` header lines in `--porcelain` push output.
+/// Used by tests to assert multiple-`pushurl` rejection.
+#[cfg(test)]
+fn count_porcelain_destinations(stdout: &str) -> usize {
+    stdout.split('\n').filter(|l| l.starts_with("To ")).count()
+}
+
+/// Verify that `dest`, taken from the `--porcelain` `To` header, is stable
+/// under URL rewriting — i.e. `git ls-remote --get-url <dest>` returns `dest`
+/// unchanged. If git rewrites it, the `ls-remote <dest>` call that follows
+/// would read a different endpoint than the one git actually pushed to, allowing
+/// an `insteadOf`-chained bypass.
+///
+/// Returns `Ok(())` when stable, `Err(message)` when the probe fails or the
+/// output differs (caller fails closed on either).
+///
+/// Bounded: uses the same `DRY_RUN_TIMEOUT` as all remote-contacting probes.
+/// Runs under `ctx` so the same config/repo context applies.
+fn verify_destination_stable(real_git: &Path, ctx: &[String], dest: &str) -> Result<(), String> {
+    let mut args = ctx.to_vec();
+    args.extend(["ls-remote", "--get-url", dest].map(String::from));
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = match capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT) {
+        Some(o) => o,
+        None => {
+            return Err(format!(
+                "buzz git wrapper: refusing to push — could not verify the push destination \
+                 `{dest}` (ls-remote --get-url timed out or failed to run). Enforcement \
+                 fails closed."
+            ))
+        }
+    };
+    if !out.status.success() {
+        return Err(format!(
+            "buzz git wrapper: refusing to push — could not verify the push destination \
+             `{dest}` (ls-remote --get-url exited non-zero). Enforcement fails closed."
+        ));
+    }
+    // Strict decode: the URL must be valid UTF-8. Lossy conversion could
+    // normalize a byte sequence differently than git does, defeating the
+    // byte-for-byte comparison.
+    let raw_bytes = &out.stdout;
+    let raw = match std::str::from_utf8(raw_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            return Err(format!(
+                "buzz git wrapper: refusing to push — the `--get-url` output for `{dest}` \
+                 is not valid UTF-8. Enforcement fails closed."
+            ))
+        }
+    };
+    // Strip exactly one line terminator (`\n` or `\r\n`) and nothing else.
+    // `str::trim` would silently normalize a URL ending with whitespace — e.g.
+    // a destination `A ` rewritten to `A ` would compare equal to `A` after
+    // trimming, which is exactly the second-stage rewrite bypass this check
+    // exists to close. We therefore strip only the git line terminator.
+    let resolved = raw
+        .strip_suffix('\n')
+        .map_or(raw, |s| s.strip_suffix('\r').unwrap_or(s));
+    // Require exactly one output line: no trailing content after the terminator.
+    // Extra bytes (a second line, trailing junk) would indicate an unexpected
+    // output shape — fail closed rather than silently accept a partial match.
+    if resolved.contains('\n') {
+        return Err(format!(
+            "buzz git wrapper: refusing to push — `--get-url` for `{dest}` produced \
+             unexpected multi-line output. Enforcement fails closed."
+        ));
+    }
+    if resolved != dest {
+        return Err(format!(
+            "buzz git wrapper: refusing to push — the push destination `{dest}` is rewritten \
+             to `{resolved}` by effective `insteadOf` config. Replaying the rendered `To` \
+             label through a second URL-resolution step yields a different endpoint, which \
+             would make the exclusion set come from `{resolved}` while the real push targets \
+             `{dest}`. Enforcement fails closed rather than read the wrong remote's IDs."
+        ));
+    }
+    Ok(())
 }
 
 /// Parse `--porcelain` push output into the set of local source refs whose
@@ -990,9 +1307,19 @@ fn parse_porcelain_destination(stdout: &str) -> Option<String> {
 /// `<flag>\t<from>:<to>\t<summary>`; header (`To …`) and trailer (`Done`) lines
 /// lack the tab-delimited `from:to` field and are ignored. A `-` flag (deletion)
 /// or empty `from` (deletion refspec) contributes nothing.
+///
+/// Uses raw `\n`-split (not `str::lines()`) for the same reason as
+/// [`parse_porcelain_destination_unique`]: `str::lines()` silently strips `\r`
+/// from plan lines. A spurious `\r` in a flag or refspec field would indicate
+/// corrupt/unexpected output; we silently skip those lines (no source extracted).
 fn parse_porcelain_sources(stdout: &str) -> Vec<String> {
     let mut sources = Vec::new();
-    for line in stdout.lines() {
+    for line in stdout.split('\n') {
+        // Strip any trailing \r (CRLF output on some platforms) from the line
+        // before field parsing. Unlike the destination, source ref names are
+        // always ASCII path components — a trailing \r in a ref name is
+        // invalid and the line is skipped.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let mut fields = line.split('\t');
         let flag = fields.next().unwrap_or("");
         let refspec = match fields.next() {
@@ -1675,18 +2002,132 @@ mod tests {
              \trefs/heads/main:refs/heads/main\t4ab76d3..c0bab62\n\
             Done\n";
         assert_eq!(
-            parse_porcelain_destination(stdout).as_deref(),
+            parse_porcelain_destination_unique(stdout).as_deref(),
             Some("../remote.git")
         );
         // A named remote resolves to a URL on the To line; whatever git prints is
         // the forge-proof handle we hand to ls-remote.
         assert_eq!(
-            parse_porcelain_destination("To git@example.com:o/r.git\nDone\n").as_deref(),
+            parse_porcelain_destination_unique("To git@example.com:o/r.git\nDone\n").as_deref(),
             Some("git@example.com:o/r.git")
         );
         // No To line (unexpected shape) → None, and the caller fails closed.
-        assert!(parse_porcelain_destination("Done\n").is_none());
-        assert!(parse_porcelain_destination("").is_none());
+        assert!(parse_porcelain_destination_unique("Done\n").is_none());
+        assert!(parse_porcelain_destination_unique("").is_none());
+    }
+
+    /// Multiple `To` headers (multiple `pushurl`s) → `None` (refused in managed mode).
+    /// The A-has-HEAD/B-empty bypass requires two destinations; refusing multiple
+    /// destinations closes it.
+    #[test]
+    fn porcelain_destination_unique_rejects_multiple_to_headers() {
+        // Two To lines → None.
+        let two = "To /tmp/a.git\nTo /tmp/b.git\n\
+                   \trefs/heads/main:refs/heads/main\tnew-branch\n\
+                   Done\n";
+        assert!(
+            parse_porcelain_destination_unique(two).is_none(),
+            "two To headers must yield None (refused)"
+        );
+        assert_eq!(count_porcelain_destinations(two), 2);
+    }
+
+    /// Porcelain output with a CR in the `To` payload is refused (fail closed),
+    /// not silently normalized to a different path. A trailing-space URL is
+    /// preserved verbatim. Two `To` headers where one is CR-bearing must also
+    /// be refused (not filtered to one clean destination — that would recreate
+    /// the multi-destination bypass).
+    #[test]
+    fn porcelain_destination_refuses_cr_payload_and_preserves_trailing_space() {
+        // CR in the To payload → None (fail closed, not normalized).
+        let cr_payload = "To /tmp/path/ending/in/\r\n*\trefs/heads/main:refs/heads/main\tDone\n";
+        assert!(
+            parse_porcelain_destination_unique(cr_payload).is_none(),
+            "CR in destination payload must be refused"
+        );
+
+        // Trailing space in the URL is preserved byte-for-byte (legitimate URL).
+        let space_url = "To /tmp/a dir/repo.git\n*\trefs/heads/main:refs/heads/main\tDone\n";
+        assert_eq!(
+            parse_porcelain_destination_unique(space_url).as_deref(),
+            Some("/tmp/a dir/repo.git"),
+            "trailing-space URL must be preserved verbatim"
+        );
+
+        // Two To headers where ONE contains CR: must refuse the whole plan,
+        // not filter the CR one out and accept the clean one — filtering would
+        // recreate the multi-destination bypass.
+        let two_to_one_cr =
+            "To /tmp/a.git\r\nTo /tmp/b.git\n*\trefs/heads/main:refs/heads/main\tDone\n";
+        assert!(
+            parse_porcelain_destination_unique(two_to_one_cr).is_none(),
+            "two To headers with one CR-bearing must refuse the whole plan, not filter to one"
+        );
+    }
+
+    /// `is_receive_pack_or_exec_flag` must accept all git-recognized
+    /// abbreviations of `--receive-pack` and `--exec`, and not false-positive
+    /// on unrelated flags.
+    #[test]
+    fn is_receive_pack_or_exec_flag_covers_all_accepted_abbreviations() {
+        // --receive-pack family: shortest unique prefix is --rece (not --rec,
+        // which is ambiguous with --recurse-submodules and rejected by git).
+        for flag in [
+            "--rece",
+            "--rece=cmd",
+            "--recei",
+            "--recei=cmd",
+            "--receiv",
+            "--receiv=cmd",
+            "--receive",
+            "--receive=cmd",
+            "--receive-",
+            "--receive-p",
+            "--receive-p=cmd",
+            "--receive-pack",
+            "--receive-pack=cmd",
+        ] {
+            assert!(
+                is_receive_pack_or_exec_flag(flag),
+                "{flag:?} must be detected as receive-pack/exec"
+            );
+        }
+        // --exec family: shortest is --e / --e=<cmd>.
+        for flag in [
+            "--e",
+            "--e=cmd",
+            "--ex",
+            "--ex=cmd",
+            "--exe",
+            "--exe=cmd",
+            "--exec",
+            "--exec=cmd",
+        ] {
+            assert!(
+                is_receive_pack_or_exec_flag(flag),
+                "{flag:?} must be detected as receive-pack/exec"
+            );
+        }
+        // Unrelated flags must not be rejected.
+        for flag in [
+            "--dry-run",
+            "--porcelain",
+            "--force",
+            "--all",
+            "--tags",
+            "--delete",
+            "--no-verify",
+            "--quiet",
+            "-u",
+            "origin",
+            "main",
+            "--recurse-submodules=check",
+        ] {
+            assert!(
+                !is_receive_pack_or_exec_flag(flag),
+                "{flag:?} must NOT be detected as receive-pack/exec"
+            );
+        }
     }
 
     // ── reuse_commit_arg (E) ──────────────────────────────────────────────────
@@ -2325,6 +2766,7 @@ mod tests {
         let err = verify_push(
             &real_git(),
             &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &ctx,
             &managed(),
         )
@@ -2332,7 +2774,455 @@ mod tests {
         assert!(err.contains("not authored by your agent identity"), "{err}");
     }
 
-    /// P1 (Carl 5046374806): a forged local remote-tracking ref must not hide an
+    // ── Wes (5055999359) P1 regressions ─────────────────────────────────────
+
+    /// (Wes P1) Direct `--receive-pack` flag on `push` is refused.
+    /// Mutation: removing the `--receive-pack` check from
+    /// `reject_receive_pack_override` must flip this test to `Ok` (precondition
+    /// asserted inline).
+    #[test]
+    fn verify_push_rejects_receive_pack_flag() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        // Direct --receive-pack=<cmd> form.
+        let argv_rp = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "--receive-pack=/bin/false",
+            "origin",
+            "main",
+        ]);
+        let err = verify_push(&real_git(), &argv_rp, &argv_rp, &ctx, &managed())
+            .expect_err("--receive-pack must be refused in managed mode");
+        assert!(err.contains("receive-pack"), "{err}");
+
+        // Separate-value --receive-pack form.
+        let argv_sep = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "--receive-pack",
+            "/bin/false",
+            "origin",
+            "main",
+        ]);
+        let err2 = verify_push(&real_git(), &argv_sep, &argv_sep, &ctx, &managed())
+            .expect_err("--receive-pack (separate value) must be refused");
+        assert!(err2.contains("receive-pack"), "{err2}");
+
+        // --exec= form (alias for --receive-pack).
+        let argv_exec = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "--exec=/bin/false",
+            "origin",
+            "main",
+        ]);
+        let err3 = verify_push(&real_git(), &argv_exec, &argv_exec, &ctx, &managed())
+            .expect_err("--exec must be refused in managed mode");
+        assert!(
+            err3.contains("receive-pack") || err3.contains("exec"),
+            "{err3}"
+        );
+    }
+
+    /// (Wes P1) An alias that expands to `push --exec evil` is refused.
+    /// `verify_push` receives the EXPANDED argv as `effective_argv`, so the
+    /// `--exec` token is visible even though the literal typed command is `p`.
+    ///
+    /// Mutation: changing `verify_push` to scan `argv` instead of `effective_argv`
+    /// for receive-pack flags lets this test pass (turns `Ok`) — confirming the
+    /// scan must be against the expanded form.
+    #[test]
+    fn verify_push_rejects_exec_carried_by_alias_via_expanded_argv() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        // Literal argv: `git -C <repo> p` (alias name, no flags visible).
+        let literal_argv = v(&["-C", repo.to_str().unwrap(), "p"]);
+        // Effective (expanded) argv: what alias.p = push --exec=/bin/false expands to.
+        let expanded_argv = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "--exec=/bin/false",
+            "origin",
+            "main",
+        ]);
+        // Precondition: scanning literal argv alone would NOT catch --exec.
+        assert!(
+            reject_receive_pack_override(&real_git(), &literal_argv, &ctx).is_ok(),
+            "literal argv must not trigger the guard (--exec not present)"
+        );
+        // The guard must fire on the expanded argv.
+        let err = verify_push(&real_git(), &literal_argv, &expanded_argv, &ctx, &managed())
+            .expect_err("alias-carried --exec must be refused via expanded argv");
+        assert!(
+            err.contains("receive-pack") || err.contains("exec"),
+            "{err}"
+        );
+    }
+
+    /// (Wes P1) `remote.<name>.receivepack` in config is refused.
+    /// Mutation: removing the config probe from `reject_receive_pack_override`
+    /// must let this push proceed past the guard (it will then fail at the
+    /// author check, not the receivepack check).
+    #[test]
+    fn verify_push_rejects_receivepack_config() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let decoy = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", decoy.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        // Configure a custom receivepack for origin — Wes's attack vector.
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "config",
+                "remote.origin.receivepack",
+                &format!("git --upload-pack={}", decoy.path().display()),
+            ])
+            .status()
+            .unwrap();
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("remote.origin.receivepack must be refused");
+        assert!(
+            err.contains("receivepack") || err.contains("receive-pack"),
+            "{err}"
+        );
+    }
+
+    /// (Wes P1) Multiple `pushurl`s produce multiple `To` headers in
+    /// `--porcelain` output; `parse_porcelain_destination_unique` returns `None`
+    /// and `verify_push` fails closed with the multiple-destination error.
+    ///
+    /// Mutation-sensitivity: this test seeds A with the offending commit (so
+    /// A's object-id set would exclude HEAD if A were used as the exclusion
+    /// source), leaves B empty (so B would flag HEAD as outgoing), then proves:
+    ///
+    /// 1. The REAL guard (multi-dest rejection) returns `Err` — the push is
+    ///    refused before any object-id lookup.
+    /// 2. If `parse_porcelain_destination_unique` were changed to first-only
+    ///    (i.e. to return the first `To` line regardless of count), A's IDs would
+    ///    exclude HEAD and the push would return `Ok` — the A-has-HEAD/B-empty
+    ///    bypass is real. This is asserted by calling `partition_outgoing`
+    ///    directly with A's remote ids and confirming zero offenders.
+    #[test]
+    fn verify_push_rejects_multiple_pushurls() {
+        let (_d, repo) = human_authored_repo();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", a.path().to_str().unwrap()]);
+        g(&["init", "-q", "--bare", b.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            a.path().to_str().unwrap(),
+        ]);
+        // Add BOTH A and B as explicit pushurls.  Once any pushurl exists, git
+        // ignores `remote.origin.url` for pushes and uses only pushurls — so a
+        // single `--add B` would leave only B as the push destination.  Adding A
+        // first then B gives exactly two push destinations, producing two `To`
+        // headers in the porcelain output.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            a.path().to_str().unwrap(),
+        ]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            b.path().to_str().unwrap(),
+        ]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+
+        // Precondition: the dry-run does produce 2 To headers.
+        let dry_argv = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "--dry-run",
+            "--porcelain",
+            "--no-verify",
+            "origin",
+            "main",
+        ]);
+        let dry_out = {
+            let arg_refs: Vec<&str> = dry_argv.iter().map(String::as_str).collect();
+            std::process::Command::new("git")
+                .args(&arg_refs)
+                .output()
+                .unwrap()
+        };
+        let dry_stdout = String::from_utf8_lossy(&dry_out.stdout);
+        assert!(
+            count_porcelain_destinations(&dry_stdout) >= 2,
+            "precondition: 2 pushurls must produce ≥2 To headers; got: {dry_stdout:?}"
+        );
+
+        // Seed A by pushing HEAD (the human-authored commit) to it directly
+        // using real git, so A's object-id set includes HEAD.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "-q",
+            a.path().to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ]);
+
+        // Verify A's IDs now include HEAD — the bypass precondition.
+        let a_ids = remote_object_ids(&real_git(), &ctx, a.path().to_str().unwrap())
+            .expect("ls-remote A must succeed");
+        let head_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert!(
+            a_ids.contains(&head_sha),
+            "precondition: A must hold HEAD so its ID set would exclude it; head={head_sha}"
+        );
+
+        // Mutation proof: if we used A's IDs as the exclusion source (the
+        // bypass), partition_outgoing would report zero offenders — HEAD is
+        // "already on A" so it appears as not-outgoing.
+        let (bypass_offenders, _) = partition_outgoing(
+            &real_git(),
+            &ctx,
+            AGENT_EMAIL,
+            &["HEAD".to_string()],
+            &a_ids,
+        )
+        .expect("partition must succeed");
+        assert!(
+            bypass_offenders.is_empty(),
+            "bypass proof: with A's IDs as exclusion, HEAD appears already-pushed \
+             (zero offenders) — this is the A-has-HEAD/B-empty bypass; \
+             got offenders: {bypass_offenders:?}"
+        );
+
+        // Real guard: the multi-dest check must refuse the push.
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("multiple pushurls must be refused");
+        assert!(
+            err.contains("multiple") || err.contains("destination"),
+            "expected multiple-destination refusal; {err}"
+        );
+    }
+
+    /// (Wes P1) Chained `pushInsteadOf`→`insteadOf` rewrite: the `To` header
+    /// names endpoint A (the push destination after `pushInsteadOf`), but
+    /// `ls-remote --get-url A` rewrites via `insteadOf` to B.
+    /// `verify_destination_stable` detects the mismatch and fails closed.
+    ///
+    /// Setup:
+    ///   - `origin` URL → `orig` (placeholder; never contacted directly)
+    ///   - `url.A.pushInsteadOf = orig` → pushes to `orig` are redirected to A
+    ///   - `url.B.insteadOf = A` → `ls-remote A` (and any fetch to A) reads B
+    ///   - B is seeded with offending HEAD; A starts empty
+    ///
+    /// Bypass shape (WITHOUT the guard):
+    ///   1. `resolve_push_sources` dry-run produces `To A` (pushInsteadOf).
+    ///   2. `remote_object_ids` calls `git ls-remote A`; git rewrites A → B
+    ///      (insteadOf) and reads B's objects → HEAD's IDs → HEAD exempt.
+    ///   3. Real push goes to A (empty) → A receives HEAD.
+    ///
+    /// With guard: `verify_destination_stable` calls `ls-remote --get-url A`
+    ///   → returns B ≠ A → error before any object-id lookup → A stays empty.
+    ///
+    /// Mutation-sensitive: removing `verify_destination_stable` from
+    /// `verify_push` lets the bypass succeed; A becomes populated.
+    #[test]
+    fn verify_push_rejects_insteadof_rewrite_replay() {
+        let (_d, repo) = human_authored_repo();
+        let orig = tempfile::tempdir().unwrap(); // placeholder origin URL
+        let a = tempfile::tempdir().unwrap(); // push destination (pushInsteadOf)
+        let b = tempfile::tempdir().unwrap(); // ls-remote destination (insteadOf)
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        // Only A and B need to be bare repos; orig is just a URL placeholder.
+        g(&["init", "-q", "--bare", a.path().to_str().unwrap()]);
+        g(&["init", "-q", "--bare", b.path().to_str().unwrap()]);
+
+        let orig_url = orig.path().to_str().unwrap();
+        let a_url = a.path().to_str().unwrap();
+        let b_url = b.path().to_str().unwrap();
+        let repo_str = repo.to_str().unwrap();
+
+        // Wire origin → orig (the placeholder URL).
+        g(&["-C", repo_str, "remote", "add", "origin", orig_url]);
+
+        // pushInsteadOf: pushes nominally targeting `orig` are redirected to A.
+        // The porcelain `To` header will show A.
+        g(&[
+            "-C",
+            repo_str,
+            "config",
+            &format!("url.{a_url}.pushInsteadOf"),
+            orig_url,
+        ]);
+
+        // insteadOf: any fetch/ls-remote on A is redirected to B.
+        // `verify_destination_stable` will call `ls-remote --get-url A` and get B.
+        g(&[
+            "-C",
+            repo_str,
+            "config",
+            &format!("url.{b_url}.insteadOf"),
+            a_url,
+        ]);
+
+        // Seed B with HEAD (the offending human commit).
+        // Without the guard, `ls-remote A` → B returns HEAD's IDs → exempt.
+        g(&["-C", repo_str, "push", "-q", b_url, "HEAD:refs/heads/main"]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo_str, "push", "origin", "main"]);
+
+        // Precondition 1: `ls-remote --get-url A` must return B (insteadOf applied).
+        let get_url_out = {
+            let mut args = ctx.clone();
+            args.extend(["ls-remote", "--get-url", a_url].map(String::from));
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            std::process::Command::new("git")
+                .args(&refs)
+                .output()
+                .unwrap()
+        };
+        let resolved = String::from_utf8_lossy(&get_url_out.stdout)
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
+        assert_eq!(
+            resolved, b_url,
+            "precondition: insteadOf must rewrite A → B; got {resolved:?}"
+        );
+
+        // Precondition 2: dry-run `To` header must say A (pushInsteadOf applied).
+        let dry_out = {
+            let dry_argv = v(&[
+                "-C",
+                repo_str,
+                "push",
+                "--dry-run",
+                "--porcelain",
+                "--no-verify",
+                "origin",
+                "main",
+            ]);
+            let refs: Vec<&str> = dry_argv.iter().map(String::as_str).collect();
+            std::process::Command::new("git")
+                .args(&refs)
+                .output()
+                .unwrap()
+        };
+        let dry_stdout = String::from_utf8_lossy(&dry_out.stdout);
+        assert!(
+            dry_stdout.contains(a_url),
+            "precondition: porcelain To header must contain A; got {dry_stdout:?}"
+        );
+
+        // The push gate must detect the rewrite and refuse.
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("insteadOf-chained destination rewrite must be refused");
+        assert!(
+            err.contains("rewritten") || err.contains("insteadOf") || err.contains("destination"),
+            "expected destination-rewrite refusal; {err}"
+        );
+
+        // A must be empty — refused before any object-id lookup or real push.
+        let show_ref = std::process::Command::new("git")
+            .args(["-C", a_url, "show-ref", "--verify", "refs/heads/main"])
+            .output()
+            .unwrap();
+        assert!(
+            !show_ref.status.success(),
+            "A must be empty after refused push; show-ref found: {}",
+            String::from_utf8_lossy(&show_ref.stdout),
+        );
+    }
+    /// A forged local remote-tracking ref must not be used to hide an
     /// outgoing commit from the push gate. An agent can `git update-ref
     /// refs/remotes/forged/main HEAD` so `rev-list --not --remotes` reports zero
     /// outgoing and both verification loops accept without inspecting HEAD.
@@ -2384,6 +3274,7 @@ mod tests {
         let err = verify_push(
             &real_git(),
             &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &ctx,
             &managed(),
         )
@@ -2409,6 +3300,7 @@ mod tests {
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
         let err = verify_push(
             &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &ctx,
             &managed(),
@@ -2911,6 +3803,7 @@ mod tests {
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
         let err = verify_push(
             &real_git(),
+            &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]),
             &ctx,
             &managed(), // signing enforced
