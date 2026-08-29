@@ -17,7 +17,6 @@ function makeStore(groups = {}) {
 }
 
 const RELAY = "wss://r.test";
-const RELAY_KEY = encodeURIComponent(RELAY);
 
 // ─── 17 shared whole-blob sync invariants ─────────────────────────────────────
 
@@ -29,7 +28,6 @@ runWholeBlobSyncSuite({
   subscribeMethod: "subscribeToSortPrefs",
   watermarkLane: "channel-sort",
   readOutbox: readChannelSortOutbox,
-  makeStore,
   makeNonEmptyStore: () => makeStore({ channels: "recent" }),
   decryptPayload: JSON.stringify({
     version: 1,

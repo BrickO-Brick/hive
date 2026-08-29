@@ -12,21 +12,11 @@ import {
 } from "./sidebarSyncTestHelpers.mjs";
 import { runWholeBlobSyncSuite } from "./wholeBlobSync.shared.test.mjs";
 
-function makeStore(overrides = {}) {
-  return {
-    version: 1,
-    sections: overrides.sections ?? [],
-    assignments: overrides.assignments ?? {},
-    ...overrides,
-  };
-}
-
 function makeSectionsStore(sections = []) {
   return { version: 1, sections, assignments: {} };
 }
 
 const RELAY = "wss://r.test";
-const RELAY_KEY = encodeURIComponent(RELAY);
 
 // ─── 17 shared whole-blob sync invariants ─────────────────────────────────────
 
@@ -38,7 +28,6 @@ runWholeBlobSyncSuite({
   subscribeMethod: "subscribeToSections",
   watermarkLane: "channel-sections",
   readOutbox: readChannelSectionsOutbox,
-  makeStore,
   makeNonEmptyStore: () =>
     makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
   decryptPayload: JSON.stringify({

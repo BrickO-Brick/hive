@@ -1,12 +1,10 @@
 import {
   boundStarStore,
   DEFAULT_STORE,
-  isStarsStoreSubsumedBy,
   MAX_CHANNEL_STAR_ENTRIES,
   mergeStores,
   parseStarPayload,
   readChannelStarsStore,
-  starredChannelIdsFromStore,
   storageKey,
   writeChannelStarsStore,
 } from "./channelStarsStorage.ts";

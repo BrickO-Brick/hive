@@ -1,11 +1,9 @@
 import {
   boundMuteStore,
   DEFAULT_STORE,
-  isMutesStoreSubsumedBy,
   MAX_CHANNEL_MUTE_ENTRIES,
   mergeStores,
   parseMutePayload,
-  mutedChannelIdsFromStore,
   readChannelMutesStore,
   storageKey,
   writeChannelMutesStore,

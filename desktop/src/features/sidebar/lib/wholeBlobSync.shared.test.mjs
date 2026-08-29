@@ -35,7 +35,6 @@ const RELAY_KEY = encodeURIComponent(RELAY);
  * @param {string}   cfg.subscribeMethod   - e.g. "subscribeToSections" or "subscribeToSortPrefs".
  * @param {string}   cfg.watermarkLane     - e.g. "channel-sections" or "channel-sort".
  * @param {Function} cfg.readOutbox        - readChannelSectionsOutbox | readChannelSortOutbox
- * @param {Function} cfg.makeStore         - (overrides?) => store — lane-shaped store for basic ops
  * @param {Function} cfg.makeNonEmptyStore - () => non-empty store for bootstrap seed test
  * @param {string}   cfg.decryptPayload    - JSON.stringify of a valid remote store for adopt tests
  * @param {string}   cfg.emptyDecryptPayload - JSON.stringify of valid but empty/cleared store
@@ -59,7 +58,6 @@ export function runWholeBlobSyncSuite({
   subscribeMethod,
   watermarkLane,
   readOutbox,
-  makeStore,
   makeNonEmptyStore,
   decryptPayload,
   emptyDecryptPayload,
