@@ -4358,52 +4358,6 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
 //     the cancel test goes RED (deleteAdminOperator called on trash click).
 //   - Remove the AlertDialog open condition → confirm test goes RED (dialog
 //     never opens, Confirm button absent).
-//
-// jsdom compatibility: Radix UI's react-dismissable-layer and react-focus-scope
-// call document.dispatchEvent / element.dispatchEvent with CustomEvent instances
-// created from a different window context. jsdom 27 rejects these with a
-// type-check error. Patch both to silently ignore cross-context non-Event
-// arguments — this is a test-environment shim, not production code.
-//
-// The patch is applied once at module scope and is additive (the original
-// implementation handles real Event instances normally).
-{
-  const patchDispatch = (target, prop) => {
-    const original = target[prop].bind(target);
-    target[prop] = function patchedDispatch(event, ...rest) {
-      try {
-        return original(event, ...rest);
-      } catch (e) {
-        if (
-          e instanceof TypeError &&
-          e.message.includes("parameter 1 is not of type 'Event'")
-        ) {
-          // Cross-context CustomEvent from Radix internals — silently ignore.
-          return false;
-        }
-        throw e;
-      }
-    };
-  };
-  patchDispatch(document, "dispatchEvent");
-  const originalElementDispatch = HTMLElement.prototype.dispatchEvent;
-  HTMLElement.prototype.dispatchEvent = function patchedElementDispatch(
-    event,
-    ...rest
-  ) {
-    try {
-      return originalElementDispatch.call(this, event, ...rest);
-    } catch (e) {
-      if (
-        e instanceof TypeError &&
-        e.message.includes("parameter 1 is not of type 'Event'")
-      ) {
-        return false;
-      }
-      throw e;
-    }
-  };
-}
 
 test("staffing-remove-cancel: trash click opens dialog; cancel does not invoke deleteAdminOperator", async () => {
   const origin = "https://admin-staffing.example.com";
