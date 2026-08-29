@@ -52,7 +52,6 @@ if (typeof globalThis.window === "undefined") {
  * @param {string}   cfg.falseLabel       - Action name when value=false (e.g. "unstar").
  * @param {Function} cfg.boundStore       - bound{Star|Mute}Store(store, preservedKey?).
  * @param {Function} cfg.mergeStores      - mergeStores(a, b, preservedKey?).
- * @param {Function} cfg.isSubsumedBy     - is{Stars|Mutes}StoreSubsumedBy(a, b).
  * @param {Function} cfg.idsFromStore     - {starred|muted}ChannelIdsFromStore(store).
  * @param {Function} cfg.readStore        - readChannel{Stars|Mutes}Store(pubkey, relay?).
  * @param {Function} cfg.writeStore       - writeChannel{Stars|Mutes}Store(pubkey, store, relay?).
