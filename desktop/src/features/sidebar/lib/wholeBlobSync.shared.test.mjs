@@ -423,70 +423,6 @@ export function runWholeBlobSyncSuite({
     }
   });
 
-  // ─── live-sub: undecryptable event advances watermark before decrypt ───────
-
-  test(`${label}: revert-fix: undecryptable live event advances watermark before decrypt attempt`, async () => {
-    let liveCallback = null;
-    mock.method(relayClient, "subscribeLive", (_filter, onEvent) => {
-      console.log(`  [t12-${label}] subscribeLive mock fired`);
-      liveCallback = onEvent;
-      return Promise.resolve(async () => {});
-    });
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    try {
-      const manager = new SyncManager("pk-live", RELAY);
-      assert.equal(
-        fw.localStorage.getItem(
-          `buzz-sync-watermark.v1:${watermarkLane}:pk-live:${RELAY_KEY}`,
-        ),
-        null,
-        "watermark starts absent",
-      );
-      console.log(
-        `  [t12-${label}] about to await subscribeMethod=${subscribeMethod}`,
-      );
-      await manager[subscribeMethod](() => {});
-      console.log(
-        `  [t12-${label}] subscribeMethod done, liveCallback=${!!liveCallback}`,
-      );
-      assert.ok(
-        liveCallback !== null,
-        "subscribeLive must have captured the callback",
-      );
-      liveCallback({
-        pubkey: "pk-live",
-        content: "!bad-cipher!",
-        created_at: 1700005555,
-        id: "live-evt-1",
-      });
-      console.log(
-        `  [t12-${label}] liveCallback fired, awaiting setTimeout(0)`,
-      );
-      await new Promise((r) => setTimeout(r, 0));
-      console.log(`  [t12-${label}] setTimeout(0) done, checking watermark`);
-      assert.ok(
-        Number(
-          fw.localStorage.getItem(
-            `buzz-sync-watermark.v1:${watermarkLane}:pk-live:${RELAY_KEY}`,
-          ) ?? "0",
-        ) >= 1700005555,
-        "live undecryptable event must advance the watermark before decrypt is attempted",
-      );
-      console.log(`  [t12-${label}] watermark OK, calling manager.destroy()`);
-      manager.destroy();
-      console.log(`  [t12-${label}] manager.destroy() done`);
-    } finally {
-      console.log(`  [t12-${label}] finally: calling restore()`);
-      restore();
-      console.log(
-        `  [t12-${label}] finally: restore() done, calling mock.reset()`,
-      );
-      mock.reset();
-      console.log(`  [t12-${label}] finally: mock.reset() done`);
-    }
-  });
-
   // ─── Overlapping publishes ─────────────────────────────────────────────────
 
   test(`${label}: overlapping publishes: older completion does not erase a newer queued edit`, async () => {
@@ -904,6 +840,56 @@ export function runWholeBlobSyncSuite({
       manager.destroy();
     } finally {
       tauri.restore();
+      restore();
+      mock.reset();
+    }
+  });
+
+  // ─── live-sub: undecryptable event advances watermark before decrypt ───────
+  // NOTE: this test uses subscribeLive and fires a live-event callback that
+  // spawns a dangling async chain (void decryptAndParse().then(...)). Placing
+  // it last in the suite keeps those trailing microtasks from leaking into
+  // timer-based tests that follow it.
+
+  test(`${label}: revert-fix: undecryptable live event advances watermark before decrypt attempt`, async () => {
+    let liveCallback = null;
+    mock.method(relayClient, "subscribeLive", (_filter, onEvent) => {
+      liveCallback = onEvent;
+      return Promise.resolve(async () => {});
+    });
+    const fw = makeFakeWindow();
+    const restore = installFakeWindow(fw);
+    try {
+      const manager = new SyncManager("pk-live", RELAY);
+      assert.equal(
+        fw.localStorage.getItem(
+          `buzz-sync-watermark.v1:${watermarkLane}:pk-live:${RELAY_KEY}`,
+        ),
+        null,
+        "watermark starts absent",
+      );
+      await manager[subscribeMethod](() => {});
+      assert.ok(
+        liveCallback !== null,
+        "subscribeLive must have captured the callback",
+      );
+      liveCallback({
+        pubkey: "pk-live",
+        content: "!bad-cipher!",
+        created_at: 1700005555,
+        id: "live-evt-1",
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      assert.ok(
+        Number(
+          fw.localStorage.getItem(
+            `buzz-sync-watermark.v1:${watermarkLane}:pk-live:${RELAY_KEY}`,
+          ) ?? "0",
+        ) >= 1700005555,
+        "live undecryptable event must advance the watermark before decrypt is attempted",
+      );
+      manager.destroy();
+    } finally {
       restore();
       mock.reset();
     }
