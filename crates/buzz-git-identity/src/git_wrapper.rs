@@ -1285,14 +1285,13 @@ fn inspect_push_config(
             //
             // Correct extraction: strip the `url.` section prefix, then take
             // everything up to the first `://` as the bare scheme string.
-            if key.starts_with("url.") {
-                let subsection_and_rest = &key["url.".len()..];
+            if let Some(subsection_and_rest) = key.strip_prefix("url.") {
                 if let Some(sep) = subsection_and_rest
                     .as_bytes()
                     .windows(3)
                     .position(|w| w == b"://")
                 {
-                    let bare_scheme = subsection_and_rest[..sep].as_bytes();
+                    let bare_scheme = &subsection_and_rest.as_bytes()[..sep];
                     if !is_builtin_url_scheme(bare_scheme) {
                         return Err(format!(
                             "buzz git wrapper: refusing to push — effective config key `{key}` \
@@ -1321,7 +1320,7 @@ fn inspect_push_config(
                     ));
                 }
                 // `core.sshcommand`: overrides the SSH program for all SSH ops.
-                k if k == "core.sshcommand" => {
+                "core.sshcommand" => {
                     return Err(format!(
                         "buzz git wrapper: refusing to push — effective config contains \
                          `{key}` = `{value}`. This key overrides the SSH program for all \
@@ -1331,7 +1330,7 @@ fn inspect_push_config(
                     ));
                 }
                 // `core.gitproxy`: overrides the proxy for the native git:// protocol.
-                k if k == "core.gitproxy" => {
+                "core.gitproxy" => {
                     return Err(format!(
                         "buzz git wrapper: refusing to push — effective config contains \
                          `{key}` = `{value}`. This key overrides the proxy for the native \
@@ -5981,6 +5980,177 @@ mod tests {
         assert!(
             !marker.exists(),
             "git-remote-evil sentinel was invoked — the config evil:// guard did not fire"
+        );
+    }
+
+    // ── Windows Job Object tree-ownership regressions ─────────────────────────
+    //
+    // These tests exercise the `capture_raw_bounded` Windows path directly on a
+    // real `windows-latest` CI runner.  Each test:
+    //   1. Spawns a PowerShell root that launches a hidden detached descendant.
+    //   2. Lets the descendant record its own PID (proving it existed inside the
+    //      job before teardown).
+    //   3. Asserts the descendant is dead after the helper returns.
+    //
+    // The `#[ignore]` tag is paired with an explicit `--run-ignored` step in the
+    // Windows CI job so these tests actually execute; they are not dead-letter.
+    //
+    // Mutation: removing `BoundedJob` / making `kill_bounded_tree` a no-op on
+    // Windows leaves the descendant alive and the PID-alive assert fails.
+
+    /// Probe whether a Windows process is still running by opening a handle
+    /// with `PROCESS_QUERY_LIMITED_INFORMATION` and checking its exit code.
+    /// `STILL_ACTIVE` (259) means running; any other exit code (or a failed
+    /// open because the PID is gone) means dead.
+    #[cfg(windows)]
+    fn windows_pid_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == STILL_ACTIVE as u32
+        }
+    }
+
+    /// Read a PID that a PowerShell payload wrote to `path`, retrying briefly
+    /// since the descendant records it asynchronously.  Returns the PID or panics
+    /// with a diagnostic message after a deadline.
+    #[cfg(windows)]
+    fn read_windows_pid(path: &str) -> u32 {
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    return pid;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("descendant never recorded its PID at {path}");
+    }
+
+    /// On the success path, `capture_raw_bounded` must reap a descendant that
+    /// the root backgrounds before exiting.  The Job Object assigns the root
+    /// before any code runs, so the descendant is born inside it; closing the
+    /// job on the success path kills the whole tree even after the root exits.
+    ///
+    /// Non-vacuous: the descendant's PID is asserted dead.  Without the Job
+    /// Object (`Child::kill()` only), `kill_bounded_tree` kills the root but
+    /// not the descendant, which remains alive and the assert fails.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --run-ignored"]
+    fn capture_raw_bounded_reaps_descendant_on_success_windows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_path = dir.path().join("descendant.pid");
+        let child_ps1 = dir.path().join("child.ps1");
+        let root_ps1 = dir.path().join("root.ps1");
+        let pid_s = pid_path.to_str().expect("utf-8 pid path");
+        let child_s = child_ps1.to_str().expect("utf-8 child path");
+
+        // Descendant: record own PID, sleep 30 s.
+        std::fs::write(
+            &child_ps1,
+            format!(
+                "$PID | Set-Content -Encoding ascii -Path '{pid_s}'\nStart-Sleep -Seconds 30\n"
+            ),
+        )
+        .expect("write child ps1");
+        // Root: launch descendant, wait until PID recorded, then exit 0.
+        std::fs::write(
+            &root_ps1,
+            format!(
+                "Start-Process -FilePath 'powershell' -WindowStyle Hidden \
+                 -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{child_s}'\n\
+                 $d = (Get-Date).AddSeconds(15)\n\
+                 while ((-not (Test-Path '{pid_s}') -or \
+                 (Get-Item '{pid_s}').Length -eq 0) -and (Get-Date) -lt $d) \
+                 {{ Start-Sleep -Milliseconds 50 }}\n\
+                 exit 0\n"
+            ),
+        )
+        .expect("write root ps1");
+
+        let root_s = root_ps1.to_str().expect("utf-8 root path");
+        let out = capture_raw_bounded(
+            Path::new("powershell"),
+            &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", root_s],
+            std::time::Duration::from_secs(20),
+        )
+        .expect("root exits 0, so capture_raw_bounded must return Some");
+        assert!(out.status.success(), "root must exit 0");
+
+        let descendant_pid = read_windows_pid(pid_s);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !windows_pid_alive(descendant_pid),
+            "descendant {descendant_pid} must be reaped by the kill-on-close job on \
+             the success path, but it is still alive"
+        );
+    }
+
+    /// On the timeout path, `capture_raw_bounded` must reap a descendant that
+    /// the root backgrounds.  The root itself loops forever, triggering the
+    /// deadline; closing the job reaps both the root and the descendant.
+    ///
+    /// Non-vacuous: the descendant's PID is asserted dead after the helper
+    /// returns `None`.  Without the Job Object (`Child::kill()` only), the
+    /// descendant survives the direct-child kill and the assert fails.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --run-ignored"]
+    fn capture_raw_bounded_reaps_descendant_on_timeout_windows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pid_path = dir.path().join("descendant.pid");
+        let child_ps1 = dir.path().join("child.ps1");
+        let root_ps1 = dir.path().join("root.ps1");
+        let pid_s = pid_path.to_str().expect("utf-8 pid path");
+        let child_s = child_ps1.to_str().expect("utf-8 child path");
+
+        std::fs::write(
+            &child_ps1,
+            format!(
+                "$PID | Set-Content -Encoding ascii -Path '{pid_s}'\nStart-Sleep -Seconds 300\n"
+            ),
+        )
+        .expect("write child ps1");
+        // Root: launch descendant, wait until PID recorded, then loop forever
+        // so the helper's deadline fires inside the root.
+        std::fs::write(
+            &root_ps1,
+            format!(
+                "Start-Process -FilePath 'powershell' -WindowStyle Hidden \
+                 -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{child_s}'\n\
+                 $d = (Get-Date).AddSeconds(15)\n\
+                 while ((-not (Test-Path '{pid_s}') -or \
+                 (Get-Item '{pid_s}').Length -eq 0) -and (Get-Date) -lt $d) \
+                 {{ Start-Sleep -Milliseconds 50 }}\n\
+                 Start-Sleep -Seconds 300\n"
+            ),
+        )
+        .expect("write root ps1");
+
+        let root_s = root_ps1.to_str().expect("utf-8 root path");
+        // Short timeout so the test is fast; the watchdog is the outer wall-clock.
+        let result = capture_raw_bounded(
+            Path::new("powershell"),
+            &["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", root_s],
+            std::time::Duration::from_secs(5),
+        );
+        assert!(result.is_none(), "a timed-out tree must yield None");
+
+        let descendant_pid = read_windows_pid(pid_s);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !windows_pid_alive(descendant_pid),
+            "descendant {descendant_pid} must be job-killed on timeout, but it is still alive"
         );
     }
 }
