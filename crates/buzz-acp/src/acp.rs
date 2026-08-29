@@ -242,9 +242,10 @@ struct PermissionEntry {
     /// any non-accepted outcome (entry is denied instead).
     early_decision: Option<PermissionDecision>,
     /// Human-readable description of the requested operation, extracted from
-    /// `params.subject` in the ACP `session/request_permission` message.
-    /// Truncated to `SENTINEL_STRING_MAX_BYTES`. `None` when the adapter did
-    /// not provide a subject or provided an empty string.
+    /// the ACP `session/request_permission` message via `description_from_request_permission`.
+    /// Tries `params.title`, `params.subject.toolCall.title`, `params.toolCall.title`,
+    /// `params.toolCall.rawInput.command`, and `params._meta.codex.params.reason` in order.
+    /// Truncated to `SENTINEL_STRING_MAX_BYTES`. `None` when no path yields a non-empty string.
     description: Option<String>,
 }
 
@@ -3868,9 +3869,16 @@ fn sentinel_option_fields(actions: &CardActions) -> (Vec<serde_json::Value>, ser
 ///    in `crates/buzz-agent/src/wire.rs`, version >= 2).
 /// 2. `params.subject.toolCall.title` — v2 nested fallback (same value, different
 ///    path).
-/// 3. `params.toolCall.title` — buzz-agent v1 and codex-acp permissions-request.
+/// 3. `params.toolCall.title` — buzz-agent v1 and codex-acp permissions-request
+///    (`buildPermissionsRequest`, kind "other", in codex-acp `CodexApprovalHandler.ts`).
+/// 4. `params.toolCall.rawInput.command` — codex-acp v1.1.7 command execution
+///    requests (`buildCommandPermissionRequest`): no title, command string in rawInput.
+///    Verbatim wire shape from codex-acp tag v1.1.7.
+/// 5. `params._meta.codex.params.reason` — codex-acp v1.1.7 file-change requests
+///    (`buildFileChangePermissionRequest`): no title or rawInput command, reason is
+///    in codex-supplied metadata. Verbatim wire shape from codex-acp tag v1.1.7.
 ///
-/// Returns `None` when no non-empty title is found in any of these paths, or when
+/// Returns `None` when no non-empty string is found in any of these paths, or when
 /// the `msg` argument does not have a `params` object.
 ///
 /// Extracted as a pure function (rather than inline in the event handler) so
@@ -3882,6 +3890,12 @@ pub(crate) fn description_from_request_permission(msg: &serde_json::Value) -> Op
         msg.pointer("/params/subject/toolCall/title")
             .and_then(|v| v.as_str()),
         msg.pointer("/params/toolCall/title")
+            .and_then(|v| v.as_str()),
+        // codex-acp v1.1.7 command execution: toolCall.rawInput.command
+        msg.pointer("/params/toolCall/rawInput/command")
+            .and_then(|v| v.as_str()),
+        // codex-acp v1.1.7 file-change: reason lives in _meta.codex.params
+        msg.pointer("/params/_meta/codex/params/reason")
             .and_then(|v| v.as_str()),
     ]
     .into_iter()
@@ -7768,6 +7782,111 @@ mod tests {
             desc.as_deref(),
             Some("Allow file access"),
             "v1 params.toolCall.title must be extracted as description"
+        );
+    }
+
+    // ── Pinned §3: duplicate option IDs ──────────────────────────────────────
+
+    // ── F2 codex-acp v1.1.7 wire shapes ─────────────────────────────────────
+    //
+    // Verbatim wire shapes from `buildCommandPermissionRequest` and
+    // `buildFileChangePermissionRequest` in codex-acp tag v1.1.7
+    // (`src/CodexApprovalHandler.ts`). These tests go red if the extraction
+    // pointers are changed back to anything that misses the v1.1.7 shapes.
+
+    #[test]
+    fn description_from_codex_v1_1_7_command_request() {
+        // codex-acp v1.1.7 `buildCommandPermissionRequest`:
+        //   { sessionId, toolCall: { toolCallId, kind:"execute", status:"pending",
+        //     rawInput: { command, cwd } | null }, options, _meta: { codex: { params } } }
+        // No `title` at params or toolCall level — command is in rawInput.command.
+        // Verbatim from codex-acp tag v1.1.7 `CodexApprovalHandler.ts:119-135`.
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "ses-codex-1",
+                "toolCall": {
+                    "toolCallId": "tc-cmd-001",
+                    "kind": "execute",
+                    "status": "pending",
+                    "rawInput": {
+                        "command": "ls -la /tmp",
+                        "cwd": "/home/user"
+                    }
+                },
+                "options": [],
+                "_meta": { "codex": { "params": { "command": "ls -la /tmp", "itemId": "tc-cmd-001" } } }
+            }
+        });
+        let desc = description_from_request_permission(&msg);
+        assert_eq!(
+            desc.as_deref(),
+            Some("ls -la /tmp"),
+            "codex v1.1.7 command request must extract rawInput.command as description"
+        );
+    }
+
+    #[test]
+    fn description_from_codex_v1_1_7_file_change_request() {
+        // codex-acp v1.1.7 `buildFileChangePermissionRequest`:
+        //   { sessionId, toolCall: { toolCallId, kind:"edit", status:"pending" },
+        //     options, _meta: { codex: { params: { ..., reason? } } } }
+        // No title or rawInput — useful context is in _meta.codex.params.reason.
+        // Verbatim from codex-acp tag v1.1.7 `CodexApprovalHandler.ts:137-151`.
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "ses-codex-2",
+                "toolCall": {
+                    "toolCallId": "tc-edit-002",
+                    "kind": "edit",
+                    "status": "pending"
+                },
+                "options": [],
+                "_meta": {
+                    "codex": {
+                        "params": {
+                            "itemId": "tc-edit-002",
+                            "reason": "Write updated config to /etc/app.conf"
+                        }
+                    }
+                }
+            }
+        });
+        let desc = description_from_request_permission(&msg);
+        assert_eq!(
+            desc.as_deref(),
+            Some("Write updated config to /etc/app.conf"),
+            "codex v1.1.7 file-change request must extract _meta.codex.params.reason as description"
+        );
+    }
+
+    #[test]
+    fn description_returns_none_for_file_change_without_reason() {
+        // codex-acp v1.1.7 file-change with no reason field — no fallback available.
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "ses-codex-3",
+                "toolCall": {
+                    "toolCallId": "tc-edit-003",
+                    "kind": "edit",
+                    "status": "pending"
+                },
+                "options": [],
+                "_meta": { "codex": { "params": { "itemId": "tc-edit-003" } } }
+            }
+        });
+        let desc = description_from_request_permission(&msg);
+        assert_eq!(
+            desc, None,
+            "file-change request with no reason must yield None"
         );
     }
 

@@ -3,27 +3,32 @@
  * `PermissionRequestCard`, keeping React hooks out of the memo-heavy
  * `MessageRow` component.
  *
- * Renders nothing when `computePermissionRequest` returns null (no trusted
- * sentinel, wrong signer, or non-interactive surface).
+ * Accepts a pre-computed `permReq` from `selectPermissionRequest` — the trust
+ * computation happens once in `MessageRow` and the result is passed down here,
+ * so prose is suppressed iff the card renders, by construction.
+ *
+ * Renders nothing when `permReq` is null (no trusted sentinel, wrong signer,
+ * falsy channelId, or non-interactive surface).
  */
 import * as React from "react";
 
 import type { startPermissionDecisionDelivery } from "@/features/agents/lib/permissionDecisionDelivery";
 import type { TimelineMessage } from "@/features/messages/types";
-import { getPermissionRequestAgentPubkey } from "@/features/messages/ui/permissionRequestAuthPubkey";
+import type { PermissionRequestSelection } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { useIdentityQuery } from "@/shared/api/hooks";
-import { computePermissionRequest } from "@/shared/lib/computePermissionRequest";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { AttachmentGroup } from "@/shared/ui/attachment";
 import { PermissionRequestCard } from "@/shared/ui/permission-request-card";
 
 export type PermissionRequestCardBlockProps = {
   /** The message that may carry a permission-request sentinel. */
-  message: TimelineMessage;
-  /** Predicate identifying a known agent signer (enables the card). */
-  isKnownAgentPubkey: (pubkey: string) => boolean;
-  /** Channel ID for routing the decision click; falsy → no card. */
-  channelId: string | null | undefined;
+  message: Pick<TimelineMessage, "ownerPubkey">;
+  /**
+   * Pre-computed selection from `selectPermissionRequest`. When null, no card
+   * renders. MessageRow computes this once and uses the same result for prose
+   * suppression and this block — ensuring they stay in sync.
+   */
+  permReq: PermissionRequestSelection | null;
   /**
    * Delivery function injected by tests to control the outcome without a real
    * relay. Production callers omit this.
@@ -31,36 +36,23 @@ export type PermissionRequestCardBlockProps = {
    * @internal — test seam only; not part of the public API.
    */
   _deliveryFn?: typeof startPermissionDecisionDelivery;
+  /** Channel ID for routing the decision click. */
+  channelId: string | null | undefined;
 };
 
 export const PermissionRequestCardBlock = React.memo(
   function PermissionRequestCardBlock({
     message,
-    isKnownAgentPubkey,
+    permReq,
     channelId,
     _deliveryFn,
   }: PermissionRequestCardBlockProps) {
     const identityQuery = useIdentityQuery();
     const viewerPubkey = identityQuery.data?.pubkey;
 
-    if (!channelId || !message.isAgent) return null;
+    if (permReq === null || !channelId) return null;
 
-    const agentPubkey = getPermissionRequestAgentPubkey(
-      message,
-      isKnownAgentPubkey,
-    );
-    const request = computePermissionRequest(
-      message.body,
-      true,
-      agentPubkey,
-      message.signerPubkey,
-      message.editSignerPubkey,
-      message.id,
-      message.preEditBody,
-    );
-
-    if (request === null || !agentPubkey) return null;
-
+    const { agentPubkey, request } = permReq;
     const ownerPubkey = message.ownerPubkey;
     const isOwner =
       !!viewerPubkey &&
@@ -84,7 +76,7 @@ export const PermissionRequestCardBlock = React.memo(
   },
   (prev, next) =>
     prev.message === next.message &&
-    prev.isKnownAgentPubkey === next.isKnownAgentPubkey &&
+    prev.permReq === next.permReq &&
     prev.channelId === next.channelId &&
     prev._deliveryFn === next._deliveryFn,
 );

@@ -149,9 +149,7 @@ async function makeQueryClient(viewerPubkey) {
 
 // ── Render helper ─────────────────────────────────────────────────────────────
 
-// Build a minimal TimelineMessage carrying the sentinel. The block reads
-// kind/isAgent/body/signerPubkey/editSignerPubkey/ownerPubkey; other fields
-// are irrelevant to the render gates under test.
+// Build a minimal TimelineMessage carrying the sentinel.
 function makeMessage({
   content,
   signerPubkey,
@@ -172,8 +170,9 @@ function makeMessage({
   };
 }
 
-// The block resolves `agentPubkey` from the signer via this predicate, so a
-// forged signer (signer ≠ agent) fails the gate exactly as production does.
+// The block now accepts a pre-computed `permReq` from `selectPermissionRequest`.
+// We compute it here in the test helper — using the same function MessageRow uses —
+// so forged signer (signer ≠ agent) fails the gate exactly as production does.
 function makeIsKnownAgentPubkey(agentPubkey) {
   return (pubkey) => pubkey === agentPubkey;
 }
@@ -194,8 +193,26 @@ async function renderBlock({
   const { PermissionRequestCardBlock } = await import(
     "./PermissionRequestCardBlock.tsx"
   );
+  const { selectPermissionRequest } = await import(
+    "./permissionRequestAuthPubkey.ts"
+  );
 
   const qc = await makeQueryClient(viewerPubkey);
+  const message = makeMessage({
+    content,
+    signerPubkey,
+    editSignerPubkey,
+    ownerPubkey,
+    id,
+    preEditBody,
+  });
+  const isKnownAgentPubkey = makeIsKnownAgentPubkey(agentPubkey);
+  // Compute permReq using the same selector MessageRow uses in production.
+  const permReq = selectPermissionRequest(
+    message,
+    isKnownAgentPubkey,
+    CHANNEL_ID,
+  );
 
   let container;
   await act(async () => {
@@ -204,15 +221,8 @@ async function renderBlock({
         QueryClientProvider,
         { client: qc },
         createElement(PermissionRequestCardBlock, {
-          message: makeMessage({
-            content,
-            signerPubkey,
-            editSignerPubkey,
-            ownerPubkey,
-            id,
-            preEditBody,
-          }),
-          isKnownAgentPubkey: makeIsKnownAgentPubkey(agentPubkey),
+          message,
+          permReq,
           channelId: CHANNEL_ID,
         }),
       ),
@@ -340,8 +350,21 @@ test("test_expiry_disables_buttons_after_clock_tick", async () => {
   const { PermissionRequestCardBlock } = await import(
     "./PermissionRequestCardBlock.tsx"
   );
+  const { selectPermissionRequest } = await import(
+    "./permissionRequestAuthPubkey.ts"
+  );
 
   const qc = await makeQueryClient(OWNER_PUBKEY);
+  const message = makeMessage({
+    content: makePendingContent(EXPIRY_SECS),
+    signerPubkey: AGENT_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+  const permReq = selectPermissionRequest(
+    message,
+    makeIsKnownAgentPubkey(AGENT_PUBKEY),
+    CHANNEL_ID,
+  );
 
   let container;
   await act(async () => {
@@ -350,12 +373,8 @@ test("test_expiry_disables_buttons_after_clock_tick", async () => {
         QueryClientProvider,
         { client: qc },
         createElement(PermissionRequestCardBlock, {
-          message: makeMessage({
-            content: makePendingContent(EXPIRY_SECS),
-            signerPubkey: AGENT_PUBKEY,
-            ownerPubkey: OWNER_PUBKEY,
-          }),
-          isKnownAgentPubkey: makeIsKnownAgentPubkey(AGENT_PUBKEY),
+          message,
+          permReq,
           channelId: CHANNEL_ID,
         }),
       ),
@@ -411,8 +430,21 @@ test("test_failed_delivery_re_enables_buttons_and_successful_retry_reaches_sent"
   const { PermissionRequestCardBlock } = await import(
     "./PermissionRequestCardBlock.tsx"
   );
+  const { selectPermissionRequest } = await import(
+    "./permissionRequestAuthPubkey.ts"
+  );
 
   const qc = await makeQueryClient(OWNER_PUBKEY);
+  const message = makeMessage({
+    content: makePendingContent(),
+    signerPubkey: AGENT_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+  const permReq = selectPermissionRequest(
+    message,
+    makeIsKnownAgentPubkey(AGENT_PUBKEY),
+    CHANNEL_ID,
+  );
 
   let container;
   await act(async () => {
@@ -421,12 +453,8 @@ test("test_failed_delivery_re_enables_buttons_and_successful_retry_reaches_sent"
         QueryClientProvider,
         { client: qc },
         createElement(PermissionRequestCardBlock, {
-          message: makeMessage({
-            content: makePendingContent(),
-            signerPubkey: AGENT_PUBKEY,
-            ownerPubkey: OWNER_PUBKEY,
-          }),
-          isKnownAgentPubkey: makeIsKnownAgentPubkey(AGENT_PUBKEY),
+          message,
+          permReq,
           channelId: CHANNEL_ID,
           _deliveryFn: makeDeliveryFn(),
         }),
@@ -633,12 +661,128 @@ test("test_no_description_does_not_break_pending_card", async () => {
   assert.ok(allowBtn !== null, "buttons must render without description");
 });
 
+test("test_hostile_markup_description_renders_as_inert_text", async () => {
+  // Carl's F2 requirement: hostile markup must render as inert text — no
+  // element or execution, reachable by AT, not aria-hidden.
+  // React renders values as text children; this test verifies by querying the
+  // accessibility tree (textContent) and confirming no <script>/<img> element.
+  const hostileDesc = "<script>alert('xss')</script><b>bold</b>";
+  const contentWithHostile = JSON.stringify({
+    v: 1,
+    state: "pending",
+    requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+    sessionId: "sess-abc",
+    turnId: "turn-xyz",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    description: hostileDesc,
+  });
+
+  const container = await renderBlock({
+    content: contentWithHostile,
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  // No <script> or <img> element created — markup treated as text
+  assert.equal(
+    container.querySelector("script"),
+    null,
+    "hostile <script> must not create a script element",
+  );
+  assert.equal(
+    container.querySelector("b"),
+    null,
+    "hostile <b> must not create a bold element — markup is escaped",
+  );
+
+  // The raw string must appear as text content (HTML-escaped, reachable by AT)
+  assert.ok(
+    container.textContent?.includes("<script>"),
+    "hostile markup must appear as literal text (accessible, not executed)",
+  );
+});
+
+test("test_control_character_description_renders_safely", async () => {
+  // Control characters in description must not crash the renderer or produce
+  // invisible/inaccessible content.
+  const controlDesc = "Run\x00command\x08with\x1fcontrol\x7fchars";
+  const contentWithControl = JSON.stringify({
+    v: 1,
+    state: "pending",
+    requestNonce: "b9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c5",
+    sessionId: "sess-ctrl",
+    turnId: "turn-ctrl",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    description: controlDesc,
+  });
+
+  const container = await renderBlock({
+    content: contentWithControl,
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  // Card renders (control chars do not prevent render)
+  const card = container.querySelector("[data-permission-request]");
+  assert.ok(card !== null, "card must render with control-char description");
+
+  // Visible text portions are present in the accessibility tree
+  assert.ok(
+    container.textContent?.includes("Run"),
+    "printable parts of control-char description must be in textContent",
+  );
+});
+
+test("test_description_accessible_not_aria_hidden", async () => {
+  // Description must be reachable by assistive technology — not wrapped in
+  // aria-hidden or hidden from the accessibility tree.
+  const desc = "Allow read access to /etc/hosts";
+  const contentWithDesc = JSON.stringify({
+    v: 1,
+    state: "pending",
+    requestNonce: "c9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c6",
+    sessionId: "sess-at",
+    turnId: "turn-at",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    description: desc,
+  });
+
+  const container = await renderBlock({
+    content: contentWithDesc,
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  // Find the element containing the description text
+  const allText = container.textContent ?? "";
+  assert.ok(
+    allText.includes(desc),
+    "description must appear in textContent (reachable by AT)",
+  );
+
+  // The description must NOT be inside an aria-hidden element
+  const ariaHiddenWithDesc = [
+    ...container.querySelectorAll("[aria-hidden]"),
+  ].some((el) => el.textContent?.includes(desc));
+  assert.equal(
+    ariaHiddenWithDesc,
+    false,
+    "description must not be inside an aria-hidden element",
+  );
+});
+
 test("test_born_resolved_no_provenance_renders_nothing", async () => {
   // A kind-9 whose body is already "resolved" but has no edit provenance
   // (no editSignerPubkey, no preEditBody). computePermissionRequest rejects
   // it — born-resolved cards bypass the agent-signed-edit requirement and
   // would render a completed card with zero proof of owner action.
-  // The block returns null; hasPermissionRequestCard also returns false so
+  // The block returns null; selectPermissionRequest also returns null so
   // MessageRow falls back to prose (no blank row).
   const container = await renderBlock({
     content: makeResolvedContent(),

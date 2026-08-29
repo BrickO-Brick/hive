@@ -35,7 +35,7 @@ import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAu
 import { PermissionRequestCardBlock } from "@/features/messages/ui/PermissionRequestCardBlock";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import { hasPermissionRequestCard as hasPermCard } from "@/features/messages/ui/permissionRequestAuthPubkey";
+import { selectPermissionRequest as selectPermReq } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
@@ -378,6 +378,9 @@ export const MessageRow = React.memo(
     const getTag = (name: string) =>
       message.tags?.find((tag) => tag[0] === name)?.[1];
 
+    // Computed once — prose suppressed iff card renders, by construction.
+    const permReq = selectPermReq(message, isKnownAgentPubkey, channelId);
+
     const renderBody = () => {
       switch (message.kind) {
         case KIND_STREAM_MESSAGE_DIFF:
@@ -425,9 +428,7 @@ export const MessageRow = React.memo(
             );
           }
 
-          if (message.isAgent && hasPermCard(message, isKnownAgentPubkey)) {
-            return null;
-          }
+          if (permReq !== null) return null;
 
           return (
             <VideoReviewCommentMarkdown
@@ -680,7 +681,7 @@ export const MessageRow = React.memo(
         {renderBody()}
         <PermissionRequestCardBlock
           message={message}
-          isKnownAgentPubkey={isKnownAgentPubkey}
+          permReq={permReq}
           channelId={channelId}
         />
         {continuationMetadataNode}

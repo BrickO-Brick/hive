@@ -50,9 +50,12 @@ export type PermissionRequestPending = {
   labels: Record<string, string>;
   /**
    * Human-readable description of the requested operation, sourced from the
-   * `params.subject` field of the ACP `session/request_permission` message.
-   * Truncated producer-side to ≤ 200 UTF-8 bytes. `null` when the adapter
-   * did not provide a subject or provided an empty string.
+   * ACP `session/request_permission` message via `description_from_request_permission`
+   * in `crates/buzz-acp/src/acp.rs`. Tries `params.title`,
+   * `params.subject.toolCall.title`, `params.toolCall.title`,
+   * `params.toolCall.rawInput.command`, and `params._meta.codex.params.reason` in order.
+   * Truncated producer-side to ≤ 200 UTF-8 bytes. `null` when no path yields a
+   * non-empty string.
    *
    * Display-only — treated as an untrusted string and rendered as text (HTML-
    * escaped by React). The sentinel is valid when this field is absent or null.
