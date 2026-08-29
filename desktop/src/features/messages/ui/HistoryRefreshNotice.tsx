@@ -51,6 +51,10 @@ export function HistoryRefreshNotice({
     );
     try {
       await refreshChannelWindowMessages(client, channelId);
+    } catch {
+      // Exhausted query retries are already projected into refreshError.
+      // The recovery button owns this promise, so contain the rejection here.
+      return;
     } finally {
       // The observer can unmount before hydration/invalidation starts a fetch.
       // Retire an unclaimed token too, without clearing a newer button click.
