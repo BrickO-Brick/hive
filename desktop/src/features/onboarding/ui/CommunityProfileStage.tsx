@@ -12,9 +12,11 @@ import { ProfileAvatarEditor } from "@/features/profile/ui/ProfileAvatarEditor";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/shared/ui/dialog";
-import { Input } from "@/shared/ui/input";
 import { ONBOARDING_PRIMARY_CTA_CLASS } from "./OnboardingChrome";
 import { OnboardingFooter } from "./OnboardingFooter";
+import { OnboardingPreviewInput } from "./OnboardingPreviewInput";
+import { useOnboardingPreviewCardLayout } from "./OnboardingPreviewShell";
+import { ONBOARDING_PREVIEW_CARD_INPUT_CLASS } from "./onboardingPreviewCardStyles";
 
 const NEUTRAL_EMOJI_PICKER_THEME_VARS = {
   "--buzz-emoji-picker-rgb-background":
@@ -117,12 +119,17 @@ export function CommunityProfileStage({
   onUploadingChange: (isUploading: boolean) => void;
   previewMode?: boolean;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [localAvatarPreviewUrl, setLocalAvatarPreviewUrl] = React.useState<
     string | null
   >(null);
   const [avatarSquishKey, setAvatarSquishKey] = React.useState(0);
   const [isAvatarEditorOpen, setIsAvatarEditorOpen] = React.useState(false);
+  const [isInlineAvatarEditorOpen, setIsInlineAvatarEditorOpen] =
+    React.useState(() => avatarUrl.trim().length > 0);
   const [animatedPreviewEl, setAnimatedPreviewEl] =
+    React.useState<HTMLDivElement | null>(null);
+  const [avatarModeTabsEl, setAvatarModeTabsEl] =
     React.useState<HTMLDivElement | null>(null);
   const [isAnimatedPreviewActive, setIsAnimatedPreviewActive] =
     React.useState(false);
@@ -183,44 +190,159 @@ export function CommunityProfileStage({
         )}
         data-testid="community-profile-main"
       >
-        <div className="shrink-0">
+        <div className={cn("shrink-0", cardLayout && "text-left")}>
           <h1 className="text-title font-normal">Build your profile</h1>
-          <p className="mx-auto mt-3 max-w-[380px] text-sm leading-6 text-foreground/80">
-            Add a name and avatar. They’ll show up on your messages, reactions,
-            and agent handoffs.
-          </p>
+          {cardLayout ? null : (
+            <p className="mx-auto mt-3 max-w-[380px] text-sm leading-6 text-foreground/80">
+              Add a name and avatar. They’ll show up on your messages,
+              reactions, and agent handoffs.
+            </p>
+          )}
         </div>
-        <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center pt-8">
-          <AvatarCircle
-            avatarUrl={avatarUrl}
-            onClick={() => setIsAvatarEditorOpen(true)}
-            previewName={displayName.trim() || "Your profile"}
-            triggerRef={avatarTriggerRef}
-          />
-          <label
-            className="mt-7 block w-full max-w-[412px] text-left"
-            htmlFor="community-display-name"
+        <div
+          className={cn(
+            "flex min-h-0 w-full flex-1 flex-col",
+            cardLayout
+              ? "items-start justify-start pt-6"
+              : "items-center justify-center pt-8",
+          )}
+        >
+          {cardLayout ? (
+            <div className="h-52 w-full" data-testid="community-avatar-section">
+              {isInlineAvatarEditorOpen ? (
+                <div
+                  className="grid h-full w-full grid-cols-[9rem_minmax(0,1fr)] items-start gap-6"
+                  data-testid="community-avatar-inline-editor"
+                >
+                  <div className="relative size-36 shrink-0">
+                    <div
+                      className="pointer-events-none absolute inset-0 z-10"
+                      data-testid="community-avatar-animated-preview-slot"
+                      ref={setAnimatedPreviewEl}
+                    />
+                    {isAnimatedPreviewActive ? null : localAvatarPreviewUrl ? (
+                      <ProfileAvatar
+                        avatarUrl={localAvatarPreviewUrl}
+                        className="h-full w-full rounded-full text-4xl"
+                        label={displayName.trim() || "Your profile"}
+                        testId="community-avatar-inline-preview"
+                      />
+                    ) : (
+                      (() => {
+                        const emojiAvatar = parseEmojiAvatarDataUrl(avatarUrl);
+                        return emojiAvatar ? (
+                          <div
+                            aria-label={`${displayName.trim() || "Your profile"} avatar`}
+                            className="flex h-full w-full items-center justify-center overflow-hidden rounded-full text-5xl shadow-xs"
+                            data-testid="community-avatar-inline-preview"
+                            role="img"
+                            style={{ backgroundColor: emojiAvatar.color }}
+                          >
+                            <span
+                              className={cn(
+                                avatarSquishKey > 0 && "buzz-avatar-squish",
+                              )}
+                              key={avatarSquishKey}
+                            >
+                              {emojiAvatar.emoji}
+                            </span>
+                          </div>
+                        ) : (
+                          <ProfileAvatar
+                            avatarUrl={avatarUrl || null}
+                            className="h-full w-full rounded-full text-4xl"
+                            label={displayName.trim() || "Your profile"}
+                            testId="community-avatar-inline-preview"
+                          />
+                        );
+                      })()
+                    )}
+                  </div>
+                  <ProfileAvatarEditor
+                    animatedPreviewContainer={animatedPreviewEl}
+                    avatarUrl={avatarUrl}
+                    disabled={isPending}
+                    donePending={isUploadingAvatar}
+                    emojiPickerTheme="auto"
+                    emojiPickerThemeVars={NEUTRAL_EMOJI_PICKER_THEME_VARS}
+                    onAnimatedPreviewActiveChange={setIsAnimatedPreviewActive}
+                    onAnimatedPreviewCaptionChange={setAnimatedPreviewCaption}
+                    onEmojiAvatarChange={animateEmojiAvatarChange}
+                    onLocalPreviewChange={setLocalAvatarPreviewUrl}
+                    onUploadingChange={onUploadingChange}
+                    onUrlChange={updateAvatarUrl}
+                    presentation="onboarding-inline"
+                    previewName={displayName.trim() || "Your profile"}
+                    processAnimatedAvatar={
+                      previewMode ? processPreviewAnimatedAvatar : undefined
+                    }
+                    processImage={previewMode ? processPreviewImage : undefined}
+                    testIdPrefix="community-avatar-inline"
+                  />
+                </div>
+              ) : (
+                <button
+                  aria-label="Add a profile image"
+                  className="group grid size-36 place-items-center rounded-full border-2 border-dashed border-border bg-background text-primary shadow-xs transition-[background-color,border-color,color] duration-200 ease-out hover:bg-[#f5f5f5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-reduce:transition-none"
+                  data-testid="community-avatar-inline-open"
+                  disabled={isPending}
+                  onClick={() => setIsInlineAvatarEditorOpen(true)}
+                  type="button"
+                >
+                  <Plus className="h-10 w-10" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          ) : (
+            <AvatarCircle
+              avatarUrl={avatarUrl}
+              onClick={() => setIsAvatarEditorOpen(true)}
+              previewName={displayName.trim() || "Your profile"}
+              triggerRef={avatarTriggerRef}
+            />
+          )}
+          {cardLayout && animatedPreviewCaption ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {animatedPreviewCaption}
+            </p>
+          ) : null}
+          <div
+            className={cn(
+              "block w-full text-left",
+              cardLayout ? "mt-6 max-w-none" : "mt-7 max-w-[412px]",
+            )}
           >
-            <span className="mb-2 block pl-4 text-sm text-foreground">
+            <label
+              className={cn(
+                "mb-2 block text-sm text-foreground",
+                !cardLayout && "pl-4",
+              )}
+              htmlFor="community-display-name"
+            >
               Your username
-            </span>
-            <Input
+            </label>
+            <OnboardingPreviewInput
               aria-label="Community username"
               autoCapitalize="none"
               autoComplete="username"
               autoCorrect="off"
-              className="h-14 rounded-2xl border-[color:rgb(var(--buzz-onboarding-avatar-control-fg)_/_0.28)] bg-[rgb(var(--buzz-onboarding-avatar-dialog-bg)/0.95)] px-5 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[color:rgb(var(--buzz-onboarding-avatar-control-fg)_/_0.5)] md:text-sm"
+              className={
+                cardLayout
+                  ? ONBOARDING_PREVIEW_CARD_INPUT_CLASS
+                  : "h-14 rounded-2xl border-[color:rgb(var(--buzz-onboarding-avatar-control-fg)_/_0.28)] bg-[rgb(var(--buzz-onboarding-avatar-dialog-bg)/0.95)] px-5 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[color:rgb(var(--buzz-onboarding-avatar-control-fg)_/_0.5)] md:text-sm"
+              }
               data-testid="community-profile-name-key"
               disabled={isPending || isUploadingAvatar}
               id="community-display-name"
               onChange={(event) => onDisplayNameChange(event.target.value)}
               placeholder="Enter your username here"
               ref={nameInputRef}
+              smooth={cardLayout}
               spellCheck={false}
               type="text"
               value={displayName}
             />
-          </label>
+          </div>
         </div>
         {errorMessage ? (
           <p className="mt-4 text-sm text-destructive">{errorMessage}</p>
@@ -264,14 +386,29 @@ export function CommunityProfileStage({
         >
           <DialogTitle className="sr-only">Edit your avatar</DialogTitle>
           <div
-            className="grid items-center gap-8 md:grid-cols-[240px_minmax(0,1fr)]"
+            className={cn(
+              "grid items-center gap-8",
+              cardLayout
+                ? "grid-cols-[200px_minmax(0,1fr)] items-stretch"
+                : "md:grid-cols-[240px_minmax(0,1fr)]",
+            )}
             ref={avatarEditorContentRef}
           >
             <div
-              className="flex min-h-[320px] flex-col items-center justify-center gap-3 px-6 py-8"
+              className={cn(
+                "flex flex-col items-center gap-3",
+                cardLayout
+                  ? "min-h-[454px] justify-start px-2 py-0"
+                  : "min-h-[320px] justify-center px-6 py-8",
+              )}
               data-testid="community-avatar-live-preview-panel"
             >
-              <div className="relative h-48 w-48">
+              <div
+                className={cn(
+                  "relative shrink-0",
+                  cardLayout ? "h-40 w-40" : "h-48 w-48",
+                )}
+              >
                 <div
                   className="pointer-events-none absolute inset-0 z-10"
                   data-testid="community-avatar-animated-preview-slot"
@@ -321,6 +458,13 @@ export function CommunityProfileStage({
                   {animatedPreviewCaption}
                 </p>
               ) : null}
+              {cardLayout ? (
+                <div
+                  className="mt-3 w-full"
+                  data-testid="community-avatar-mode-tabs-slot"
+                  ref={setAvatarModeTabsEl}
+                />
+              ) : null}
             </div>
             <ProfileAvatarEditor
               animatedPreviewContainer={animatedPreviewEl}
@@ -336,6 +480,8 @@ export function CommunityProfileStage({
               onLocalPreviewChange={setLocalAvatarPreviewUrl}
               onUploadingChange={onUploadingChange}
               onUrlChange={updateAvatarUrl}
+              modeTabsContainer={cardLayout ? avatarModeTabsEl : undefined}
+              modeTabsOrientation={cardLayout ? "vertical" : "horizontal"}
               presentation="onboarding-modal"
               previewName={displayName.trim() || "Your profile"}
               processAnimatedAvatar={

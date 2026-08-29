@@ -1,12 +1,16 @@
 import { motion, useReducedMotion } from "motion/react";
 import * as React from "react";
 
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
+  ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECURITY_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
 } from "./OnboardingChrome";
 import { OnboardingFooter } from "./OnboardingFooter";
+import { useOnboardingPreviewCardLayout } from "./OnboardingPreviewShell";
+import { ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS } from "./onboardingPreviewCardStyles";
 import {
   type OnboardingTransitionDirection,
   OnboardingSlideTransition,
@@ -36,6 +40,7 @@ export function DownloadKeyStep({
   onBack,
   previewMode = false,
 }: DownloadKeyStepProps) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const reduceMotion = useReducedMotion() ?? false;
   // Once the encrypted payload is saved, the creator advances to its guided
   // backup test while this surface keeps its own navigation.
@@ -44,20 +49,39 @@ export function DownloadKeyStep({
   const hasSelectedBackup = session.test.stage === "password";
   const showPreviewSaved =
     previewMode && hasCreated && session.test.stage === "drop";
+  const primaryActionClass = cardLayout
+    ? ONBOARDING_PRIMARY_CTA_CLASS
+    : ONBOARDING_SECURITY_PRIMARY_CTA_CLASS;
   const [primaryActionSlot, setPrimaryActionSlot] =
     React.useState<HTMLElement | null>(null);
+  const headingEntrance = reduceMotion
+    ? false
+    : cardLayout
+      ? { opacity: 0 }
+      : { opacity: 0, y: 10 };
+  const panelEntrance = reduceMotion
+    ? false
+    : cardLayout
+      ? { opacity: 0 }
+      : { opacity: 0, y: 12 };
 
   return (
     <OnboardingSlideTransition
-      className="flex min-h-0 w-full flex-col items-center"
+      className={cn(
+        "flex min-h-0 w-full flex-col",
+        cardLayout ? "items-stretch" : "items-center",
+      )}
       data-testid="onboarding-page-download"
       direction={direction}
       transitionKey={`download-${direction}`}
     >
       <motion.div
-        animate={{ opacity: 1, y: 0 }}
-        className="flex w-full max-w-[500px] shrink-0 flex-col text-center"
-        initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+        animate={cardLayout ? { opacity: 1 } : { opacity: 1, y: 0 }}
+        className={cn(
+          "flex w-full max-w-[500px] shrink-0 flex-col",
+          cardLayout ? "text-left" : "text-center",
+        )}
+        initial={headingEntrance}
         key={
           showPreviewSaved
             ? "saved-heading"
@@ -95,11 +119,16 @@ export function DownloadKeyStep({
         </p>
       </motion.div>
 
-      <div className="flex w-full max-w-[1040px] flex-1 flex-col justify-center py-10">
+      <div
+        className={cn(
+          "flex w-full max-w-[1040px] flex-col",
+          cardLayout ? "py-8" : "flex-1 justify-center py-10",
+        )}
+      >
         <div className="w-full">
           <motion.div
-            animate={{ opacity: 1, y: 0 }}
-            initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+            animate={cardLayout ? { opacity: 1 } : { opacity: 1, y: 0 }}
+            initial={panelEntrance}
             key={
               showPreviewSaved
                 ? "saved-panel"
@@ -114,11 +143,16 @@ export function DownloadKeyStep({
             }}
           >
             <div
-              className="mx-auto flex w-full max-w-140 justify-center px-6 py-5"
+              className={cn(
+                "flex w-full max-w-140",
+                cardLayout
+                  ? "justify-start py-6"
+                  : "mx-auto justify-center px-6 py-5",
+              )}
               data-testid="backup-password-panel"
             >
               <EncryptedBackupCreator
-                createButtonClassName={ONBOARDING_SECURITY_PRIMARY_CTA_CLASS}
+                createButtonClassName={primaryActionClass}
                 createButtonPortal={primaryActionSlot}
                 previewMode={previewMode}
                 session={session}
@@ -133,7 +167,10 @@ export function DownloadKeyStep({
       <OnboardingFooter>
         {showPreviewSaved ? (
           <Button
-            className={ONBOARDING_SECONDARY_CTA_CLASS}
+            className={cn(
+              ONBOARDING_SECONDARY_CTA_CLASS,
+              cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+            )}
             data-testid="onboarding-preview-backup-done"
             onClick={onBack}
             type="button"
@@ -154,8 +191,11 @@ export function DownloadKeyStep({
           <Button
             className={
               hasVerifiedBackup
-                ? ONBOARDING_SECURITY_PRIMARY_CTA_CLASS
-                : ONBOARDING_SECONDARY_CTA_CLASS
+                ? primaryActionClass
+                : cn(
+                    ONBOARDING_SECONDARY_CTA_CLASS,
+                    cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+                  )
             }
             data-testid={
               hasVerifiedBackup ? "onboarding-finish" : "onboarding-skip"

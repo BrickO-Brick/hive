@@ -9,7 +9,6 @@ import {
 } from "@/shared/api/tauriIdentity";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/shared/ui/popover";
 import { Spinner } from "@/shared/ui/spinner";
 import {
@@ -39,9 +38,13 @@ import {
 } from "./BackupTestFlow";
 import { BackupPasswordTimeline } from "./BackupPasswordTimeline";
 import {
+  ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECURITY_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
 } from "./OnboardingChrome";
+import { OnboardingPreviewInput } from "./OnboardingPreviewInput";
+import { useOnboardingPreviewCardLayout } from "./OnboardingPreviewShell";
+import { ONBOARDING_PREVIEW_CARD_INPUT_CLASS } from "./onboardingPreviewCardStyles";
 
 /** Word-count bounds mirroring `key_backup.rs` (Rust clamps regardless). */
 const MIN_GENERATED_WORDS = 3;
@@ -479,6 +482,7 @@ export function EncryptedBackupCreator({
   onVerified,
   previewMode = false,
 }: EncryptedBackupCreatorProps) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   // Hosts without a longer-lived session get a private one (settings card).
   const fallbackSession = useEncryptedBackupSession();
   const session = sessionProp ?? fallbackSession;
@@ -628,6 +632,7 @@ export function EncryptedBackupCreator({
   const issue = passphraseIssue(state.passphrase);
   const showBackupTimeline =
     variant === "spotlight" &&
+    !cardLayout &&
     !state.savedPassword &&
     !state.createError &&
     !saveError;
@@ -658,7 +663,10 @@ export function EncryptedBackupCreator({
 
   return (
     <div
-      className={cn("mx-auto w-full max-w-[500px] space-y-3 text-left")}
+      className={cn(
+        "w-full max-w-[500px] space-y-3 text-left",
+        !cardLayout && "mx-auto",
+      )}
       data-testid="encrypted-backup-creator"
     >
       <div
@@ -669,134 +677,152 @@ export function EncryptedBackupCreator({
       >
         {showBackupTimeline ? <BackupPasswordTimeline /> : null}
         <div className="relative z-10">
-          <Input
-            aria-label="Encryption password"
-            autoComplete="new-password"
-            autoFocus={variant === "spotlight"}
-            className={cn(
-              "font-mono",
-              variant === "spotlight"
-                ? "h-14 rounded-2xl border-black/20 bg-white px-20 text-center text-lg text-black/80 shadow-none placeholder:text-black/55 focus-visible:ring-black/35"
-                : "h-10 bg-background pr-19",
-            )}
-            data-testid="backup-passphrase-input"
-            disabled={state.downloadPending}
-            readOnly={state.savedPassword}
-            aria-describedby={
-              state.savedPassword
-                ? "backup-saved-password-description"
-                : undefined
-            }
-            onBeforeInput={(event) => {
-              if (state.savedPassword) {
-                event.preventDefault();
-                setConfirmNewPassword(true);
-              }
-            }}
-            onPaste={(event) => {
-              if (state.savedPassword) {
-                event.preventDefault();
-                setConfirmNewPassword(true);
-              }
-            }}
-            onChange={(event) =>
-              dispatch({ type: "set-passphrase", value: event.target.value })
-            }
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" || event.nativeEvent.isComposing)
-                return;
-              event.preventDefault();
-              if (downloadDisabled(state) || isSaving) return;
-              if (state.savedPassword && state.ncryptsec) {
-                void handleSaveCopy();
-                return;
-              }
-              dispatch({ type: "download-clicked" });
-            }}
-            placeholder={
-              state.savedPassword
-                ? ""
-                : `Password (min ${MIN_PASSPHRASE_LEN} characters)`
-            }
-            type={isRevealed ? "text" : "password"}
-            value={state.passphrase}
-          />
-          {state.savedPassword ? (
-            <div
-              aria-hidden
+          {cardLayout ? (
+            <label
+              className="mb-2 block text-sm font-medium text-foreground"
+              htmlFor="backup-passphrase-input"
+            >
+              Password
+            </label>
+          ) : null}
+          <div className="relative">
+            <OnboardingPreviewInput
+              aria-label="Encryption password"
+              autoComplete="new-password"
+              autoFocus={variant === "spotlight"}
               className={cn(
-                "pointer-events-none absolute inset-y-0 left-3 flex items-center font-mono tracking-widest text-foreground",
-                variant === "spotlight" && "text-black/80",
+                "font-mono",
+                variant === "spotlight"
+                  ? cardLayout
+                    ? cn(
+                        ONBOARDING_PREVIEW_CARD_INPUT_CLASS,
+                        "pr-20 text-left font-mono text-sm",
+                      )
+                    : "h-14 rounded-2xl border-black/20 bg-white px-20 text-center text-lg text-black/80 shadow-none placeholder:text-black/55 focus-visible:ring-black/35"
+                  : "h-10 bg-background pr-19",
               )}
-              data-testid="backup-saved-password-mask"
+              data-testid="backup-passphrase-input"
+              disabled={state.downloadPending}
+              id="backup-passphrase-input"
+              readOnly={state.savedPassword}
+              aria-describedby={
+                state.savedPassword
+                  ? "backup-saved-password-description"
+                  : undefined
+              }
+              onBeforeInput={(event) => {
+                if (state.savedPassword) {
+                  event.preventDefault();
+                  setConfirmNewPassword(true);
+                }
+              }}
+              onPaste={(event) => {
+                if (state.savedPassword) {
+                  event.preventDefault();
+                  setConfirmNewPassword(true);
+                }
+              }}
+              onChange={(event) =>
+                dispatch({ type: "set-passphrase", value: event.target.value })
+              }
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing)
+                  return;
+                event.preventDefault();
+                if (downloadDisabled(state) || isSaving) return;
+                if (state.savedPassword && state.ncryptsec) {
+                  void handleSaveCopy();
+                  return;
+                }
+                dispatch({ type: "download-clicked" });
+              }}
+              placeholder={
+                state.savedPassword
+                  ? ""
+                  : `Password (min ${MIN_PASSPHRASE_LEN} characters)`
+              }
+              smooth={cardLayout}
+              type={isRevealed ? "text" : "password"}
+              value={state.passphrase}
+            />
+            {state.savedPassword ? (
+              <div
+                aria-hidden
+                className={cn(
+                  "pointer-events-none absolute inset-y-0 left-3 flex items-center font-mono tracking-widest text-foreground",
+                  variant === "spotlight" && !cardLayout && "text-black/80",
+                )}
+                data-testid="backup-saved-password-mask"
+              >
+                ••••••••••••••••••••••••••••••••
+              </div>
+            ) : null}
+            {state.savedPassword ? (
+              <span className="sr-only" id="backup-saved-password-description">
+                Backup password saved; hidden for security.
+              </span>
+            ) : null}
+            <Button
+              aria-label={
+                state.savedPassword
+                  ? "Change saved backup password"
+                  : isRevealed
+                    ? "Hide password"
+                    : "Reveal password"
+              }
+              className={cn(
+                "absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground",
+                variant === "spotlight" &&
+                  !cardLayout &&
+                  "text-black/55 hover:bg-black/5 hover:text-black/80",
+              )}
+              data-testid="backup-passphrase-reveal-toggle"
+              disabled={state.downloadPending}
+              onClick={() =>
+                state.savedPassword
+                  ? setConfirmNewPassword(true)
+                  : setIsRevealed((revealed) => !revealed)
+              }
+              size="icon"
+              type="button"
+              variant="ghost"
             >
-              ••••••••••••••••••••••••••••••••
-            </div>
-          ) : null}
-          {state.savedPassword ? (
-            <span className="sr-only" id="backup-saved-password-description">
-              Backup password saved; hidden for security.
-            </span>
-          ) : null}
-          <Button
-            aria-label={
-              state.savedPassword
-                ? "Change saved backup password"
-                : isRevealed
-                  ? "Hide password"
-                  : "Reveal password"
-            }
-            className={cn(
-              "absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2 text-muted-foreground hover:text-foreground",
-              variant === "spotlight" &&
-                "text-black/55 hover:bg-black/5 hover:text-black/80",
-            )}
-            data-testid="backup-passphrase-reveal-toggle"
-            disabled={state.downloadPending}
-            onClick={() =>
-              state.savedPassword
-                ? setConfirmNewPassword(true)
-                : setIsRevealed((revealed) => !revealed)
-            }
-            size="icon"
-            type="button"
-            variant="ghost"
-          >
-            {isRevealed ? (
-              <EyeOff className="h-4 w-4" aria-hidden="true" />
-            ) : (
-              <Eye className="h-4 w-4" aria-hidden="true" />
-            )}
-          </Button>
-          <PassphraseGeneratorPopover
-            disabled={state.downloadPending}
-            onRequestGenerate={
-              state.savedPassword
-                ? () => setConfirmNewPassword(true)
-                : undefined
-            }
-            onGenerated={(value) => {
-              dispatch({ type: "set-passphrase", value });
-              // A generated password must be visible so the user can save it.
-              setIsRevealed(true);
-            }}
-            previewMode={previewMode}
-            securityTheme={variant === "spotlight"}
-          />
-          {issue ? (
-            <p
-              className="absolute left-1 top-full mt-1 animate-in text-xs text-muted-foreground fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none"
-              data-testid="backup-passphrase-issue"
-            >
-              {issue}
-            </p>
-          ) : null}
+              {isRevealed ? (
+                <EyeOff className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Eye className="h-4 w-4" aria-hidden="true" />
+              )}
+            </Button>
+            <PassphraseGeneratorPopover
+              disabled={state.downloadPending}
+              onRequestGenerate={
+                state.savedPassword
+                  ? () => setConfirmNewPassword(true)
+                  : undefined
+              }
+              onGenerated={(value) => {
+                dispatch({ type: "set-passphrase", value });
+                // A generated password must be visible so the user can save it.
+                setIsRevealed(true);
+              }}
+              previewMode={previewMode}
+              securityTheme={variant === "spotlight" && !cardLayout}
+            />
+            {issue ? (
+              <p
+                className="absolute left-1 top-full mt-1 animate-in text-xs text-muted-foreground fade-in slide-in-from-top-1 duration-200 motion-reduce:animate-none"
+                data-testid="backup-passphrase-issue"
+              >
+                {issue}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
 
       {state.savedPassword && state.ncryptsec && savedPath ? (
         <div
-          className="space-y-1 text-center"
+          className={cn("space-y-1", cardLayout ? "text-left" : "text-center")}
           data-testid="encrypted-backup-created"
         >
           <p
@@ -814,7 +840,10 @@ export function EncryptedBackupCreator({
 
       {state.createError ? (
         <p
-          className="text-center text-sm text-destructive"
+          className={cn(
+            "text-sm text-destructive",
+            cardLayout ? "text-left" : "text-center",
+          )}
           data-testid="encrypted-backup-create-error"
         >
           {state.createError}
@@ -823,7 +852,10 @@ export function EncryptedBackupCreator({
 
       {saveError ? (
         <p
-          className="text-center text-sm text-destructive"
+          className={cn(
+            "text-sm text-destructive",
+            cardLayout ? "text-left" : "text-center",
+          )}
           data-testid="encrypted-backup-save-error"
         >
           {saveError}
@@ -879,12 +911,18 @@ export function EncryptedBackupCreator({
       >
         <AlertDialogContent
           className={cn(
-            variant === "spotlight" && "buzz-onboarding-security-theme",
+            variant === "spotlight" &&
+              !cardLayout &&
+              "buzz-onboarding-security-theme",
           )}
           data-testid="backup-change-password-dialog"
-          surface={variant === "spotlight" ? "textured" : "default"}
+          surface={
+            variant === "spotlight" && !cardLayout ? "textured" : "default"
+          }
           textureSize="compact"
-          textureTone={variant === "spotlight" ? "dark" : "light"}
+          textureTone={
+            variant === "spotlight" && !cardLayout ? "dark" : "light"
+          }
         >
           <AlertDialogHeader>
             <AlertDialogTitle>Create a new backup password?</AlertDialogTitle>
@@ -907,7 +945,9 @@ export function EncryptedBackupCreator({
             <AlertDialogAction
               className={
                 variant === "spotlight"
-                  ? ONBOARDING_SECURITY_PRIMARY_CTA_CLASS
+                  ? cardLayout
+                    ? ONBOARDING_PRIMARY_CTA_CLASS
+                    : ONBOARDING_SECURITY_PRIMARY_CTA_CLASS
                   : undefined
               }
               data-testid="backup-start-new-password"

@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -58,13 +59,14 @@ export function IdentityKeyHelpDialog({
   const trigger = (
     <DialogTrigger asChild>
       <Button
-        className={`${
+        className={cn(
           previewMode
             ? "text-foreground underline decoration-foreground/45 underline-offset-4 hover:decoration-foreground"
-            : "text-foreground/70 hover:text-foreground"
-        } transition-opacity duration-300 motion-reduce:transition-none ${
-          isVisible ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
+            : "text-foreground/70 hover:text-foreground",
+          "transition-opacity duration-300 motion-reduce:transition-none",
+          inline && "h-auto justify-start p-0 text-left",
+          isVisible ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
         data-testid="identity-key-help-trigger"
         tabIndex={isVisible ? 0 : -1}
         type="button"

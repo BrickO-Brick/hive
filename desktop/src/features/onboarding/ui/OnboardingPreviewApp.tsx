@@ -6,7 +6,6 @@ import type { JoinPolicy } from "@/shared/api/invites";
 import { resetAvatarPresentations } from "@/features/profile/avatarPresentationStore";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 import {
   ONBOARDING_PREVIEW_JOURNEYS,
@@ -27,6 +26,7 @@ import {
   ONBOARDING_SECONDARY_CTA_CLASS,
 } from "./OnboardingChrome";
 import { OnboardingFooter, OnboardingFooterProvider } from "./OnboardingFooter";
+import { OnboardingPreviewInput } from "./OnboardingPreviewInput";
 import {
   BackupPasswordPreview,
   CommunityChoicePreview,
@@ -41,10 +41,18 @@ import {
   StarterTeamPreview,
   WelcomeChannelPreview,
 } from "./OnboardingPreviewJourney";
-import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
+import {
+  OnboardingPreviewLayoutProvider,
+  OnboardingPreviewStep,
+  useOnboardingPreviewCardLayout,
+} from "./OnboardingPreviewShell";
 import { OnboardingPreviewControls } from "./OnboardingPreviewControls";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 import { SetupStepPreview } from "./SetupStepPreview";
+import {
+  ONBOARDING_PREVIEW_CARD_INPUT_CLASS,
+  ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+} from "./onboardingPreviewCardStyles";
 
 const EMAIL_SIGNUP_POLICY: JoinPolicy = {
   ageAttestationRequired: true,
@@ -318,6 +326,7 @@ function PreviewCredentialsFields({
   passwordPlaceholder: string;
   showPasswordStrength?: boolean;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const passwordStrengthDescriptionId = React.useId();
 
   return (
@@ -329,12 +338,17 @@ function PreviewCredentialsFields({
         >
           Email
         </label>
-        <Input
+        <OnboardingPreviewInput
           autoComplete="email"
-          className="h-12 rounded-2xl border-foreground/15 bg-white px-4"
+          className={
+            cardLayout
+              ? ONBOARDING_PREVIEW_CARD_INPUT_CLASS
+              : "h-12 rounded-2xl border-foreground/15 bg-white px-4"
+          }
           id={emailId}
           onChange={(event) => onEmailChange(event.target.value)}
           placeholder="Enter your email address"
+          smooth={cardLayout}
           type="email"
           value={email}
         />
@@ -347,18 +361,21 @@ function PreviewCredentialsFields({
           Password
         </label>
         <div className="relative">
-          <Input
+          <OnboardingPreviewInput
             aria-describedby={
               showPasswordStrength ? passwordStrengthDescriptionId : undefined
             }
             autoComplete={passwordAutoComplete}
             className={cn(
-              "h-12 rounded-2xl border-foreground/15 bg-white px-4",
+              cardLayout
+                ? ONBOARDING_PREVIEW_CARD_INPUT_CLASS
+                : "h-12 rounded-2xl border-foreground/15 bg-white px-4",
               showPasswordStrength ? "pr-28" : "pr-4",
             )}
             id={passwordId}
             onChange={(event) => onPasswordChange(event.target.value)}
             placeholder={passwordPlaceholder}
+            smooth={cardLayout}
             type="password"
             value={password}
           />
@@ -380,12 +397,17 @@ function PreviewCredentialsFields({
             >
               Confirm password
             </label>
-            <Input
+            <OnboardingPreviewInput
               autoComplete="new-password"
-              className="h-12 rounded-2xl border-foreground/15 bg-white px-4"
+              className={
+                cardLayout
+                  ? ONBOARDING_PREVIEW_CARD_INPUT_CLASS
+                  : "h-12 rounded-2xl border-foreground/15 bg-white px-4"
+              }
               id={`${passwordId}-confirmation`}
               onChange={(event) => onConfirmPasswordChange(event.target.value)}
               placeholder="Confirm your password"
+              smooth={cardLayout}
               type="password"
               value={confirmPassword ?? ""}
             />
@@ -409,6 +431,7 @@ function EmailSignup({
   onPasswordChange: (password: string) => void;
   total: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [email, setEmail] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [ageConfirmed, setAgeConfirmed] = React.useState(false);
@@ -419,12 +442,16 @@ function EmailSignup({
 
   return (
     <OnboardingPreviewStep
+      cardHeight="content"
       onBack={onBack}
       testId="onboarding-preview-email"
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+        className={cn(
+          "flex min-h-0 w-full max-w-[500px] flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-email"
       >
         <h1 className="text-title font-normal text-foreground">
@@ -541,6 +568,7 @@ function EmailSignIn({
   onSignInWithKey: () => void;
   total: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [password, setPassword] = React.useState("");
   const canContinue = email.trim().length > 0 && password.length > 0;
 
@@ -551,7 +579,10 @@ function EmailSignIn({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+        className={cn(
+          "flex min-h-0 w-full max-w-[500px] flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-sign-in"
       >
         <h1 className="text-title font-normal text-foreground">Sign in</h1>
@@ -585,16 +616,12 @@ function EmailSignIn({
             passwordId="onboarding-preview-sign-in-password"
             passwordPlaceholder="Enter your password"
           />
-          <div className="flex w-full flex-col items-center gap-3 pt-1">
-            <Button
-              className={ONBOARDING_PRIMARY_CTA_CLASS}
-              data-testid="onboarding-preview-sign-in-submit"
-              disabled={!canContinue}
-              onClick={onContinue}
-              type="button"
-            >
-              Sign in
-            </Button>
+          <div
+            className={cn(
+              "flex w-full flex-col gap-3 pt-1",
+              cardLayout ? "items-start" : "items-center",
+            )}
+          >
             <div
               aria-hidden
               className="flex w-full max-w-64 items-center gap-3 text-xs text-foreground/70"
@@ -604,7 +631,10 @@ function EmailSignIn({
               <span className="h-px flex-1 bg-foreground/20" />
             </div>
             <Button
-              className={ONBOARDING_SECONDARY_CTA_CLASS}
+              className={cn(
+                ONBOARDING_SECONDARY_CTA_CLASS,
+                cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+              )}
               onClick={onSignInWithKey}
               type="button"
               variant="ghost"
@@ -613,6 +643,17 @@ function EmailSignIn({
             </Button>
           </div>
         </form>
+        <OnboardingFooter>
+          <Button
+            className={ONBOARDING_PRIMARY_CTA_CLASS}
+            data-testid="onboarding-preview-sign-in-submit"
+            disabled={!canContinue}
+            onClick={onContinue}
+            type="button"
+          >
+            Sign in
+          </Button>
+        </OnboardingFooter>
       </OnboardingSlideTransition>
     </OnboardingPreviewStep>
   );
@@ -734,6 +775,7 @@ export function OnboardingPreviewApp() {
         onBack={() => setPage("identity-key")}
         onDone={() => setPage("identity-key")}
         session={backupSession}
+        total={journey.totalSteps}
       />
     );
   } else if (page === "sign-in") {
@@ -872,7 +914,13 @@ export function OnboardingPreviewApp() {
         onVariantChange={changeVariant}
         variant={variant}
       />
-      {content}
+      <OnboardingPreviewLayoutProvider
+        card={
+          variant === "v3" && page !== "landing" && page !== "community-home"
+        }
+      >
+        {content}
+      </OnboardingPreviewLayoutProvider>
     </>
   );
 }

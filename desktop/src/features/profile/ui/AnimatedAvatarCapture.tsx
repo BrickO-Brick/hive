@@ -65,6 +65,7 @@ import { Button } from "@/shared/ui/button";
 import { Spinner } from "@/shared/ui/spinner";
 
 export function AnimatedAvatarCapture({
+  dense = false,
   disabled = false,
   testIdPrefix,
   onApply,
@@ -117,7 +118,6 @@ export function AnimatedAvatarCapture({
   const [isPreviewPlaying, setIsPreviewPlaying] = React.useState(false);
   const [isDraggingPerson, setIsDraggingPerson] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
-
   // Drag, arrow keys, and the size slider adjust whichever framing section
   // is open; the color/poster sections leave the person active.
   const editTarget = activeSection === "shape" ? "shape" : "person";
@@ -794,7 +794,9 @@ export function AnimatedAvatarCapture({
           ? compactReview
             ? "gap-4 pb-2 pt-0"
             : "gap-7 pb-9 pt-2"
-          : "gap-4 pb-5",
+          : dense
+            ? "gap-2 pb-0"
+            : "gap-4 pb-5",
         phase === "review" && !showApplyButton && !compactReview && "mb-5",
         isCustomPickerVisible && "min-h-[504px]",
       )}
@@ -809,7 +811,12 @@ export function AnimatedAvatarCapture({
       ) : null}
 
       {showCaptureCard ? (
-        <div className="relative grid place-items-center rounded-xl bg-muted px-4 py-6">
+        <div
+          className={cn(
+            "relative grid place-items-center rounded-xl bg-muted px-4 py-6",
+            dense && "rounded-lg px-2 py-2",
+          )}
+        >
           {usePortal ? null : stageContent}
 
           {inlineCaptureHelpText ? (
@@ -916,6 +923,7 @@ export function AnimatedAvatarCapture({
           activeCameraSource={activeCameraSource}
           compact={compactReview}
           computerDisabled={cameraDevices.length > 0 && !computerCamera}
+          dense={dense}
           disabled={disabled}
           helpText={usePortal ? inlineCaptureHelpText : null}
           iphoneDisabled={

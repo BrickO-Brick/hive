@@ -1,20 +1,32 @@
-import { Check, Copy, Users } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  Plus,
+  RotateCcw,
+  Users,
+} from "lucide-react";
 import * as React from "react";
 
 import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommunityOnboarding";
+import { cn } from "@/shared/lib/cn";
 import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
-import { Input } from "@/shared/ui/input";
 import { InviteRedeemForm } from "./InviteRedeemForm";
 import { CommunityProfileStage } from "./CommunityProfileStage";
 import { DownloadKeyStep } from "./DownloadKeyStep";
 import type { EncryptedBackupSession } from "./EncryptedBackupCreator";
 import { ONBOARDING_PRIMARY_CTA_CLASS } from "./OnboardingChrome";
 import { OnboardingFooter } from "./OnboardingFooter";
-import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
+import { OnboardingPreviewInput } from "./OnboardingPreviewInput";
+import {
+  OnboardingPreviewStep,
+  useOnboardingPreviewCardLayout,
+} from "./OnboardingPreviewShell";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 import { WelcomeChannelAppPreview } from "./WelcomeChannelAppPreview";
+import { ONBOARDING_PREVIEW_CARD_INPUT_CLASS } from "./onboardingPreviewCardStyles";
 
 const FIELD_CLASS =
   "h-12 rounded-2xl border-foreground/15 bg-white px-4 text-sm shadow-none";
@@ -28,16 +40,19 @@ export function BackupPasswordPreview({
   onBack,
   onDone,
   session,
+  total,
 }: {
   onBack: () => void;
   onDone: () => void;
   session: EncryptedBackupSession;
+  total: number;
 }) {
   return (
     <OnboardingPreviewStep
       onBack={onBack}
       security
       testId="onboarding-preview-backup-password"
+      total={total}
     >
       <DownloadKeyStep
         direction="forward"
@@ -58,6 +73,7 @@ export function PasswordReset({
   onBack: () => void;
   total: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [email, setEmail] = React.useState(initialEmail);
   const [submitted, setSubmitted] = React.useState(false);
 
@@ -69,7 +85,10 @@ export function PasswordReset({
         total={total}
       >
         <OnboardingSlideTransition
-          className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+          className={cn(
+            "flex min-h-0 w-full max-w-[500px] flex-col",
+            cardLayout ? "items-stretch" : "items-center",
+          )}
           transitionKey="preview-password-reset-sent"
         >
           <h1 className="text-title font-normal text-foreground">
@@ -90,7 +109,10 @@ export function PasswordReset({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-0 w-full max-w-[500px] flex-col items-center"
+        className={cn(
+          "flex min-h-0 w-full max-w-[500px] flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-password-reset"
       >
         <h1 className="text-title font-normal text-foreground">
@@ -113,12 +135,17 @@ export function PasswordReset({
           >
             Email
           </label>
-          <Input
+          <OnboardingPreviewInput
             autoComplete="email"
-            className="h-12 rounded-2xl border-foreground/15 bg-white px-4"
+            className={
+              cardLayout
+                ? ONBOARDING_PREVIEW_CARD_INPUT_CLASS
+                : "h-12 rounded-2xl border-foreground/15 bg-white px-4"
+            }
             id="onboarding-preview-password-reset-email"
             onChange={(event) => setEmail(event.target.value)}
             placeholder="Enter your email address"
+            smooth={cardLayout}
             type="email"
             value={email}
           />
@@ -259,6 +286,7 @@ export function CommunityChoicePreview({
   onChoose: (route: CommunityPreviewRoute) => void;
   total?: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const routes: ReadonlyArray<readonly [CommunityPreviewRoute, string]> = [
     ["join", "Join a community"],
     ["create", "Create a community"],
@@ -266,6 +294,11 @@ export function CommunityChoicePreview({
       ? ([["existing", "I already have a community"]] as const)
       : []),
   ];
+  const routeIcons = {
+    create: Plus,
+    existing: RotateCcw,
+    join: Users,
+  } as const;
 
   return (
     <OnboardingPreviewStep
@@ -275,7 +308,10 @@ export function CommunityChoicePreview({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-full w-full flex-col items-center"
+        className={cn(
+          "flex min-h-full w-full flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-community-choice"
       >
         <div className="w-full max-w-[760px]">
@@ -290,23 +326,54 @@ export function CommunityChoicePreview({
               : "Communities are shared spaces where people and agents work together."}
           </p>
         </div>
-        <div className="flex w-full flex-1 translate-y-16 flex-col items-center justify-center gap-20 py-8">
-          {routes.map(([route, label]) => (
-            <Card
-              asChild
-              className={COMMUNITY_OPTION_CLASS}
-              key={route}
-              variant="textured"
-            >
-              <button
+        <div
+          className={cn(
+            "flex w-full flex-1 flex-col",
+            cardLayout
+              ? "items-stretch justify-start gap-2 py-6"
+              : "translate-y-16 items-center justify-center gap-20 py-8",
+          )}
+        >
+          {routes.map(([route, label]) => {
+            const RouteIcon = routeIcons[route];
+
+            return cardLayout ? (
+              <Button
+                className="group h-12 w-full justify-start gap-0 rounded-xl px-2 py-2 text-left text-sm font-medium text-foreground shadow-none hover:bg-foreground/[0.04] hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/20"
                 data-testid={`onboarding-preview-community-${route}`}
+                key={route}
                 onClick={() => onChoose(route)}
                 type="button"
+                variant="ghost"
               >
-                {label}
-              </button>
-            </Card>
-          ))}
+                <span className="flex size-8 shrink-0 items-center justify-center">
+                  <RouteIcon aria-hidden className="size-4" />
+                </span>
+                <span>{label}</span>
+                <span className="ml-auto flex size-8 shrink-0 items-center justify-center">
+                  <ChevronRight
+                    aria-hidden
+                    className="size-4 text-muted-foreground transition-colors duration-150 ease-out group-hover:text-foreground motion-reduce:transition-none"
+                  />
+                </span>
+              </Button>
+            ) : (
+              <Card
+                asChild
+                className={COMMUNITY_OPTION_CLASS}
+                key={route}
+                variant="textured"
+              >
+                <button
+                  data-testid={`onboarding-preview-community-${route}`}
+                  onClick={() => onChoose(route)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              </Card>
+            );
+          })}
         </div>
       </OnboardingSlideTransition>
     </OnboardingPreviewStep>
@@ -328,6 +395,7 @@ export function CommunityEntryPreview({
   route: Exclude<CommunityPreviewRoute, "create">;
   total?: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [copiedPublicId, setCopiedPublicId] = React.useState(false);
   const [membershipRequired, setMembershipRequired] = React.useState(false);
   const heading =
@@ -342,7 +410,12 @@ export function CommunityEntryPreview({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-[calc(100dvh-15.625rem)] w-full flex-col items-center text-center"
+        className={cn(
+          "flex w-full flex-col",
+          cardLayout
+            ? "min-h-0 items-stretch text-left"
+            : "min-h-[calc(100dvh-15.625rem)] items-center text-center",
+        )}
         transitionKey={`preview-community-${route}`}
       >
         <div className="w-full max-w-[620px]">
@@ -355,7 +428,14 @@ export function CommunityEntryPreview({
                 : "Enter the invite link or community URL you received."}
           </p>
         </div>
-        <div className="flex w-full flex-1 flex-col items-center justify-center gap-16">
+        <div
+          className={cn(
+            "flex w-full flex-1 flex-col",
+            cardLayout
+              ? "items-stretch justify-start gap-8 pt-8"
+              : "items-center justify-center gap-16",
+          )}
+        >
           <InviteRedeemForm
             error={null}
             isRedeeming={false}
@@ -420,14 +500,20 @@ export function CommunityCreatePreview({
   onContinue: (communityName: string) => void;
   total?: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
+
   return (
     <OnboardingPreviewStep
       current={current}
+      onBack={cardLayout ? onBack : undefined}
       testId="onboarding-preview-community-entry"
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-full w-full flex-col items-center"
+        className={cn(
+          "flex min-h-full w-full flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-community-create"
       >
         <HostedCommunityOnboarding
@@ -495,6 +581,7 @@ export function CommunityProfilePreview({
   onNext: () => void;
   total?: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [isUploadingAvatar, setIsUploadingAvatar] = React.useState(false);
 
   return (
@@ -505,7 +592,10 @@ export function CommunityProfilePreview({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-full w-full max-w-[500px] flex-col items-center"
+        className={cn(
+          "flex min-h-full w-full max-w-[500px] flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         transitionKey="preview-community-profile"
       >
         <CommunityProfileStage

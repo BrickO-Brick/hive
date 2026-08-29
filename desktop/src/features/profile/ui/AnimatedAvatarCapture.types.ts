@@ -4,6 +4,7 @@ export type AnimatedAvatarRecordingProcessor = (input: {
 }) => Promise<string>;
 
 export type AnimatedAvatarCaptureProps = {
+  dense?: boolean;
   disabled?: boolean;
   testIdPrefix: string;
   onApply: (avatarUrl: string) => void;

@@ -28,6 +28,8 @@ import {
 } from "./OnboardingChrome";
 import { IdentityKeyHelpDialog } from "./IdentityKeyHelpDialog";
 import { OnboardingFooter } from "./OnboardingFooter";
+import { useOnboardingPreviewCardLayout } from "./OnboardingPreviewShell";
+import { ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS } from "./onboardingPreviewCardStyles";
 import {
   type OnboardingTransitionDirection,
   OnboardingSlideTransition,
@@ -91,6 +93,7 @@ export function BackupStep({
   returningFromSecurity,
   showPreviewBackupShortcut = true,
 }: BackupStepProps) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const reduceMotion = useReducedMotion() ?? false;
   const [created, setCreated] = React.useState(introPlayed || reduceMotion);
   const [copyState, setCopyState] = React.useState<
@@ -204,12 +207,20 @@ export function BackupStep({
   if (optionsExpanded) {
     return (
       <OnboardingSlideTransition
-        className="flex min-h-0 w-full flex-col items-center"
+        className={cn(
+          "flex min-h-0 w-full flex-col",
+          cardLayout ? "items-stretch" : "items-center",
+        )}
         data-testid="onboarding-page-backup-options"
         direction={direction}
         transitionKey={`backup-options-${direction}`}
       >
-        <div className="flex w-full max-w-140 shrink-0 flex-col text-center">
+        <div
+          className={cn(
+            "flex w-full max-w-140 shrink-0 flex-col",
+            cardLayout ? "text-left" : "text-center",
+          )}
+        >
           <h1 className="text-title font-normal text-foreground">
             {previewMode ? "Create a private identity key" : "Backup options"}
           </h1>
@@ -384,12 +395,20 @@ export function BackupStep({
 
   return (
     <OnboardingSlideTransition
-      className="flex min-h-0 w-full flex-col items-center"
+      className={cn(
+        "flex min-h-0 w-full flex-col",
+        cardLayout ? "items-stretch" : "items-center",
+      )}
       data-testid="onboarding-page-backup"
       direction={direction}
       transitionKey={`backup-${direction}-${returningFromSecurity ? "security" : "line"}`}
     >
-      <div className="flex w-full max-w-[500px] shrink-0 flex-col text-center">
+      <div
+        className={cn(
+          "flex w-full max-w-[500px] shrink-0 flex-col",
+          cardLayout ? "text-left" : "text-center",
+        )}
+      >
         {/* Plain string concat: cn()'s tailwind-merge misreads the custom
             text-title size token as conflicting with text-foreground. */}
         <h1
@@ -445,7 +464,8 @@ export function BackupStep({
       ) : (
         <div
           className={cn(
-            "flex w-full max-w-[1040px] flex-1 flex-col justify-center py-10",
+            "flex w-full max-w-[1040px] flex-1 flex-col justify-center",
+            cardLayout ? "py-6" : "py-10",
             REVEAL_ANIMATION_CLASS,
           )}
         >
@@ -508,11 +528,18 @@ export function BackupStep({
 
             {previewMode ? (
               <div
-                className="mt-8 flex flex-wrap items-center justify-center gap-3"
+                className={cn(
+                  "mt-8 flex flex-wrap items-center gap-3",
+                  cardLayout ? "justify-start" : "justify-center",
+                )}
                 data-testid="backup-options"
               >
                 <Button
-                  className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2 px-5")}
+                  className={cn(
+                    ONBOARDING_SECONDARY_CTA_CLASS,
+                    cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+                    "gap-2 px-5",
+                  )}
                   data-testid="backup-copy-key"
                   disabled={copyState === "copying"}
                   onClick={() => void copyKeyToClipboard()}
@@ -533,7 +560,11 @@ export function BackupStep({
                       : "Copy to clipboard"}
                 </Button>
                 <Button
-                  className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2 px-5")}
+                  className={cn(
+                    ONBOARDING_SECONDARY_CTA_CLASS,
+                    cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+                    "gap-2 px-5",
+                  )}
                   data-testid="backup-option-password"
                   onClick={onOpenPasswordBackup}
                   type="button"

@@ -6,10 +6,14 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { cn } from "@/shared/lib/cn";
 import { StyledQrCode } from "@/shared/ui/styled-qr-code";
 import { NostrKeyImportForm } from "./NostrKeyImportForm";
 import { ONBOARDING_INK_ICON_CLASS } from "./OnboardingChrome";
-import { OnboardingPreviewStep } from "./OnboardingPreviewShell";
+import {
+  OnboardingPreviewStep,
+  useOnboardingPreviewCardLayout,
+} from "./OnboardingPreviewShell";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 
 export function KeySignInPreview({
@@ -21,6 +25,7 @@ export function KeySignInPreview({
   onContinue: () => void;
   total: number;
 }) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const [keyImportDialog, setKeyImportDialog] = React.useState<
     "backup" | "phone" | null
   >(null);
@@ -32,7 +37,12 @@ export function KeySignInPreview({
       total={total}
     >
       <OnboardingSlideTransition
-        className="flex min-h-[calc(100dvh-13.25rem)] w-full max-w-[837px] flex-col items-center text-center"
+        className={cn(
+          "flex w-full flex-col",
+          cardLayout
+            ? "min-h-0 max-w-[560px] items-stretch justify-start text-left"
+            : "min-h-[calc(100dvh-13.25rem)] max-w-[837px] items-center text-center",
+        )}
         transitionKey="preview-sign-in-key"
       >
         <h1 className="text-title font-normal text-foreground">
@@ -61,7 +71,12 @@ export function KeySignInPreview({
             .
           </p>
         </div>
-        <div className="buzz-onboarding-key-import-position w-full">
+        <div
+          className={cn(
+            "w-full",
+            !cardLayout && "buzz-onboarding-key-import-position",
+          )}
+        >
           <NostrKeyImportForm
             onBack={onBack}
             onImport={async () => onContinue()}

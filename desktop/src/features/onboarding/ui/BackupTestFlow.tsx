@@ -11,13 +11,19 @@ import {
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
-import { Input } from "@/shared/ui/input";
 import { PubKey } from "@/shared/ui/PubKey";
 import { Spinner } from "@/shared/ui/spinner";
 import {
+  ONBOARDING_PRIMARY_CTA_CLASS,
   ONBOARDING_SECURITY_PRIMARY_CTA_CLASS,
   ONBOARDING_SECONDARY_CTA_CLASS,
 } from "./OnboardingChrome";
+import { OnboardingPreviewInput } from "./OnboardingPreviewInput";
+import { useOnboardingPreviewCardLayout } from "./OnboardingPreviewShell";
+import {
+  ONBOARDING_PREVIEW_CARD_INPUT_CLASS,
+  ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+} from "./onboardingPreviewCardStyles";
 
 type BackupTestStage = "drop" | "password" | "success";
 
@@ -216,7 +222,21 @@ export function BackupTestFlow({
   onVerified,
   previewMode = false,
 }: BackupTestFlowProps) {
+  const cardLayout = useOnboardingPreviewCardLayout();
   const reduceMotion = useReducedMotion() ?? false;
+  const spotlightPrimaryActionClass = cardLayout
+    ? ONBOARDING_PRIMARY_CTA_CLASS
+    : ONBOARDING_SECURITY_PRIMARY_CTA_CLASS;
+  const stageEntrance = reduceMotion
+    ? false
+    : cardLayout
+      ? { opacity: 0 }
+      : { opacity: 0, y: 10 };
+  const successCopyEntrance = reduceMotion
+    ? false
+    : cardLayout
+      ? { opacity: 0 }
+      : { opacity: 0, y: 8 };
   const { stage, fileName, ncryptsec, result } = progress;
   // True while a file drag is anywhere over the window — the drop overlay
   // takes over the host surface only for the duration of the drag.
@@ -409,8 +429,8 @@ export function BackupTestFlow({
           <Check aria-hidden="true" className="h-8 w-8" strokeWidth={3} />
         </motion.div>
         <motion.div
-          animate={{ opacity: 1, y: 0 }}
-          initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+          animate={cardLayout ? { opacity: 1 } : { opacity: 1, y: 0 }}
+          initial={successCopyEntrance}
           transition={
             reduceMotion ? { duration: 0 } : { delay: 0.15, duration: 0.35 }
           }
@@ -519,9 +539,9 @@ export function BackupTestFlow({
     >
       {stage === "drop" ? (
         <motion.div
-          animate={{ opacity: 1, y: 0 }}
+          animate={cardLayout ? { opacity: 1 } : { opacity: 1, y: 0 }}
           className="relative space-y-4"
-          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+          initial={stageEntrance}
           key="drop"
           transition={{ duration: reduceMotion ? 0 : 0.3, ease: "easeOut" }}
         >
@@ -543,7 +563,7 @@ export function BackupTestFlow({
             className={cn(
               "mx-auto",
               isSpotlight
-                ? ONBOARDING_SECURITY_PRIMARY_CTA_CLASS
+                ? spotlightPrimaryActionClass
                 : "h-9 px-6 text-primary-foreground",
             )}
             data-testid="backup-test-dropzone"
@@ -609,7 +629,10 @@ export function BackupTestFlow({
                 className={cn(
                   "gap-1.5",
                   isSpotlight
-                    ? ONBOARDING_SECONDARY_CTA_CLASS
+                    ? cn(
+                        ONBOARDING_SECONDARY_CTA_CLASS,
+                        cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
+                      )
                     : "h-9 rounded-full bg-foreground/10 px-6 text-sm hover:bg-foreground/15",
                 )}
                 data-testid="encrypted-backup-save-copy"
@@ -629,16 +652,19 @@ export function BackupTestFlow({
         </motion.div>
       ) : (
         <motion.div
-          animate={{ opacity: 1, y: 0 }}
+          animate={cardLayout ? { opacity: 1 } : { opacity: 1, y: 0 }}
           className="space-y-4"
-          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+          initial={stageEntrance}
           key="password"
           transition={{ duration: reduceMotion ? 0 : 0.3, ease: "easeOut" }}
         >
           {(() => {
             const fileRow = (
               <div
-                className="flex max-w-full items-center gap-3 rounded-2xl border border-foreground/15 bg-foreground/10 px-4 py-3 text-foreground shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-300 motion-reduce:animate-none"
+                className={cn(
+                  "flex max-w-full items-center gap-3 rounded-2xl border border-foreground/15 bg-foreground/10 px-4 py-3 text-foreground shadow-sm animate-in fade-in duration-300 motion-reduce:animate-none",
+                  !cardLayout && "slide-in-from-bottom-1",
+                )}
                 data-testid="backup-test-file-accepted"
               >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-foreground/10">
@@ -654,13 +680,18 @@ export function BackupTestFlow({
             );
             const passwordField = (
               <div className="relative w-full">
-                <Input
+                <OnboardingPreviewInput
                   aria-label="Backup password"
                   autoComplete="off"
                   className={cn(
                     "font-mono",
                     isSpotlight
-                      ? "h-14 rounded-2xl border-black/20 bg-white px-14 text-center text-lg text-black/80 shadow-none placeholder:text-black/55 focus-visible:ring-black/35"
+                      ? cardLayout
+                        ? cn(
+                            ONBOARDING_PREVIEW_CARD_INPUT_CLASS,
+                            "pr-12 font-mono",
+                          )
+                        : "h-14 rounded-2xl border-black/20 bg-white px-14 text-center text-lg text-black/80 shadow-none placeholder:text-black/55 focus-visible:ring-black/35"
                       : "h-10 bg-background pr-10",
                   )}
                   data-testid="backup-test-password"
@@ -672,6 +703,7 @@ export function BackupTestFlow({
                       void handleVerify();
                     }
                   }}
+                  smooth={cardLayout}
                   placeholder="Your backup password"
                   ref={passwordInputRef}
                   type={isRevealed ? "text" : "password"}
@@ -744,7 +776,7 @@ export function BackupTestFlow({
                 className={cn(
                   "font-medium",
                   isSpotlight
-                    ? ONBOARDING_SECURITY_PRIMARY_CTA_CLASS
+                    ? spotlightPrimaryActionClass
                     : "h-9 px-6 text-sm text-primary-foreground",
                 )}
                 data-testid="backup-test-verify"

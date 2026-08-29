@@ -72,7 +72,6 @@ const EMOJI_MART_SHADOW_CSS = `
 
   #root {
     --padding: var(--buzz-emoji-picker-padding, 16px);
-    --buzz-emoji-picker-search-control-height: 48px;
     --sidebar-width: 0px;
     display: flex;
     flex-direction: column;
@@ -139,7 +138,7 @@ const EMOJI_MART_SHADOW_CSS = `
 
   .search input[type="search"] {
     border-radius: 12px;
-    height: var(--buzz-emoji-picker-search-control-height);
+    height: var(--buzz-emoji-picker-search-control-height, 48px);
     padding-bottom: 0;
     padding-top: 0;
   }
@@ -151,9 +150,9 @@ const EMOJI_MART_SHADOW_CSS = `
   .search + .flex {
     border-radius: 12px;
     flex: 0 0 auto;
-    height: var(--buzz-emoji-picker-search-control-height) !important;
+    height: var(--buzz-emoji-picker-search-control-height, 48px) !important;
     margin-left: 8px;
-    width: var(--buzz-emoji-picker-search-control-height) !important;
+    width: var(--buzz-emoji-picker-search-control-height, 48px) !important;
   }
 
   .skin-tone-button {
@@ -161,8 +160,30 @@ const EMOJI_MART_SHADOW_CSS = `
     border: 0 !important;
     border-radius: 8px;
     box-shadow: none !important;
-    height: calc(var(--buzz-emoji-picker-search-control-height) - 8px) !important;
-    width: calc(var(--buzz-emoji-picker-search-control-height) - 8px) !important;
+    height: calc(var(--buzz-emoji-picker-search-control-height, 48px) - 8px) !important;
+    width: calc(var(--buzz-emoji-picker-search-control-height, 48px) - 8px) !important;
+  }
+
+  :host([data-buzz-onboarding-inline]) #root > .padding-lr {
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    background-color: rgba(var(--em-rgb-background), 0.82);
+    padding-bottom: 8px;
+    padding-top: 4px;
+    position: relative;
+    z-index: 4;
+  }
+
+  :host([data-buzz-onboarding-inline])
+    #root
+    > .padding-lr
+    > div
+    > .spacer {
+    display: none;
+  }
+
+  :host([data-buzz-onboarding-inline]) #nav {
+    display: none;
   }
 
   .skin-tone-button[aria-selected] {
@@ -588,6 +609,7 @@ function installEmojiMartWheelScroll(shadowRoot: ShadowRoot) {
 export function useEmojiMartStyles(
   containerRef: React.RefObject<HTMLDivElement | null>,
   enabled: boolean,
+  onboardingInline = false,
 ) {
   React.useEffect(() => {
     if (!enabled) {
@@ -596,6 +618,7 @@ export function useEmojiMartStyles(
 
     let animationFrame = 0;
     let removeWheelScroll: (() => void) | null = null;
+    let styledHost: Element | null = null;
 
     const installEmojiMartStyles = () => {
       const host = containerRef.current?.querySelector("em-emoji-picker");
@@ -606,12 +629,18 @@ export function useEmojiMartStyles(
         return;
       }
 
-      if (!shadowRoot.querySelector("#buzz-emoji-mart-style")) {
-        const style = document.createElement("style");
+      styledHost = host;
+      host.toggleAttribute("data-buzz-onboarding-inline", onboardingInline);
+
+      let style = shadowRoot.querySelector<HTMLStyleElement>(
+        "#buzz-emoji-mart-style",
+      );
+      if (!style) {
+        style = document.createElement("style");
         style.id = "buzz-emoji-mart-style";
-        style.textContent = EMOJI_MART_SHADOW_CSS;
         shadowRoot.appendChild(style);
       }
+      style.textContent = EMOJI_MART_SHADOW_CSS;
 
       removeWheelScroll ??= installEmojiMartWheelScroll(shadowRoot);
     };
@@ -621,8 +650,9 @@ export function useEmojiMartStyles(
     return () => {
       window.cancelAnimationFrame(animationFrame);
       removeWheelScroll?.();
+      styledHost?.removeAttribute("data-buzz-onboarding-inline");
     };
-  }, [containerRef, enabled]);
+  }, [containerRef, enabled, onboardingInline]);
 }
 
 export function useEmojiMartThemeVars() {
