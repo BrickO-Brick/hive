@@ -885,8 +885,32 @@ test("runtime switch clears touched effort — no persist_agent_effort_level dis
   // Repro for Carl r10: effort selected for the running runtime → runtime
   // switched → Save → stale effort value committed to the new runtime's store,
   // which rejects vocab it never advertised.
+  //
+  // The fixture uses a non-null pinned originalEffortLevel ("low") so the
+  // test is sensitive to the load-bearing guard: `effortTouched.current = false`
+  // in handleRuntimeDropdownChange. Without it, resolveEffortSubmission sees
+  // effortLevel=null ≠ originalEffortLevel="low" and emits an unintended clear
+  // write. The secondary guard (setEffortLevel(null)) alone does not suppress.
   installEffortIpc();
   const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
+  // Override the config surface with a non-null pinned effort so the original
+  // value is "low" — the critical case for the effortTouched guard.
+  set("get_agent_config_surface", () =>
+    Promise.resolve({
+      ...effortConfigSurface(),
+      normalized: {
+        ...effortConfigSurface().normalized,
+        thinkingEffort: {
+          value: "low",
+          origin: "agentRecord",
+          writeVia: "standalone",
+          overriddenValue: null,
+          overriddenOrigin: null,
+          isRequired: false,
+        },
+      },
+    }),
+  );
   set("update_managed_agent", (args) => {
     ipcCalls.push({ cmd: "update_managed_agent", args });
     return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
@@ -918,6 +942,14 @@ test("runtime switch clears touched effort — no persist_agent_effort_level dis
   await act(async () => {
     fireEvent.click(claudeItem);
   });
+
+  // The picker must disappear once runtimeTouched is set — its config surface
+  // is only valid for the running session, not the prospective runtime.
+  assert.equal(
+    dom.window.document.getElementById("edit-agent-effort"),
+    null,
+    "effort picker must be hidden after a runtime switch — its options are unknown for the prospective runtime",
+  );
 
   // Save — the runtime changed, so effortTouched must have been cleared.
   await act(async () => {
