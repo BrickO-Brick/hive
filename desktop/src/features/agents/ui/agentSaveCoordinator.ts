@@ -222,6 +222,11 @@ export async function runAgentSaveCoordinator(
   let publicationStatus:
     | PersonaSharePublicationResult["publicationStatus"]
     | null = null;
+  // True when the persona fields persisted but the catalog publication step
+  // threw before it could return a status (publish path only). The profile is
+  // on disk, but the relay was never reached or enqueued, so settlement must
+  // not close as full success — it must report "saved but not published".
+  let publishFailed = false;
 
   // Step 1: Definition write — settle immediately, stop if not persisted.
   if (personaInput) {
@@ -269,6 +274,13 @@ export async function runAgentSaveCoordinator(
     if (!persisted) {
       firstError =
         caughtError ?? "Agent profile did not persist — reopen to retry.";
+    } else if (publishCatalogUpdates && caughtError !== null) {
+      // The persona fields made it to disk (persisted = true) but the publish
+      // command threw before it could return a status — the catalog was never
+      // reached. Mark this so final settlement does not close as full success:
+      // "save and publish" promised a relay outcome that was not delivered.
+      publishFailed = true;
+      firstError = caughtError;
     }
   }
 
@@ -403,6 +415,22 @@ export async function runAgentSaveCoordinator(
   }
 
   const observedRemainder = failedParts.length > 0;
+
+  if (!observedRemainder && publishFailed) {
+    // The persona persisted but the publish command threw before returning a
+    // status — the relay was never reached. "Save and publish" did not deliver
+    // its promise: report "saved but not published" and keep the dialog open so
+    // the user can retry (re-submitting will re-attempt the publish path).
+    const personaName =
+      observedPersona?.displayName ??
+      personaInput?.displayName ??
+      def?.displayName ??
+      "Agent";
+    toast.warning(
+      `${personaName} saved, but publishing to the catalog failed: ${firstError ?? "unknown error"} — reopen to retry publishing.`,
+    );
+    return false;
+  }
 
   if (!observedRemainder) {
     // Full success — every submitted write is reflected in observed state.

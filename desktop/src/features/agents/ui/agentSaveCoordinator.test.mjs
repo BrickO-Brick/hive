@@ -1568,3 +1568,128 @@ test("test_published_definition_rename_notice_uses_observed_persona_name", async
     cap.restore();
   }
 });
+
+// ── Test family 10: P1-1 regression — publish failure after persona persists (Carl round-5) ─
+//
+// `update_persona_and_publish` saves the persona first then calls the retain
+// callback (prepare_persona_publication). If the retain call throws, the command
+// propagates the error — but the persona fields are already on disk. The
+// coordinator catches the throw, sets caughtError, then runs a settlement refetch
+// that sees the persona fields match the submission → `persisted = true`. Before
+// this fix, `publishFailed` was never set and the coordinator entered the full-
+// success branch, called `onDone`, and showed the publish success toast despite
+// the relay never having been reached.
+//
+// After the fix: when `publishCatalogUpdates` is true AND the command threw AND
+// the persona persisted, `publishFailed` is set. The `!observedRemainder &&
+// publishFailed` guard fires BEFORE the full-success branch — `onDone` is NOT
+// called, a warning toast names the failure, and the coordinator returns false so
+// the dialog stays open for a retry.
+
+test("test_publish_throws_post_persist_does_not_settle_as_full_success", async () => {
+  // The critical scenario: updatePersonaAndPublish throws (the retain/enqueue
+  // step failed) but the persona fields ARE observed as persisted in the
+  // settlement refetch. Before the fix this reached `onDone` and returned true;
+  // after the fix it must return false and show a warning, NOT a success toast.
+  const cap = captureToasts();
+  try {
+    const persisted = makeDefinition({ displayName: "Alice" });
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => {
+        // Simulates prepare_persona_publication throwing after save_personas ran.
+        throw new Error("failed to open retention db");
+      },
+      // Settlement: persona IS on disk (save_personas ran before the throw).
+      refetchStores: async () => ({ persona: persisted, agent: null }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      false,
+      "a publish-path throw must not settle as full success even when the persona persisted",
+    );
+    assert.equal(
+      opts._calls.onDone,
+      0,
+      "onDone must NOT be called when publish failed — dialog must stay open for retry",
+    );
+    const successes = cap.captured.filter((c) => c.kind === "success");
+    assert.equal(
+      successes.length,
+      0,
+      "a publish failure must NOT show a success toast",
+    );
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1, "exactly one warning toast");
+    assert.match(
+      warnings[0].message,
+      /saved.*publishing.*failed|publishing.*failed|not published/i,
+      "warning must indicate the persona saved but publication failed",
+    );
+    assert.match(
+      warnings[0].message,
+      /retention db|failed to open|failed/i,
+      "warning must include the underlying error text",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_publish_throws_post_persist_returns_false_not_partial_failure_toast", async () => {
+  // Distinguishes publishFailed from ordinary partial failure: the persona IS
+  // in persistedParts (observed match), failedParts is empty (no other writes
+  // failed), so `observedRemainder` is false. Only the publishFailed guard fires.
+  // The warning must NOT say "profile saved. … failed: …" (the partial-failure
+  // wording) — it must say the persona saved but publishing failed.
+  const cap = captureToasts();
+  try {
+    const persisted = makeDefinition({ displayName: "Alice-renamed" });
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice-renamed" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => {
+        throw new Error("relay unreachable");
+      },
+      refetchStores: async () => ({ persona: persisted, agent: null }),
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(result, false, "publish failure returns false");
+    assert.equal(opts._calls.onDone, 0, "onDone must not be called");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1, "exactly one warning");
+    // Must mention "saved" AND "publishing failed" or similar.
+    assert.match(
+      warnings[0].message,
+      /Alice-renamed.*saved|saved.*Alice-renamed/i,
+      "warning must name the saved persona",
+    );
+    assert.match(
+      warnings[0].message,
+      /publishing.*failed|catalog.*failed|not published/i,
+      "warning must indicate publishing was the failure, not the save itself",
+    );
+    // Must NOT use the partial-failure wording "profile saved. profile failed"
+    assert.doesNotMatch(
+      warnings[0].message,
+      /profile failed/i,
+      "must not use the partial D/I-failure wording for a publish-only failure",
+    );
+  } finally {
+    cap.restore();
+  }
+});

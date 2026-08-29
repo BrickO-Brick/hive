@@ -569,7 +569,11 @@ export function AgentEditMergedDialog({
         (parsedParallelism > 0 || parallelism === "") &&
         (selectedRuntimeId !== "custom" ||
           inheritHarness ||
-          agentCommand.trim().length > 0)
+          agentCommand.trim().length > 0) &&
+        // Instance name must be non-blank when the name field controls submission
+        // (no name pool — pool-named instances get their names from the definition
+        // pool and do not submit the visible name field).
+        ((def?.namePool?.length ?? 0) > 0 || instanceName.trim().length > 0)
       : true);
 
   // ── Runtime/model/provider handlers (extracted to useAgentEditRuntimeHandlers) ──

@@ -222,7 +222,7 @@ export function AgentEditMergedInstanceSection({
           className="text-sm font-medium text-foreground"
           htmlFor="edit-agent-name"
         >
-          Agent name
+          Agent name (this deployed instance)
         </label>
         <div
           className={cn(

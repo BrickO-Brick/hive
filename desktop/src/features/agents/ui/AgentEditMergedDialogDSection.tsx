@@ -229,13 +229,13 @@ export function AgentEditMergedDSection({
 
   return (
     <>
-      {/* Agent name */}
+      {/* Agent name — definition (shared across all linked instances) */}
       <div className="space-y-1.5">
         <label
           className="text-sm font-medium text-foreground"
           htmlFor="edit-agent-display-name"
         >
-          Agent name
+          Agent name (shared definition)
         </label>
         <div
           className={cn(
@@ -455,6 +455,8 @@ export function AgentEditMergedDSection({
       {/* Advanced section toggle (name pool + D-env vars) */}
       <div className="space-y-2">
         <Button
+          aria-controls="d-advanced-fields"
+          aria-expanded={showAdvanced}
           className="flex items-center gap-1 px-0 text-sm text-muted-foreground hover:text-foreground"
           data-testid="persona-advanced-toggle"
           disabled={isSaving || !fieldEditable("namePool")}
@@ -474,6 +476,7 @@ export function AgentEditMergedDSection({
               animate={{ height: "auto", opacity: 1, scale: 1 }}
               className="origin-top overflow-hidden space-y-4"
               exit={{ height: 0, opacity: 0, scale: 0.98 }}
+              id="d-advanced-fields"
               initial={{ height: 0, opacity: 0, scale: 0.98 }}
               key="d-advanced-fields"
               transition={advancedFieldsTransition}

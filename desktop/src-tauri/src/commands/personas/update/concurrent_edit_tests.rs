@@ -300,3 +300,85 @@ async fn command_path_and_lock_scope_regressions() {
         None => std::env::remove_var("XDG_DATA_HOME"),
     }
 }
+
+/// P1-1 regression: the retain callback (the "publish" step inside
+/// `update_persona_with`) runs AFTER `save_personas`, so a retain failure
+/// occurs when the persona is already durable on disk.
+///
+/// The command-path contract: `update_persona_with` must return `Err(_)` when
+/// the retain callback returns `Err(_)`, even though the persona write already
+/// persisted. The error must reach the coordinator so it can set `publishFailed`
+/// and refuse to close the dialog as full success. If the retain error were
+/// swallowed — e.g. the callback's `?` were removed and it returned `Ok(())` —
+/// this test would become GREEN on a broken code path and catch it.
+#[tokio::test]
+async fn retain_failure_after_persist_is_returned_not_swallowed() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+
+    let old_home = std::env::var_os("HOME");
+    let old_xdg = std::env::var_os("XDG_DATA_HOME");
+    {
+        let _path_guard = crate::managed_agents::lock_path_mutex();
+        std::env::set_var("HOME", &home);
+        std::env::set_var("XDG_DATA_HOME", &home);
+    }
+
+    let app = mock_app();
+
+    // Seed one persona at R1 in the persisted store.
+    save_personas(app.handle(), &[persona("p1", "Alice", R1)]).expect("seed write must succeed");
+
+    // Submit via update_persona_with with a retain callback that always fails.
+    // The persona save runs first (line ~210 in update.rs: `save_personas`),
+    // then the retain callback is called. If the retain error propagates, we
+    // get Err; if it is silently discarded, we get Ok — the test catches both.
+    let result = update_persona_with(
+        update_request("p1", "Alice retain-fail", Some(R1)),
+        app.handle().clone(),
+        |_app, _state, _persona| {
+            Err("simulated retain / publish failure after persona persisted".to_string())
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "update_persona_with must return Err when the retain callback fails — \
+         the save coordinator must see this error, not a silent success; \
+         got: {:?}",
+        result.ok()
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("simulated retain"),
+        "the error text must propagate from the retain callback; got: {err}"
+    );
+
+    // Verify the persona DID persist (save_personas ran before retain) so we
+    // confirm the test scenario actually exercises the post-persist failure path.
+    let persisted =
+        crate::managed_agents::load_personas(app.handle()).expect("reload must succeed");
+    let stored = persisted
+        .iter()
+        .find(|p| p.id == "p1")
+        .expect("persona must exist");
+    assert_eq!(
+        stored.display_name, "Alice retain-fail",
+        "persona fields must have persisted before retain was called"
+    );
+
+    // Cleanup
+    std::env::remove_var("HOME");
+    std::env::remove_var("XDG_DATA_HOME");
+    match old_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match old_xdg {
+        Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+        None => std::env::remove_var("XDG_DATA_HOME"),
+    }
+}

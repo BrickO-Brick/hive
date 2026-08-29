@@ -541,7 +541,12 @@ export function emitAgentFormDiff(
     const nameChanged =
       isI("instanceName") &&
       !hasNamePool &&
-      (next.instanceName ?? next.displayName.trim()) !== inst.name;
+      // Use the raw instanceName value — do not fall back to displayName when
+      // instanceName is empty string. An empty instanceName means the user
+      // deliberately cleared the field; the canSubmit gate blocks submission
+      // when it is blank, so if we reach here with "" the instance is
+      // definition-only and has no name change to emit.
+      (next.instanceName ?? "") !== inst.name;
     const systemPromptChanged =
       isI("systemPrompt") &&
       (next.systemPrompt.trim() || null) !== (inst.systemPrompt ?? null);
@@ -615,8 +620,7 @@ export function emitAgentFormDiff(
 
     if (iChanged) {
       agentInput = { pubkey: inst.pubkey };
-      if (nameChanged)
-        agentInput.name = next.instanceName ?? next.displayName.trim();
+      if (nameChanged) agentInput.name = next.instanceName ?? "";
       if (systemPromptChanged)
         agentInput.systemPrompt = next.systemPrompt.trim() || null;
       if (modelChanged) agentInput.model = next.model ?? null;
