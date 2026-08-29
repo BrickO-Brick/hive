@@ -214,7 +214,7 @@ jobs:
         run: just desktop-tauri-test
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-      - name: Desktop Mesh admission tests
+      - name: Desktop Mesh feature tests
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --features mesh-llm --lib
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"

@@ -11,10 +11,6 @@ use std::time::Duration;
 use nostr::Tag;
 use tauri::{AppHandle, Manager};
 
-use super::coordinator_admission::{
-    clear_mode_restart, mode_reconcile_action, request_mode_restart, ModeEvidence,
-    ModeReconcileAction, ModeReconcileState,
-};
 use crate::app_state::AppState;
 
 /// Client-owned parameterized-replaceable discovery note. We use the standard
@@ -36,6 +32,7 @@ const INGRESS_WATCHDOG_MAX: Duration = Duration::from_secs(120);
 /// mesh instead of remaining independent islands.
 const MESH_JOIN_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const MESH_JOIN_RETRY_MAX: Duration = Duration::from_secs(120);
+
 pub struct MeshCoordinator {
     _status_publisher: tokio::task::JoinHandle<()>,
     _roster_watcher: tokio::task::JoinHandle<()>,
@@ -66,15 +63,12 @@ pub async fn start_coordinator(app: AppHandle) {
     });
     let roster_app = app.clone();
     let roster_watcher = tokio::spawn(async move {
-        // Carries pending observations across polls. Roster reductions and
-        // admission-mode changes must both be seen twice before a restart.
+        // Carries a shrink awaiting confirmation across polls (hysteresis):
+        // a reduced roster must be seen twice in a row before we tear down.
         let mut pending_shrink: Option<Vec<String>> = None;
-        let mut mode_reconcile = ModeReconcileState::default();
         loop {
             tokio::time::sleep(ROSTER_POLL_INTERVAL).await;
-            if let Err(error) =
-                reconcile_roster(&roster_app, &mut pending_shrink, &mut mode_reconcile).await
-            {
+            if let Err(error) = reconcile_roster(&roster_app, &mut pending_shrink).await {
                 eprintln!("buzz-mesh: roster reconcile failed: {error}");
             }
         }
@@ -240,28 +234,14 @@ fn roster_shrinks(current: &[String], fresh: &[String]) -> bool {
 ///
 /// Rules:
 /// - query failed (`Err`)              → `Keep` (never de-admit on a relay blip)
-/// - relay enforces no membership (`Ok(None)`), roster beyond self → `Keep` (see below)
-/// - relay enforces no membership (`Ok(None)`), self-only roster → `RestartProcess` (see below)
 /// - resolved roster == current        → `Keep` (no-op)
 /// - grows (only additions)            → `RestartProcess` immediately (fast admission)
 /// - shrinks/empties, first observation → `AwaitConfirm` (hold, re-check next poll)
 /// - shrinks/empties, confirmed         → `RestartProcess` (same reduced roster twice)
-///
-/// `Ok(None)` means the relay does not enforce NIP-43 membership, so there is
-/// no roster to reconcile against. A node enforcing an allowlist that admits
-/// *other* owners keeps it: relaxing a live multi-party allowlist on the
-/// strength of a NIP-11 read would let a relay downgrade (or a spoofed
-/// document) de-restrict a running mesh. A **self-only** allowlist is
-/// different: it admits nobody else, so it protects nothing — and it is
-/// exactly the fallback a transient NIP-11 probe failure at startup produces
-/// on an open relay. Without recovery here that node stays at "1 NODE" until
-/// an app restart (the original bug, reintroduced by a single HTTP blip).
-/// Restarting resolves the roster afresh, which on an open relay yields
-/// `None` → `TrustPolicy::Off`.
 fn roster_reconcile_action(
     current_owners: &[String],
     pending_shrink: Option<&[String]>,
-    query: Result<Option<Vec<String>>, String>,
+    query: Result<Vec<String>, String>,
 ) -> RosterReconcileAction {
     let fresh = match query {
         Err(error) => {
@@ -270,20 +250,7 @@ fn roster_reconcile_action(
             );
             return RosterReconcileAction::Keep;
         }
-        Ok(None) if current_owners.is_empty() => {
-            eprintln!(
-                "buzz-mesh: relay does not enforce membership and this node is isolated by the \
-                 startup fallback; restarting to run the mesh unenforced"
-            );
-            return RosterReconcileAction::RestartProcess;
-        }
-        Ok(None) => {
-            eprintln!(
-                "buzz-mesh: relay does not enforce membership; keeping this node's current allowlist"
-            );
-            return RosterReconcileAction::Keep;
-        }
-        Ok(Some(fresh)) => fresh,
+        Ok(fresh) => fresh,
     };
 
     if fresh == current_owners {
@@ -303,81 +270,10 @@ fn roster_reconcile_action(
     }
 }
 
-fn runtime_needs_mode_probe(current_owners: &[String]) -> bool {
-    current_owners.is_empty()
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum OpenRuntimeObservation {
-    Open,
-    ClosedWithRoster,
-    ClosedWithoutRoster(String),
-    Unknown(String),
-}
-
-fn classify_open_runtime_observation(
-    mode: Result<crate::mesh_llm::MeshRelayMode, String>,
-    closed_roster: Option<Result<Vec<String>, String>>,
-) -> OpenRuntimeObservation {
-    match mode {
-        Ok(mode) if mode.is_open() => OpenRuntimeObservation::Open,
-        Ok(_) => match closed_roster {
-            Some(Ok(_)) => OpenRuntimeObservation::ClosedWithRoster,
-            Some(Err(error)) => OpenRuntimeObservation::ClosedWithoutRoster(error),
-            None => OpenRuntimeObservation::ClosedWithoutRoster(
-                "closed relay roster was not queried".to_string(),
-            ),
-        },
-        Err(error) => OpenRuntimeObservation::Unknown(error),
-    }
-}
-
-async fn observe_open_runtime_relay(state: &AppState, relay_url: &str) -> OpenRuntimeObservation {
-    let mode = crate::commands::mesh_llm::resolved_relay_mesh_mode(relay_url).await;
-    let closed_roster = if matches!(&mode, Ok(mode) if !mode.is_open()) {
-        Some(crate::commands::mesh_llm::resolve_closed_trusted_owner_ids_at(state, relay_url).await)
-    } else {
-        None
-    };
-    classify_open_runtime_observation(mode, closed_roster)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum SelfOnlyModeAction {
-    Keep,
-    AwaitConfirm,
-    RestartProcess,
-}
-
-fn reconcile_self_only_mode(
-    state: &mut ModeReconcileState,
-    query: &Result<Option<Vec<String>>, String>,
-) -> SelfOnlyModeAction {
-    match query {
-        Ok(None) => match mode_reconcile_action(state, Ok(ModeEvidence::Open), false) {
-            ModeReconcileAction::Keep => SelfOnlyModeAction::Keep,
-            ModeReconcileAction::AwaitConfirm => SelfOnlyModeAction::AwaitConfirm,
-            ModeReconcileAction::RestartProcess => SelfOnlyModeAction::RestartProcess,
-        },
-        Err(_) => {
-            let _ = mode_reconcile_action(state, Err(()), false);
-            SelfOnlyModeAction::Keep
-        }
-        Ok(Some(_)) => {
-            let _ = mode_reconcile_action(state, Ok(ModeEvidence::Closed), false);
-            SelfOnlyModeAction::Keep
-        }
-    }
-}
-
 async fn reconcile_roster(
     app: &AppHandle,
     pending_shrink: &mut Option<Vec<String>>,
-    mode_reconcile: &mut ModeReconcileState,
 ) -> Result<(), String> {
-    if mode_reconcile.restart_requested() {
-        return Ok(());
-    }
     let state = app.state::<AppState>();
     let current_request = {
         let runtime = state.mesh_llm_runtime.lock().await;
@@ -385,68 +281,11 @@ async fn reconcile_roster(
             Some(runtime) => runtime.start_request().clone(),
             None => {
                 *pending_shrink = None;
-                *mode_reconcile = ModeReconcileState::default();
                 return Ok(());
             }
         }
     };
-    let current_owners = current_request.trusted_owner_ids.as_ref();
-    // Closed runtimes keep the existing roster-only reconciliation path. Open
-    // runtimes re-probe NIP-11 so a later open -> closed relay restart is not
-    // hidden by a permanent mode cache.
-    let relay_url = current_request
-        .relay_url
-        .as_deref()
-        .map(str::to_owned)
-        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
-    let Some(current_owners) = current_owners else {
-        let observation = observe_open_runtime_relay(&state, &relay_url).await;
-        let evidence = match &observation {
-            OpenRuntimeObservation::Open => Ok(ModeEvidence::Open),
-            OpenRuntimeObservation::ClosedWithRoster
-            | OpenRuntimeObservation::ClosedWithoutRoster(_) => Ok(ModeEvidence::Closed),
-            OpenRuntimeObservation::Unknown(_) => Err(()),
-        };
-        match mode_reconcile_action(mode_reconcile, evidence, true) {
-            ModeReconcileAction::Keep => {
-                if let OpenRuntimeObservation::Unknown(error) = observation {
-                    eprintln!(
-                        "buzz-mesh: open-relay mode recheck failed once; keeping the running policy pending one retry: {error}"
-                    );
-                }
-            }
-            ModeReconcileAction::AwaitConfirm => eprintln!(
-                "buzz-mesh: relay membership mode changed; awaiting confirmation before restarting Buzz"
-            ),
-            ModeReconcileAction::RestartProcess => {
-                let reason = match &observation {
-                    OpenRuntimeObservation::ClosedWithRoster => "open-to-closed",
-                    OpenRuntimeObservation::ClosedWithoutRoster(_) => {
-                        "open-to-closed-without-roster"
-                    }
-                    OpenRuntimeObservation::Unknown(_) => "open-mode-unknown",
-                    OpenRuntimeObservation::Open => return Ok(()),
-                };
-                if !request_mode_restart(app, mode_reconcile, reason)? {
-                    eprintln!(
-                        "buzz-mesh: mode-policy restart is already pending or throttled after a recent attempt; keeping the running policy"
-                    );
-                } else {
-                    match &observation {
-                        OpenRuntimeObservation::ClosedWithRoster => eprintln!(
-                            "buzz-mesh: relay repeatedly reports membership enforcement; restarting Buzz to apply its allowlist"
-                        ),
-                        OpenRuntimeObservation::ClosedWithoutRoster(error) => eprintln!(
-                            "buzz-mesh: relay repeatedly reports membership enforcement but its roster is unavailable; restarting Buzz fail-closed: {error}"
-                        ),
-                        OpenRuntimeObservation::Unknown(error) => eprintln!(
-                            "buzz-mesh: open-relay mode remained unknown across two polls; restarting Buzz fail-closed: {error}"
-                        ),
-                        OpenRuntimeObservation::Open => {}
-                    }
-                }
-            }
-        }
+    let Some(current_owners) = current_request.trusted_owner_ids.as_ref() else {
         *pending_shrink = None;
         return Ok(());
     };
@@ -455,42 +294,12 @@ async fn reconcile_roster(
     // other member on a transient relay blip (the flapping restart loop). Keep
     // the current allowlist and try again on the next poll. A shrink is held
     // for one extra poll (hysteresis) so a single short-read never tears down.
-    let query = if runtime_needs_mode_probe(current_owners) {
-        // Self-only is the fail-safe startup policy when the initial NIP-11
-        // probe is inconclusive. Re-probe this isolated state so a later valid
-        // open result can recover it; errors still keep it self-only.
-        crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await
-    } else {
-        crate::commands::mesh_llm::resolve_closed_trusted_owner_ids_at(&state, &relay_url)
-            .await
-            .map(Some)
-    };
-    if matches!(query, Ok(Some(_))) {
-        // A successful closed-roster read is decisive non-restarting mode
-        // evidence, so a prior cross-process mode-restart throttle may clear.
-        clear_mode_restart(app);
-    }
-    if current_owners.is_empty() {
-        match reconcile_self_only_mode(mode_reconcile, &query) {
-            SelfOnlyModeAction::Keep => {}
-            SelfOnlyModeAction::AwaitConfirm => {
-                eprintln!(
-                    "buzz-mesh: isolated startup fallback observed an open relay; awaiting confirmation before restarting Buzz"
-                );
-                return Ok(());
-            }
-            SelfOnlyModeAction::RestartProcess => {
-                if !request_mode_restart(app, mode_reconcile, "self-only-to-open")? {
-                    eprintln!(
-                        "buzz-mesh: open-mode recovery restart is already pending or throttled after a recent attempt; keeping the self-only fallback"
-                    );
-                }
-                return Ok(());
-            }
-        }
-    } else {
-        *mode_reconcile = ModeReconcileState::default();
-    }
+    let relay_url = current_request
+        .relay_url
+        .as_deref()
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::relay::relay_ws_url_with_override(&state));
+    let query = crate::commands::mesh_llm::resolve_trusted_owner_ids_at(&state, &relay_url).await;
     match roster_reconcile_action(current_owners, pending_shrink.as_deref(), query) {
         RosterReconcileAction::Keep => {
             *pending_shrink = None;
@@ -750,43 +559,9 @@ mod tests {
     }
 
     #[test]
-    fn self_only_wiring_never_restarts_after_one_open_observation() {
-        let mut state = ModeReconcileState::default();
-        let query = Ok(None);
-        assert_eq!(
-            reconcile_self_only_mode(&mut state, &query),
-            SelfOnlyModeAction::AwaitConfirm
-        );
-    }
-
-    #[test]
-    fn self_only_wiring_restarts_after_two_open_observations() {
-        let mut state = ModeReconcileState::default();
-        let query = Ok(None);
-        assert_eq!(
-            reconcile_self_only_mode(&mut state, &query),
-            SelfOnlyModeAction::AwaitConfirm
-        );
-        assert_eq!(
-            reconcile_self_only_mode(&mut state, &query),
-            SelfOnlyModeAction::RestartProcess
-        );
-    }
-
-    // The other side of that rule: an allowlist that admits OTHER owners is
-    // never relaxed on the strength of a NIP-11 read. A relay downgrade (or a
-    // spoofed document) must not de-restrict a running mesh.
-    #[test]
-    fn open_relay_report_keeps_a_multi_party_allowlist() {
-        let current = vec!["owner-a".to_string(), "owner-b".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(None));
-        assert_eq!(action, RosterReconcileAction::Keep);
-    }
-
-    #[test]
     fn unchanged_roster_is_a_noop() {
         let current = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(Some(vec!["owner-a".to_string()])));
+        let action = roster_reconcile_action(&current, None, Ok(vec!["owner-a".to_string()]));
         assert_eq!(action, RosterReconcileAction::Keep);
     }
 
@@ -795,7 +570,7 @@ mod tests {
     fn roster_growth_requests_process_restart_immediately() {
         let current = vec!["owner-a".to_string()];
         let fresh = vec!["owner-a".to_string(), "owner-c".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(Some(fresh)));
+        let action = roster_reconcile_action(&current, None, Ok(fresh));
         assert_eq!(action, RosterReconcileAction::RestartProcess);
     }
 
@@ -804,7 +579,7 @@ mod tests {
     fn roster_shrink_awaits_confirmation_first() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, None, Ok(Some(reduced.clone())));
+        let action = roster_reconcile_action(&current, None, Ok(reduced.clone()));
         assert_eq!(action, RosterReconcileAction::AwaitConfirm(reduced));
     }
 
@@ -813,7 +588,7 @@ mod tests {
     fn roster_shrink_requests_process_restart_once_confirmed() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let action = roster_reconcile_action(&current, Some(&reduced), Ok(Some(reduced.clone())));
+        let action = roster_reconcile_action(&current, Some(&reduced), Ok(reduced.clone()));
         assert_eq!(action, RosterReconcileAction::RestartProcess);
     }
 
@@ -824,11 +599,8 @@ mod tests {
         let current = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let first_reduced = vec!["a".to_string(), "b".to_string()];
         let second_reduced = vec!["a".to_string()];
-        let action = roster_reconcile_action(
-            &current,
-            Some(&first_reduced),
-            Ok(Some(second_reduced.clone())),
-        );
+        let action =
+            roster_reconcile_action(&current, Some(&first_reduced), Ok(second_reduced.clone()));
         assert_eq!(action, RosterReconcileAction::AwaitConfirm(second_reduced));
     }
 
@@ -837,10 +609,10 @@ mod tests {
     #[test]
     fn genuinely_empty_roster_awaits_then_restarts_to_self_only() {
         let current = vec!["owner-a".to_string()];
-        let first = roster_reconcile_action(&current, None, Ok(Some(Vec::new())));
+        let first = roster_reconcile_action(&current, None, Ok(Vec::new()));
         assert_eq!(first, RosterReconcileAction::AwaitConfirm(Vec::new()));
         let empty: Vec<String> = Vec::new();
-        let confirmed = roster_reconcile_action(&current, Some(&empty), Ok(Some(Vec::new())));
+        let confirmed = roster_reconcile_action(&current, Some(&empty), Ok(Vec::new()));
         assert_eq!(confirmed, RosterReconcileAction::RestartProcess);
     }
 
@@ -849,33 +621,10 @@ mod tests {
     fn roster_shrink_then_recovery_keeps_allowlist() {
         let current = vec!["owner-a".to_string(), "owner-b".to_string()];
         let reduced = vec!["owner-a".to_string()];
-        let held = roster_reconcile_action(&current, None, Ok(Some(reduced.clone())));
+        let held = roster_reconcile_action(&current, None, Ok(reduced.clone()));
         assert_eq!(held, RosterReconcileAction::AwaitConfirm(reduced.clone()));
-        let recovered =
-            roster_reconcile_action(&current, Some(&reduced), Ok(Some(current.clone())));
+        let recovered = roster_reconcile_action(&current, Some(&reduced), Ok(current.clone()));
         assert_eq!(recovered, RosterReconcileAction::Keep);
-    }
-
-    #[test]
-    fn only_self_only_closed_runtimes_reprobe_mode() {
-        let self_only: Vec<String> = Vec::new();
-        let closed = vec!["owner-a".to_string()];
-        assert!(runtime_needs_mode_probe(&self_only));
-        assert!(!runtime_needs_mode_probe(&closed));
-    }
-
-    #[test]
-    fn open_to_closed_with_unavailable_roster_fails_closed() {
-        let observation = classify_open_runtime_observation(
-            Ok(crate::mesh_llm::MeshRelayMode::ClosedMembershipEnforced),
-            Some(Err("relay returned no membership snapshot".to_string())),
-        );
-        assert_eq!(
-            observation,
-            OpenRuntimeObservation::ClosedWithoutRoster(
-                "relay returned no membership snapshot".to_string()
-            )
-        );
     }
 
     #[test]

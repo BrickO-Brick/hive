@@ -210,9 +210,12 @@ _ensure-migrations: _ensure-services
     ./scripts/seed-local-community.sh
 
 # Run clippy on the desktop Tauri Rust crate
-# Mesh support is part of the shipped desktop contract, so local `just check`
-# and CI both lint the same feature-enabled graph.
+# Features are additive, so a single invocation lints only one cfg graph.
+# Both graphs ship (release-windows builds without mesh-llm), so lint both:
+# the default graph covers the `#[cfg(not(feature = "mesh-llm"))]` arms and
+# the feature-enabled graph covers the mesh code.
 desktop-tauri-clippy: _ensure-sidecar-stubs
+    cargo clippy --manifest-path {{desktop_tauri_manifest}} --workspace --all-targets -- -D warnings
     cargo clippy --manifest-path {{desktop_tauri_manifest}} --workspace --all-targets --features mesh-llm -- -D warnings
 
 # Check the desktop Tauri Rust crate compiles
