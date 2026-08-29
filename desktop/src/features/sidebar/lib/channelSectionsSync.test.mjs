@@ -441,6 +441,63 @@ test("malformed (non-JSON) head payload retains the pending edit, never publishi
   }
 });
 
+// Carl P1.2 regression (sections): an unsupported/future payload version
+// arriving from the relay must trigger the retain/retry path, never publish
+// over it. Sort, stars, and mutes all check `version !== 1` in their parsers;
+// sections was the odd one out. `parseChannelSectionPayload` now rejects
+// non-v1 payloads so `decryptAndParse` returns null and the manager retains.
+//
+// Mutation: removing `if (obj.version !== 1) return null` from
+// `parseChannelSectionPayload` causes the parser to accept the v2 blob as v1
+// state, `decryptAndParse` returns a non-null result, and the manager falls
+// through to a publish that overwrites authoritative state this client does not
+// understand.
+test("unsupported head payload version (sections) retains the pending edit, never publishing", async () => {
+  mock.method(relayClient, "fetchEvents", () =>
+    Promise.resolve([
+      {
+        pubkey: "pk-secver",
+        content: "good-cipher",
+        created_at: 500,
+        id: "evt-secver",
+      },
+    ]),
+  );
+  const publishCalls = [];
+  mock.method(relayClient, "publishEvent", (...args) => {
+    publishCalls.push(args);
+    return Promise.resolve();
+  });
+  const fw = makeFakeWindow();
+  const restore = installFakeWindow(fw);
+  // Decrypts cleanly but carries a future schema version the parser now rejects.
+  const tauri = installTauriMock(
+    JSON.stringify({ version: 2, sections: [], assignments: {} }),
+  );
+  try {
+    const manager = new ChannelSectionSyncManager("pk-secver", RELAY);
+    manager.publishSections(
+      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
+    );
+    fw._fireTimer();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      publishCalls.length,
+      0,
+      "must not publish over a head whose payload version we do not support",
+    );
+    assert.ok(
+      manager.getPendingStore() !== null,
+      "unsupported head must retain the pending edit",
+    );
+    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+  } finally {
+    tauri.restore();
+    restore();
+    mock.reset();
+  }
+});
+
 // ─── Failed pre-publish fetch: retain, never publish (Carl P1) ────────────────
 
 // The pre-publish fetch THROWS (timeout / auth / socket) — this is NOT proof

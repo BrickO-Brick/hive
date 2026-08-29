@@ -62,13 +62,34 @@ test("parseChannelSectionPayload: non-object input returns null", () => {
   assert.equal(parseChannelSectionPayload(true), null);
 });
 
+test("parseChannelSectionPayload: unsupported version returns null (Carl P1.2)", () => {
+  // A future schema version must not be accepted as v1 state — must return null
+  // so the relay path triggers retain/retry rather than publishing over it.
+  assert.equal(
+    parseChannelSectionPayload({ version: 2, sections: [], assignments: {} }),
+    null,
+    "version 2 must be rejected",
+  );
+  assert.equal(
+    parseChannelSectionPayload({ sections: [], assignments: {} }),
+    null,
+    "missing version must be rejected",
+  );
+  assert.equal(
+    parseChannelSectionPayload({ version: 0, sections: [], assignments: {} }),
+    null,
+    "version 0 must be rejected",
+  );
+});
+
 test("parseChannelSectionPayload: missing sections returns empty sections array", () => {
-  const result = parseChannelSectionPayload({ assignments: {} });
+  const result = parseChannelSectionPayload({ version: 1, assignments: {} });
   assert.deepEqual(result?.sections, []);
 });
 
 test("parseChannelSectionPayload: malformed section entries are filtered out", () => {
   const payload = {
+    version: 1,
     sections: [
       { id: 123, name: "Bad ID", order: 0 },
       { id: "s1", name: 456, order: 0 },
@@ -84,6 +105,7 @@ test("parseChannelSectionPayload: malformed section entries are filtered out", (
 
 test("parseChannelSectionPayload: valid sections with some invalid ones filters correctly", () => {
   const payload = {
+    version: 1,
     sections: [
       { id: "s1", name: "Valid", order: 0 },
       { id: 99, name: "Bad ID", order: 1 },
@@ -99,12 +121,13 @@ test("parseChannelSectionPayload: valid sections with some invalid ones filters 
 });
 
 test("parseChannelSectionPayload: missing assignments returns empty assignments object", () => {
-  const result = parseChannelSectionPayload({ sections: [] });
+  const result = parseChannelSectionPayload({ version: 1, sections: [] });
   assert.deepEqual(result?.assignments, {});
 });
 
 test("parseChannelSectionPayload: assignments with non-string values are filtered out", () => {
   const payload = {
+    version: 1,
     sections: [{ id: "s1", name: "Test", order: 0 }],
     assignments: { chan1: "s1", chan2: 42, chan3: null, chan4: true },
   };
@@ -114,6 +137,7 @@ test("parseChannelSectionPayload: assignments with non-string values are filtere
 
 test("parseChannelSectionPayload: orphaned assignments are stripped", () => {
   const payload = {
+    version: 1,
     sections: [{ id: "s1", name: "Exists", order: 0 }],
     assignments: { chan1: "s1", chan2: "missing-section" },
   };

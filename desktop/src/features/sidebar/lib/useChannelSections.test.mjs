@@ -77,6 +77,136 @@ test("assignChannel refreshes an existing assignment before the next eviction", 
   }
 });
 
+// Carl P1.1 regression (sections): a peer-cache storage event arriving while a
+// local whole-blob edit is pending must NOT clobber the optimistic edit or
+// strand its outbox. The storage handler must defer to the pending edit just as
+// `applyRemote` does for relay arrivals. The pending edit's debounced publish
+// owns convergence and will publish-or-adopt against the relay.
+//
+// Scenario: window A creates section A1 (pending in outbox). Window B writes
+// B1 (a different store) to the shared cache. A's storage handler fires. Before
+// A's debounce fires, the user makes a second edit A2 inside the same debounce
+// window. The resulting store must be derived from A1's state (A2 added on top
+// of A1), and the outbox must still hold A's intent — not B1's shape.
+//
+// Mutation: removing the `hasPendingEdit()` guard in the storage handler causes
+// setStore to apply B1, so A2 is derived from B1 instead. The outbox record
+// still holds A's first edit shape, not the B1-derived A2 — an inconsistency
+// the manager cannot resolve. The test detects the replacement: if B1 were
+// applied, the final sections array would include B1's section id.
+test("storage event while a local edit is pending is deferred, not applied", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { relayClient } = await import("@/shared/api/relayClient");
+  const { useChannelSections } = await import("./useChannelSections.ts");
+  const { storageKey } = await import("./channelSectionsStorage.ts");
+
+  const origFetch = relayClient.fetchEvents;
+  const origLive = relayClient.subscribeLive;
+  const origReconnect = relayClient.subscribeToReconnects;
+  const origPublish = relayClient.publishEvent;
+  const origTauri = window.__TAURI_INTERNALS__;
+
+  // Block all publishes so the debounce never fires during the test.
+  relayClient.fetchEvents = async () => [];
+  relayClient.subscribeLive = async () => async () => {};
+  relayClient.subscribeToReconnects = () => () => {};
+  relayClient.publishEvent = async () => {};
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd) => {
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey: "pk-storage-guard",
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+
+  const pubkey = "pk-storage-guard";
+  const relayUrl = "wss://r.storage-guard";
+  let hook = null;
+  try {
+    await act(async () => {
+      hook = renderHook(() => useChannelSections(pubkey, relayUrl));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // A1: window A creates a section — this becomes the pending edit.
+    await act(async () => {
+      hook.result.current.createSection("A1-Section");
+    });
+    const storeAfterA1 = hook.result.current.sections.map((s) => s.id);
+    assert.ok(
+      storeAfterA1.some((id) => id.length > 0),
+      "A1 section created",
+    );
+
+    // Window B writes B1 to the shared scoped cache key (simulates a peer
+    // window's edit landing in localStorage and firing the storage event).
+    const b1Store = JSON.stringify({
+      version: 1,
+      sections: [{ id: "b1-section", name: "B1", order: 0 }],
+      assignments: {},
+    });
+    await act(async () => {
+      window.localStorage.setItem(storageKey(pubkey, relayUrl), b1Store);
+      window.dispatchEvent(
+        new window.StorageEvent("storage", {
+          key: storageKey(pubkey, relayUrl),
+          newValue: b1Store,
+          storageArea: window.localStorage,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // B1 must NOT have replaced A1's optimistic state.
+    const storeAfterStorageEvent = hook.result.current.sections.map(
+      (s) => s.id,
+    );
+    assert.ok(
+      !storeAfterStorageEvent.includes("b1-section"),
+      "storage event while pending must not apply B1 to A's optimistic state",
+    );
+    assert.deepEqual(
+      storeAfterStorageEvent,
+      storeAfterA1,
+      "optimistic state must be unchanged after the deferred storage event",
+    );
+
+    // A2: user makes a second edit inside the debounce window. It is derived
+    // from A1's state (since B1 was deferred), so the result contains A1's
+    // section plus A2's.
+    await act(async () => {
+      hook.result.current.createSection("A2-Section");
+    });
+    const finalIds = hook.result.current.sections.map((s) => s.id);
+    assert.ok(
+      !finalIds.includes("b1-section"),
+      "A2 must be derived from A1 state, not B1 — b1-section must not appear",
+    );
+
+    hook.unmount();
+  } finally {
+    cleanup();
+    relayClient.fetchEvents = origFetch;
+    relayClient.subscribeLive = origLive;
+    relayClient.subscribeToReconnects = origReconnect;
+    relayClient.publishEvent = origPublish;
+    window.__TAURI_INTERNALS__ = origTauri;
+  }
+});
+
 // Fix 2 regression: a live remote arriving while a local edit is pending must
 // NOT overwrite the optimistic edit or strand its durable outbox. The pending
 // edit's own debounced publish owns convergence (publish-or-adopt). Reverting

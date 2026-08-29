@@ -82,6 +82,15 @@ export function useChannelSortPreference(
     const key = storageKey(pubkey, relayUrl);
     const handler = (e: StorageEvent) => {
       if (e.key !== key) return;
+      // A peer window wrote to the shared cache. Honour the same pending-aware
+      // guard that relay arrivals use in `applyRemote`: if a local whole-blob
+      // edit is in flight the manager owns convergence (its debounced
+      // publish-or-adopt is the single arbitration point). Applying a peer cache
+      // write unconditionally would clobber the optimistic edit and, on the next
+      // keystroke, strand the outbox record for the old intent (Carl P1).
+      // When nothing is pending the peer write applies immediately, preserving
+      // cross-window state mirroring for the idle case.
+      if (managerRef.current?.hasPendingEdit()) return;
       setStore(readChannelSortStore(pubkey, relayUrl));
     };
     window.addEventListener("storage", handler);

@@ -18,6 +18,124 @@ before(() => {
 
 after(() => dom.window.close());
 
+// Carl P1.1 regression (sort): a peer-cache storage event arriving while a
+// local whole-blob sort edit is pending must NOT clobber the optimistic edit.
+// The storage handler must defer to the pending edit just as `applyRemote` does
+// for relay arrivals. Peer writes arrive immediately when nothing is pending.
+//
+// Scenario: window A sets sort mode for "channels" (pending). Window B writes
+// B1 (sort mode "recent" for "channels") to the shared cache. A's storage event
+// fires. A2 is then set inside the debounce window. The resulting sort mode for
+// A must reflect A2, not B1's value — B1's write was ignored while A1 was live.
+//
+// Mutation: removing the `hasPendingEdit()` guard in the storage handler lets
+// B1 apply, so A2's `setStore` updater derives from B1, and the visible mode
+// reverts to B1's value.
+test("storage event while a local sort edit is pending is deferred, not applied", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { relayClient } = await import("@/shared/api/relayClient");
+  const { useChannelSortPreference } = await import(
+    "./useChannelSortPreference.ts"
+  );
+  const { storageKey } = await import("./channelSortPreference.ts");
+
+  const origFetch = relayClient.fetchEvents;
+  const origLive = relayClient.subscribeLive;
+  const origReconnect = relayClient.subscribeToReconnects;
+  const origPublish = relayClient.publishEvent;
+  const origTauri = window.__TAURI_INTERNALS__;
+
+  relayClient.fetchEvents = async () => [];
+  relayClient.subscribeLive = async () => async () => {};
+  relayClient.subscribeToReconnects = () => () => {};
+  relayClient.publishEvent = async () => {};
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd) => {
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey: "pk-sort-sg",
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+
+  const pubkey = "pk-sort-sg";
+  const relayUrl = "wss://r.sort-sg";
+  let hook = null;
+  try {
+    await act(async () => {
+      hook = renderHook(() => useChannelSortPreference(pubkey, relayUrl));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // A1: set "channels" to "alpha" — becomes the pending edit.
+    await act(async () => {
+      hook.result.current.setSortModeFor("channels", "alpha");
+    });
+    assert.equal(
+      hook.result.current.sortModeFor("channels"),
+      "alpha",
+      "A1: channels sort set to alpha",
+    );
+
+    // Window B writes "recent" for "channels" to the shared cache and fires a
+    // storage event.
+    const b1Store = JSON.stringify({
+      version: 1,
+      groups: { channels: "recent" },
+    });
+    await act(async () => {
+      window.localStorage.setItem(storageKey(pubkey, relayUrl), b1Store);
+      window.dispatchEvent(
+        new window.StorageEvent("storage", {
+          key: storageKey(pubkey, relayUrl),
+          newValue: b1Store,
+          storageArea: window.localStorage,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // B1's "recent" must NOT have replaced A1's "alpha".
+    assert.equal(
+      hook.result.current.sortModeFor("channels"),
+      "alpha",
+      "storage event while pending must not apply B1 (recent) over A1 (alpha)",
+    );
+
+    // A2: set "starred" to "recent" — derived from A1 state (channels stays alpha).
+    await act(async () => {
+      hook.result.current.setSortModeFor("starred", "recent");
+    });
+    // channels must still reflect A1 (alpha), not B1 (recent).
+    assert.equal(
+      hook.result.current.sortModeFor("channels"),
+      "alpha",
+      "A2 must be derived from A1 state — channels must remain alpha, not revert to B1 recent",
+    );
+
+    hook.unmount();
+  } finally {
+    cleanup();
+    relayClient.fetchEvents = origFetch;
+    relayClient.subscribeLive = origLive;
+    relayClient.subscribeToReconnects = origReconnect;
+    relayClient.publishEvent = origPublish;
+    window.__TAURI_INTERNALS__ = origTauri;
+  }
+});
+
 // Carl P1-sort regression: a live remote arriving while a local sort edit is
 // still pending must NOT overwrite the optimistic edit or strand its durable
 // outbox. Reverting applyRemote's `hasPendingEdit()` guard (or restoring the

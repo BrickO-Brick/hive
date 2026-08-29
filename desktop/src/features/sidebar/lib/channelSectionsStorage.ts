@@ -87,6 +87,13 @@ export function parseChannelSectionPayload(
 ): ChannelSectionStore | null {
   if (typeof json !== "object" || json === null) return null;
   const obj = json as Record<string, unknown>;
+  // Reject payloads from a future schema version we cannot safely interpret:
+  // a v2+ blob on the relay must trigger the retain/retry path so a later local
+  // edit never publishes over authoritative state this client does not understand
+  // (matches sort/stars/mutes parsers and Carl P1). Local-storage reads always
+  // go through `parseRaw`, which checks `version !== 1` before calling here, so
+  // this guard does not change the local-storage parse contract.
+  if (obj.version !== 1) return null;
   const sections: ChannelSection[] = Array.isArray(obj.sections)
     ? obj.sections.flatMap((entry: unknown): ChannelSection[] => {
         if (typeof entry !== "object" || entry === null) return [];
