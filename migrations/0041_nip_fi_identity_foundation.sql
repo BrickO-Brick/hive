@@ -413,6 +413,56 @@ CREATE INDEX identity_lifecycle_selectors_asserted_history
     ON identity_lifecycle_selectors
         (community_id, asserted_history_id, selector_kind);
 
+-- Serializes policy-revision inserts per community: each new revision must
+-- strictly exceed the current maximum, and each effective_at must strictly
+-- exceed the current maximum effective_at (FI-INV-06 — stable assertion
+-- policy; a revision that moves either coordinate backward is incoherent).
+-- The per-community advisory lock prevents two concurrent writers from both
+-- passing a plain SELECT MAX() check and committing conflicting revisions.
+CREATE FUNCTION identity_enrollment_policy_revision_guard_v1() RETURNS TRIGGER AS $$
+DECLARE
+    lock_key BIGINT;
+    max_revision BIGINT;
+    max_effective_at TIMESTAMPTZ;
+BEGIN
+    -- Acquire a per-community exclusive transaction-scoped advisory lock so
+    -- that concurrent insertions serialize here. The key is a stable hash of
+    -- the namespace string and the community_id bytes.
+    lock_key := hashtextextended(
+        'buzz:enrollment-policy-revision:v1:' || NEW.community_id::text,
+        0
+    );
+    PERFORM pg_advisory_xact_lock(lock_key);
+
+    SELECT MAX(policy_revision), MAX(effective_at)
+    INTO max_revision, max_effective_at
+    FROM identity_enrollment_policies
+    WHERE community_id = NEW.community_id;
+
+    IF max_revision IS NOT NULL
+        AND NEW.policy_revision <= max_revision
+    THEN
+        RAISE EXCEPTION
+            'policy_revision % does not strictly exceed current maximum % for community %',
+            NEW.policy_revision, max_revision, NEW.community_id
+            USING ERRCODE = 'check_violation',
+                  CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
+    END IF;
+
+    IF max_effective_at IS NOT NULL
+        AND NEW.effective_at <= max_effective_at
+    THEN
+        RAISE EXCEPTION
+            'effective_at % does not strictly exceed current maximum % for community %',
+            NEW.effective_at, max_effective_at, NEW.community_id
+            USING ERRCODE = 'check_violation',
+                  CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE FUNCTION nip_fi_reject_row_mutation_v1() RETURNS TRIGGER AS $$
 BEGIN
     RAISE EXCEPTION '% is immutable', TG_TABLE_NAME
@@ -833,6 +883,9 @@ CREATE TRIGGER authorization_operation_receipts_no_truncate
     BEFORE TRUNCATE ON authorization_operation_receipts
     FOR EACH STATEMENT EXECUTE FUNCTION nip_fi_reject_truncate_v1();
 
+CREATE TRIGGER identity_enrollment_policies_revision_guard
+    BEFORE INSERT ON identity_enrollment_policies
+    FOR EACH ROW EXECUTE FUNCTION identity_enrollment_policy_revision_guard_v1();
 CREATE TRIGGER identity_enrollment_policies_immutable
     BEFORE UPDATE OR DELETE ON identity_enrollment_policies
     FOR EACH ROW EXECUTE FUNCTION nip_fi_reject_row_mutation_v1();

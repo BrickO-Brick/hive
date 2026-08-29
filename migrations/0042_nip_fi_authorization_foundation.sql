@@ -506,6 +506,85 @@ CREATE TRIGGER authorization_authentication_denial_attempts_no_truncate
     BEFORE TRUNCATE ON authorization_authentication_denial_attempts
     FOR EACH STATEMENT EXECUTE FUNCTION nip_fi_reject_truncate_v1();
 
+-- Bidirectional deferred guard: a kind-9 (pre-authentication denial) audit
+-- event must commit with exactly one denial attempt; a denial attempt must
+-- commit with its audit event present and kind-9. Both directions deferred so
+-- event and attempt may be inserted in any order inside one transaction.
+CREATE FUNCTION authorization_denial_attempt_guard_v1()
+RETURNS TRIGGER AS $$
+DECLARE
+    found_event_kind SMALLINT;
+    attempt_count BIGINT;
+BEGIN
+    IF TG_TABLE_NAME = 'authorization_events' THEN
+        -- Firing from the event side: only kind-9 events require a denial row.
+        IF NEW.event_kind <> 9 THEN
+            RETURN NULL;
+        END IF;
+
+        SELECT count(*) INTO attempt_count
+        FROM authorization_authentication_denial_attempts
+        WHERE community_id = NEW.community_id
+          AND audit_event_id = NEW.event_id;
+
+        IF attempt_count <> 1 THEN
+            RAISE EXCEPTION
+                'kind-9 audit event requires exactly one denial attempt, found %',
+                attempt_count
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_event_cardinality';
+        END IF;
+    ELSE
+        -- Firing from the denial-attempt side: verify the audit event is kind-9
+        -- and that exactly one denial attempt references it.
+        SELECT event_kind INTO found_event_kind
+        FROM authorization_events
+        WHERE community_id = NEW.community_id
+          AND event_id = NEW.audit_event_id;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION
+                'denial attempt references non-existent audit event %',
+                NEW.audit_event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_event_kind';
+        END IF;
+
+        IF found_event_kind <> 9 THEN
+            RAISE EXCEPTION
+                'denial attempt audit event must be kind 9, got %',
+                found_event_kind
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_event_kind';
+        END IF;
+
+        SELECT count(*) INTO attempt_count
+        FROM authorization_authentication_denial_attempts
+        WHERE community_id = NEW.community_id
+          AND audit_event_id = NEW.audit_event_id;
+
+        IF attempt_count <> 1 THEN
+            RAISE EXCEPTION
+                'exactly one denial attempt must reference audit event %, found %',
+                NEW.audit_event_id, attempt_count
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_event_cardinality';
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER authorization_denial_attempt_event_cardinality
+    AFTER INSERT ON authorization_events
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION authorization_denial_attempt_guard_v1();
+
+CREATE CONSTRAINT TRIGGER authorization_denial_event_attempt_cardinality
+    AFTER INSERT ON authorization_authentication_denial_attempts
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION authorization_denial_attempt_guard_v1();
+
 CREATE FUNCTION authorization_operation_version_delta_cardinality_guard_v1()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -643,6 +722,75 @@ CREATE TRIGGER authorization_admission_results_no_update
 CREATE TRIGGER authorization_admission_results_no_truncate
     BEFORE TRUNCATE ON authorization_admission_results
     FOR EACH STATEMENT EXECUTE FUNCTION nip_fi_reject_truncate_v1();
+
+-- Bidirectional deferred cardinality guard: a kind-11 (protected-mutation)
+-- receipt must commit with exactly one admission result; an admission result
+-- must commit against a kind-11 receipt. Deferred so receipt and result may
+-- be inserted in any order inside one transaction.
+CREATE FUNCTION authorization_admission_result_guard_v1()
+RETURNS TRIGGER AS $$
+DECLARE
+    receipt authorization_operation_receipts%ROWTYPE;
+    result_count BIGINT;
+BEGIN
+    IF TG_TABLE_NAME = 'authorization_operation_receipts' THEN
+        receipt := NEW;
+    ELSE
+        -- Firing from authorization_admission_results: look up the receipt.
+        SELECT * INTO receipt
+        FROM authorization_operation_receipts
+        WHERE community_id = NEW.community_id
+          AND operation_id = NEW.operation_id;
+        IF NOT FOUND THEN
+            -- FK on the result table already guards the non-existent receipt
+            -- case; this path should not occur in normal operation.
+            RAISE EXCEPTION
+                'admission result references non-existent receipt for operation %',
+                NEW.operation_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_admission_result_receipt_kind';
+        END IF;
+    END IF;
+
+    -- Non-kind-11 receipts require no admission result.
+    IF receipt.operation_kind <> 11 THEN
+        -- If this fired from the result side and the receipt is not kind 11,
+        -- the result is attaching to the wrong receipt kind.
+        IF TG_TABLE_NAME = 'authorization_admission_results' THEN
+            RAISE EXCEPTION
+                'admission result may only attach to a kind-11 (protected-mutation) receipt, got kind %',
+                receipt.operation_kind
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_admission_result_receipt_kind';
+        END IF;
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*) INTO result_count
+    FROM authorization_admission_results
+    WHERE community_id = receipt.community_id
+      AND operation_id = receipt.operation_id;
+
+    IF result_count <> 1 THEN
+        RAISE EXCEPTION
+            'kind-11 receipt requires exactly one admission result, found %',
+            result_count
+            USING ERRCODE = 'check_violation',
+                  CONSTRAINT = 'authorization_admission_result_cardinality';
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER authorization_admission_result_receipt_cardinality
+    AFTER INSERT ON authorization_operation_receipts
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION authorization_admission_result_guard_v1();
+
+CREATE CONSTRAINT TRIGGER authorization_admission_result_result_cardinality
+    AFTER INSERT ON authorization_admission_results
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION authorization_admission_result_guard_v1();
 
 -- Every successful/no-op core lifecycle receipt has exactly one privacy-safe
 -- audit event with the closed transition-kind mapping. Both directions are

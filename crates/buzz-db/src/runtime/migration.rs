@@ -3227,4 +3227,497 @@ mod tests {
             .await
             .expect("rollback absent-policy transaction");
     }
+
+    /// NIP-FI policy-revision monotonicity: each new policy revision for a
+    /// community must strictly exceed the current maximum revision, and its
+    /// effective_at must strictly exceed the current maximum effective_at
+    /// (FI-INV-06 — stable assertion policy).
+    ///
+    /// Mutation sensitivity is two-sided:
+    /// - neutering the guard lets a replayed or backfilled revision through
+    ///   (the positive half detects insertion into a guarded table);
+    /// - leaving the guard intact rejects equal/regressive inserts (negative
+    ///   halves detect that each rejection fires).
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn identity_enrollment_policy_revision_is_monotonic() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(41, &pool)
+            .await
+            .expect("apply migrations 1-41");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("policy-mono-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // First insertion: no prior rows — should always succeed.
+        sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 1, 1, $2, '2026-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xA1_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("first policy insertion (revision 1) must succeed");
+
+        // Forward advance: revision 2 with effective_at strictly after revision 1.
+        sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 2, 1, $2, '2026-06-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xA2_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("forward advance to revision 2 must succeed");
+
+        // Negative: replay the same revision (2 <= 2).
+        let replay_err = sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 2, 1, $2, '2027-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xA3_u8; 32])
+        .execute(&pool)
+        .await
+        .expect_err("replayed revision must be rejected");
+        assert!(
+            replay_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for replayed revision, got: {replay_err}"
+        );
+
+        // Negative: backfill a lower revision (1 < 2).
+        let backfill_err = sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 1, 2, $2, '2027-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xA4_u8; 32])
+        .execute(&pool)
+        .await
+        .expect_err("backfilled lower revision must be rejected");
+        assert!(
+            backfill_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for backfilled revision, got: {backfill_err}"
+        );
+
+        // Negative: higher revision but effective_at not strictly after max.
+        let stale_time_err = sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 3, 1, $2, '2026-06-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xA5_u8; 32])
+        .execute(&pool)
+        .await
+        .expect_err("equal effective_at must be rejected even with higher revision");
+        assert!(
+            stale_time_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for non-advancing effective_at, got: {stale_time_err}"
+        );
+
+        // Confirm only revisions 1 and 2 persisted.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM identity_enrollment_policies WHERE community_id = $1",
+        )
+        .bind(community_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count persisted policy revisions");
+        assert_eq!(count, 2, "only the two accepted revisions must persist");
+    }
+
+    /// NIP-FI admission-result ↔ kind-11 receipt cardinality: a kind-11
+    /// (protected-mutation) receipt must commit with exactly one admission
+    /// result; an admission result must commit against a kind-11 receipt.
+    ///
+    /// Mutation sensitivity is two-sided:
+    /// - the guard is load-bearing when a kind-11 receipt has no result row
+    ///   (negative A) — without the guard this commits silently;
+    /// - the guard is load-bearing when a result attaches to a non-kind-11
+    ///   receipt (negative B) — without the guard this commits silently.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn authorization_admission_result_requires_kind_11_receipt_bidirectional() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("adm-result-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Capacity must exist for authorization_events inserts; admission-result
+        // tests exercise only authorization_operation_receipts and
+        // authorization_admission_results — no authorization_events rows are
+        // needed here, but insert capacity anyway to satisfy any trigger
+        // that reads the policy row defensively.
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+
+        // --- Positive: kind-11 receipt + admission result in one transaction ---
+        let op1 = uuid::Uuid::new_v4();
+        let fp1 = vec![0xB1_u8; 32];
+
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 11, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op1)
+        .bind(&fp1)
+        .bind(vec![0xB2_u8; 32])
+        .bind(vec![0xB3_u8; 32])
+        .execute(&mut *conn)
+        .await
+        .expect("insert kind-11 receipt");
+
+        sqlx::query(
+            "INSERT INTO authorization_admission_results \
+             (community_id, operation_id, request_fingerprint, semantic_fingerprint, \
+              object_kind, object_key) \
+             VALUES ($1, $2, $3, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op1)
+        .bind(&fp1)
+        .bind(vec![0xB4_u8; 32]) // semantic_fingerprint
+        .bind(vec![0xB5_u8; 32]) // object_key
+        .execute(&mut *conn)
+        .await
+        .expect("insert admission result");
+
+        sqlx::query("COMMIT")
+            .execute(&mut *conn)
+            .await
+            .expect("kind-11 receipt + result must commit");
+        drop(conn);
+
+        // --- Negative A: kind-11 receipt without result must be rejected ---
+        let op2 = uuid::Uuid::new_v4();
+        let fp2 = vec![0xC1_u8; 32];
+
+        let mut conn_a = pool.acquire().await.expect("acquire connection A");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_a)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 11, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op2)
+        .bind(&fp2)
+        .bind(vec![0xC2_u8; 32])
+        .bind(vec![0xC3_u8; 32])
+        .execute(&mut *conn_a)
+        .await
+        .expect("insert kind-11 receipt for negative A");
+
+        let no_result_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_a)
+            .await
+            .expect_err("kind-11 receipt without result must be rejected at commit");
+        assert!(
+            no_result_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for kind-11 without result, got: {no_result_err}"
+        );
+        drop(conn_a);
+
+        // --- Negative B: admission result against non-kind-11 receipt ---
+        // Use operation_kind 12 (invalidation) — no admission result should
+        // ever attach to it. The guard fires at COMMIT (deferred trigger).
+        let op3 = uuid::Uuid::new_v4();
+        let fp3 = vec![0xD1_u8; 32];
+
+        let mut conn_b = pool.acquire().await.expect("acquire connection B");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 12, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op3)
+        .bind(&fp3)
+        .bind(vec![0xD2_u8; 32])
+        .bind(vec![0xD3_u8; 32])
+        .execute(&mut *conn_b)
+        .await
+        .expect("insert kind-12 receipt");
+
+        // The guard is deferred: the INSERT succeeds; the violation surfaces
+        // at COMMIT when the guard checks that the receipt is kind-11.
+        sqlx::query(
+            "INSERT INTO authorization_admission_results \
+             (community_id, operation_id, request_fingerprint, semantic_fingerprint, \
+              object_kind, object_key) \
+             VALUES ($1, $2, $3, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op3)
+        .bind(&fp3)
+        .bind(vec![0xD4_u8; 32])
+        .bind(vec![0xD5_u8; 32])
+        .execute(&mut *conn_b)
+        .await
+        .expect("result insert must pass — deferred guard fires at commit, not here");
+
+        let wrong_kind_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_b)
+            .await
+            .expect_err("result against non-kind-11 receipt must be rejected at commit");
+        assert!(
+            wrong_kind_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for result against non-kind-11 receipt, got: {wrong_kind_err}"
+        );
+    }
+
+    /// NIP-FI denial-attempt ↔ kind-9 event cardinality: a kind-9
+    /// (pre-authentication denial) audit event must commit with exactly one
+    /// denial attempt; a denial attempt must commit with a matching kind-9
+    /// audit event.
+    ///
+    /// Mutation sensitivity is two-sided:
+    /// - the event-side guard is load-bearing when a kind-9 event has no
+    ///   attempt row (negative A) — without it this commits silently, making
+    ///   replay reconstruction impossible;
+    /// - the attempt-side guard is load-bearing when an attempt has no
+    ///   matching event at commit (negative B).
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn authorization_denial_attempt_requires_kind_9_event_bidirectional() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("denial-attempt-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Capacity is required by the authorization_events BEFORE INSERT trigger.
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        let mut conn = pool.acquire().await.expect("acquire connection");
+
+        // --- Positive: kind-9 event + denial attempt in one transaction ---
+        let op1 = uuid::Uuid::new_v4();
+        let event1 = uuid::Uuid::new_v4();
+        let corr1 = uuid::Uuid::new_v4();
+        let attempt1_id = uuid::Uuid::new_v4();
+
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin");
+
+        // Insert denial attempt first (FK is deferred).
+        sqlx::query(
+            "INSERT INTO authorization_authentication_denial_attempts \
+             (community_id, operation_id, correlation_id, semantic_fingerprint, \
+              denial_reason, expected_revision, action, reason_code, \
+              audit_event_id, audit_event_kind) \
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 1, $5, 9)",
+        )
+        .bind(community_id)
+        .bind(op1)
+        .bind(corr1)
+        .bind(vec![0xE1_u8; 32]) // semantic_fingerprint
+        .bind(event1)
+        .execute(&mut *conn)
+        .await
+        .expect("insert denial attempt before event");
+
+        // Insert the kind-9 event (actor_kind 4, no request_fingerprint).
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, operation_id, correlation_id, attempt_id, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
+                     '2026-01-01T00:00:00Z', $6, $7)",
+        )
+        .bind(community_id)
+        .bind(event1)
+        .bind(op1)
+        .bind(corr1)
+        .bind(attempt1_id)
+        .bind(vec![0xE2_u8; 64]) // canonical_envelope (≤16384 bytes)
+        .bind(vec![0xE3_u8; 32]) // envelope_digest
+        .execute(&mut *conn)
+        .await
+        .expect("insert kind-9 event");
+
+        sqlx::query("COMMIT")
+            .execute(&mut *conn)
+            .await
+            .expect("kind-9 event + denial attempt must commit");
+        drop(conn);
+
+        // --- Negative A: kind-9 event alone must be rejected at commit ---
+        let op2 = uuid::Uuid::new_v4();
+        let event2 = uuid::Uuid::new_v4();
+        let corr2 = uuid::Uuid::new_v4();
+        let attempt2_id = uuid::Uuid::new_v4();
+
+        let mut conn_a = pool.acquire().await.expect("acquire connection A");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_a)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, operation_id, correlation_id, attempt_id, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
+                     '2026-01-01T00:00:00Z', $6, $7)",
+        )
+        .bind(community_id)
+        .bind(event2)
+        .bind(op2)
+        .bind(corr2)
+        .bind(attempt2_id)
+        .bind(vec![0xF1_u8; 64])
+        .bind(vec![0xF2_u8; 32])
+        .execute(&mut *conn_a)
+        .await
+        .expect("insert kind-9 event without attempt");
+
+        let no_attempt_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_a)
+            .await
+            .expect_err("kind-9 event without denial attempt must be rejected at commit");
+        assert!(
+            no_attempt_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) for kind-9 event without attempt, got: {no_attempt_err}"
+        );
+        drop(conn_a);
+
+        // --- Negative B: denial attempt without matching event at commit ---
+        // The denial attempt's deferred FK to authorization_events fires at
+        // commit, as does the guard's NOT FOUND branch. Either catches the
+        // absent event; the guard adds the kind-9 semantic check on top.
+        let op3 = uuid::Uuid::new_v4();
+        let absent_event = uuid::Uuid::new_v4(); // never inserted
+        let corr3 = uuid::Uuid::new_v4();
+
+        let mut conn_b = pool.acquire().await.expect("acquire connection B");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_authentication_denial_attempts \
+             (community_id, operation_id, correlation_id, semantic_fingerprint, \
+              denial_reason, expected_revision, action, reason_code, \
+              audit_event_id, audit_event_kind) \
+             VALUES ($1, $2, $3, $4, 2, 1, 1, 2, $5, 9)",
+        )
+        .bind(community_id)
+        .bind(op3)
+        .bind(corr3)
+        .bind(vec![0xFA_u8; 32])
+        .bind(absent_event)
+        .execute(&mut *conn_b)
+        .await
+        .expect("insert denial attempt with absent event");
+
+        let no_event_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_b)
+            .await
+            .expect_err("denial attempt without matching event must be rejected at commit");
+        // Deferred FK (23503) or guard check_violation (23514) — either proves
+        // the absent event is caught.
+        assert!(
+            no_event_err
+                .as_database_error()
+                .map(|e| {
+                    let code = e.code();
+                    let c = code.as_deref().unwrap_or("");
+                    c == "23503" || c == "23514"
+                })
+                .unwrap_or(false),
+            "expected FK violation (23503) or check_violation (23514) for absent event, got: {no_event_err}"
+        );
+    }
 }
