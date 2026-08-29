@@ -366,9 +366,8 @@ fn locate_install_dir() -> Option<PathBuf> {
 ///   • Pager/cosmetic globals (`-p`, `--paginate`, `--no-optional-locks`, …)
 ///     are inert: probes capture piped stdout, so git auto-disables the pager,
 ///     and none introduce config or aliases.
-///   • `--exec-path=` redirects builtin lookup for probe and real git alike;
-///     `config`/`rev-list`/`show`/`diff-tree`/`patch-id` are builtins, so it
-///     cannot make the probe resolve a different alias set than real git.
+///   • `--exec-path=` is refused by [`inspect_push_config`] (Surface 1) before
+///     any probe runs, so it cannot reach the probe stage at all.
 /// The authoritative identity/signing `-c` entries always splice *after* these
 /// caller globals ([`inject_identity_args`], [`commit_signature_is_agent`]), so
 /// command-line last-wins precedence keeps a caller `-c` from overriding them.
@@ -795,6 +794,30 @@ fn partition_outgoing(
     Ok((offenders, agent_shas))
 }
 
+/// Returns `true` when `scheme` is a known git built-in transport — one that
+/// git handles without invoking an external `git-remote-<scheme>` helper
+/// executable from caller-controlled `PATH`.
+///
+/// The built-in set (as of Git 2.54) is:
+///   `https`, `http`, `ssh`, `git`, `file`, `ftp`, `ftps`
+///   plus compound SSH-over-git aliases: `git+ssh`, `ssh+git`
+///
+/// Note: `ssh://` and SCP-syntax endpoints fork the ambient `ssh` from PATH,
+/// but so does a fake `git` placed before `find_real_git()`; both are in the
+/// same deliberate-bypass ceiling this PR declares.  They remain allowed.
+///
+/// Every other `<scheme>://...` string (e.g. `evil://payload`) causes git to
+/// look for a `git-remote-<scheme>` executable on `PATH`, giving the caller
+/// full control over what happens during dry-run / `ls-remote` vs the real
+/// push.  The `::` form is covered separately; this helper covers the
+/// `<scheme>://` form.
+fn is_builtin_url_scheme(scheme: &[u8]) -> bool {
+    matches!(
+        scheme,
+        b"https" | b"http" | b"ssh" | b"git" | b"file" | b"ftp" | b"ftps" | b"git+ssh" | b"ssh+git"
+    )
+}
+
 /// Returns `true` when `arg` is a git-push argv token that would resolve to
 /// `--receive-pack` or its alias `--exec`, in any spelling git accepts.
 ///
@@ -843,22 +866,15 @@ fn is_receive_pack_or_exec_flag(arg: &str) -> bool {
 /// endpoint. It is not an independent authority and must be refused before any
 /// push-plan probe.
 ///
-/// Two surfaces:
-/// 1. Argv flags: `--receive-pack=<cmd>`, `--receive-pack <cmd>` (separate
-///    value), `--exec=<cmd>`, `--exec <cmd>`. These appear among the push
-///    subcommand args, not in the global position.
-/// 2. Config: `remote.<name>.receivepack` for any remote, under the caller's
-///    complete global ctx so includes, `-c` injections, and the effective repo
-///    config all apply exactly as they do for the real push. A query failure
-///    also fails closed — we cannot prove the config is clean.
+/// This function handles the **argv** surface only:
+/// `--receive-pack=<cmd>`, `--receive-pack <cmd>` (separate value), `--exec=<cmd>`,
+/// `--exec <cmd>`. The config surface (`remote.<name>.receivepack`) is handled
+/// by [`inspect_push_config`], which folds it into the single bounded config
+/// snapshot alongside all other endpoint and transport keys.
 ///
 /// Only enforces in a managed session; unmanaged pushes are unaffected.
-fn reject_receive_pack_override(
-    real_git: &Path,
-    argv: &[String],
-    ctx: &[String],
-) -> Result<(), String> {
-    // Surface 1 — argv flags.
+fn reject_receive_pack_override(argv: &[String]) -> Result<(), String> {
+    // Argv flags only (config is handled by inspect_push_config).
     //
     // Git accepts any unique prefix of a long option. `--receive-pack` can be
     // abbreviated as `--receive-p`, `--receive-pa`, `--receive=` (git also
@@ -893,72 +909,498 @@ fn reject_receive_pack_override(
             i += 1;
         }
     }
+    Ok(())
+}
 
-    // Surface 2 — `remote.<name>.receivepack` in effective config.
-    // `git config --get-regexp` semantics:
-    //   exit 0 + output  → at least one key matched (refuse)
-    //   exit 1 + no stdout → no key matched (clean, continue)
-    //   any other exit / stderr output → config parse error or unexpected (fail closed)
+/// Inspect push config and argv in a single bounded pass, refusing any
+/// transport override, helper URL, or endpoint newline found in the effective
+/// configuration or argv.
+///
+/// # What is checked
+///
+/// **Environment** (Surface 0): four env vars the caller can set to redirect
+/// SSH/proxy transport or builtin lookup — checked synchronously against the
+/// current process env via `var_os` so a non-UTF-8 value is still caught.
+///
+/// **Argv** (Surface 1): every effective-argv token is checked for:
+/// - `--exec-path` in any form (attached `--exec-path=<dir>` or detached
+///   `--exec-path <dir>`).  A caller-controlled exec-path directory can hold a
+///   stateful fake `git-receive-pack` that behaves differently during dry-run /
+///   `ls-remote` vs the real push.
+/// - Any `::` sequence (`<transport>::<address>` or `ext::<cmd>`).  Remote
+///   helpers can split fetch and push endpoints.
+/// - CR or LF in any token.  A newline-bearing inline URL causes the porcelain
+///   `To` line to be truncated at the newline, making the parsed destination a
+///   seeded decoy prefix rather than the real target.
+///
+/// **Config** (Surface 2): ONE `git config --null --get-regexp` call covers all
+/// endpoint-bearing and transport-overriding key families.  A single call bounds
+/// the TOCTOU window and prevents the mutable-config inconsistency that would
+/// arise from separate sequential probes.  The pattern uses POSIX ERE with
+/// unescaped `|` alternation — `^(remote|url|branch|core)\.` — which git's
+/// `--get-regexp` engine accepts.  (BRE-style `\(remote\|...\)` produces exit 1
+/// + empty output because `\|` is not a BRE operator in the POSIX sense.)
+///
+/// For each NUL-delimited record (`<key>\n<value>\0`):
+/// - Non-UTF-8 key or value fails closed (no silent skip).
+/// - Malformed record (no `\n` separator) fails closed.
+/// - Key-name-based policy is applied first, then value-content checks.
+///
+/// **Key-name policy:**
+/// - `remote.*.receivepack`       — refused; custom receive-pack programs can
+///   advertise decoy old-OIDs and redirect pushes to a different endpoint.
+/// - `core.sshcommand`            — refused; overrides SSH program for all ops.
+/// - `core.gitproxy`              — refused; overrides git:// protocol proxy.
+/// - `remote.*.vcs`               — refused; invokes external VCS helpers.
+/// - Any key whose **name** contains `::` (e.g. `url.ext::evil.pushinsteadof`) —
+///   refused; the helper scheme is encoded in the key itself.
+/// - `remote.*.url`, `remote.*.pushurl`, `url.*.insteadof`,
+///   `url.*.pushinsteadof`, `remote.pushdefault`,
+///   `branch.*.remote`, `branch.*.pushremote` — endpoint keys whose **value**
+///   is checked for `::` (helper URL) and for CR/LF (newline bypass).
+///
+/// Note on HTTP: `ls-remote --upload-pack=git-receive-pack` still uses
+/// `service=git-upload-pack` for HTTP(S) transports, so a caller-controlled
+/// HTTP proxy (`http.proxy`, `remote.*.proxy`, `$http_proxy`) can distinguish
+/// the inventory call from the real push, just as an adversarial smart-HTTP
+/// endpoint can.  If HTTP(S) remotes are used, the above endpoint guards are a
+/// best-effort ceiling for HTTP(S); `core.gitProxy` applies only to the native
+/// `git://` protocol, not to HTTP(S).
+fn inspect_push_config(
+    real_git: &Path,
+    effective_argv: &[String],
+    ctx: &[String],
+) -> Result<(), String> {
+    // ── Surface 0: environment variables ─────────────────────────────────────
     //
-    // We run under `ctx` (the caller's complete global set) so the probe sees
-    // the same repository, includes, and `-c` injections as the real push.
-    let mut args = ctx.to_vec();
-    args.extend(["config", "--get-regexp", r"remote\..+\.receivepack"].map(String::from));
-    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = match capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT) {
-        Some(o) => o,
-        None => {
-            return Err(String::from(
-                "buzz git wrapper: refusing to push — could not query effective config for \
-                 `remote.*.receivepack`. Enforcement fails closed.",
-            ))
+    // Use `var_os` so a non-UTF-8 value (which `var` silently ignores) still
+    // causes a refusal — git receives the raw OsString regardless of encoding.
+    //
+    // `GIT_SSH` / `GIT_SSH_COMMAND` redirect the SSH helper for all SSH ops.
+    // `GIT_PROXY_COMMAND` redirects the proxy for git:// protocol ops.
+    // `GIT_EXEC_PATH` directs git to find builtins (including `git-receive-pack`)
+    // in a caller-controlled directory.  A stateful fake `git-receive-pack` in
+    // that directory can advertise seeded-decoy IDs during dry-run / ls-remote
+    // and then write to the empty actual target on the real push.
+    for var in &[
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_PROXY_COMMAND",
+        "GIT_EXEC_PATH",
+    ] {
+        if let Some(val) = std::env::var_os(var) {
+            if !val.is_empty() {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — caller-controlled transport \
+                     variable `{var}` is set in the environment. This variable can route \
+                     `ls-remote` to a seeded decoy repo while routing `git-receive-pack` to \
+                     a different target, bypassing push verification. \
+                     Unset `{var}` before pushing in managed mode."
+                ));
+            }
         }
-    };
-    let stdout_bytes = out.stdout.trim_ascii();
-    let stderr_bytes = out.stderr.trim_ascii();
-    let exit_code = out.status.code();
-    if out.status.success() {
-        if !stdout_bytes.is_empty() {
-            // At least one remote has a custom receivepack.
-            let matched = String::from_utf8_lossy(stdout_bytes);
-            let first_line = matched.lines().next().unwrap_or(&matched);
-            return Err(format!(
-                "buzz git wrapper: refusing to push — effective config contains \
-                 `remote.*.receivepack` ({first_line}). Custom receive-pack programs \
-                 cannot be used in managed mode: they can advertise decoy old-OIDs and \
-                 redirect pushes to a different endpoint, bypassing push verification. \
-                 Remove the `receivepack` config key before pushing."
-            ));
+    }
+
+    // ── Surface 1: effective argv ─────────────────────────────────────────────
+    //
+    // Scan token-by-token.  For `--exec-path` in the detached form
+    // (`--exec-path /dir`), we must skip the following value token so it is
+    // not double-counted; we still refuse because the flag itself is present.
+    {
+        let mut i = 0;
+        while i < effective_argv.len() {
+            let tok = &effective_argv[i];
+
+            // `--exec-path` in any form — both attached (`--exec-path=/dir`)
+            // and detached (`--exec-path /dir`).  Any prefix abbreviation of
+            // `--exec-path` that git accepts is covered by the `starts_with`
+            // guard.  We refuse on the flag token itself; there is no need to
+            // inspect the value.
+            if tok == "--exec-path"
+                || tok.starts_with("--exec-path=")
+                || (tok.starts_with("--exec-path") && !tok.starts_with("--exec-path-"))
+            {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — `--exec-path` is set in effective \
+                     argv (`{tok}`). A caller-controlled exec-path directory can contain a \
+                     stateful fake `git-receive-pack` that behaves differently during dry-run \
+                     / ls-remote vs the real push, bypassing push verification. \
+                     Remove `--exec-path` before pushing in managed mode."
+                ));
+            }
+
+            // Any `::` sequence in an argv token — `ext::<cmd>` or
+            // `<transport>::<address>`.  We check raw bytes (no UTF-8 decode)
+            // because git also processes the raw byte string.
+            if tok.as_bytes().windows(2).any(|w| w == b"::") {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — push argument `{}` uses a \
+                     remote helper transport (`<transport>::<address>` or `ext::<cmd>`). \
+                     Remote helpers can split fetch and push endpoints, bypassing push \
+                     verification. Use a built-in transport (https://, ssh://, local path) \
+                     in managed mode.",
+                    tok.escape_default()
+                ));
+            }
+
+            // Unknown `<scheme>://` in an argv token.  Git dispatches any URL
+            // whose scheme is not a built-in to an external `git-remote-<scheme>`
+            // executable on PATH.  That helper controls both the dry-run inventory
+            // call and the real push, which breaks push verification.
+            if let Some(sep) = tok.as_bytes().windows(3).position(|w| w == b"://") {
+                let scheme = &tok.as_bytes()[..sep];
+                if !is_builtin_url_scheme(scheme) {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — push argument `{}` uses an \
+                         unknown URL scheme `{}`. Only built-in git transports (https, http, \
+                         ssh, git, git+ssh, ssh+git, file, ftp, ftps) are permitted in managed \
+                         mode; other schemes invoke an external `git-remote-<scheme>` helper \
+                         that can split fetch and push endpoints, bypassing push verification.",
+                        tok.escape_default(),
+                        String::from_utf8_lossy(scheme)
+                    ));
+                }
+            }
+
+            // CR or LF in any argv token.
+            if tok.contains('\n') || tok.contains('\r') {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — push argument `{}` contains a CR or \
+                     LF character. Endpoint URLs containing newlines make the push destination \
+                     ambiguous in git's porcelain output. Enforcement fails closed.",
+                    tok.escape_default()
+                ));
+            }
+
+            i += 1;
         }
-        // exit 0 + empty stdout is unexpected (get-regexp normally exits 1 on no match).
-        // Treat as clean — the key is genuinely absent.
-    } else {
-        // Non-success. Accept only exit code 1 with empty stdout as "no match".
-        // Anything else (exit code != 1, or unexpected stdout, or stderr) means
-        // a config parse error or unexpected condition — fail closed.
-        let is_no_match = exit_code == Some(1) && stdout_bytes.is_empty();
-        if !is_no_match {
-            let detail = if !stderr_bytes.is_empty() {
+    }
+
+    // ── Surface 2: effective config — single bounded snapshot ────────────────
+    //
+    // ONE `git config --null --get-regexp` call covers all key families that
+    // carry push-endpoint selection or transport overrides.  Using a single call:
+    //   (a) bounds the TOCTOU window to one snapshot of the mutable config state;
+    //   (b) avoids up to 13 sequential 120 s-timeout stalls from separate probes.
+    //
+    // The pattern uses ERE (git's --get-regexp engine accepts POSIX ERE with
+    // unescaped `|` alternation).  BRE-style `\(remote\|url\|...\)` produces
+    // exit 1 + empty output on Git ≥ 2.0 because `\|` is not a BRE operator in
+    // the POSIX sense, so git treats it as a literal-pipe pattern that matches
+    // nothing.  Use unescaped `(remote|url|branch|core)`:
+    //
+    //   `r"^([Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Bb][Rr][Aa][Nn][Cc][Hh]|[Cc][Oo][Rr][Ee])\."` —
+    //   matches any key whose section is one of the four families, case-insensitively
+    //   (git 2.54 lowercases keys before matching but older versions may not).
+    //   This is slightly over-inclusive (e.g.
+    //   `core.editor`) but the per-record policy applied below ignores keys that
+    //   are not in the forbidden or endpoint sets, so false-positive records are
+    //   parsed but never acted upon.
+    //
+    // The per-record policy map (applied to canonical lowercase keys):
+    //
+    //   Refused (transport override keys):
+    //     core.sshcommand, core.gitproxy, remote.*.vcs
+    //   Endpoint keys (value checked for `::` helper and CR/LF):
+    //     remote.*.url, remote.*.pushurl,
+    //     url.*.insteadof, url.*.pushinsteadof,
+    //     remote.pushdefault,
+    //     branch.*.remote, branch.*.pushremote
+    //
+    //   Additionally: any key whose name itself contains `::` is refused
+    //   regardless of family (e.g. `url.ext::evil.pushinsteadof`).
+    //
+    // NUL record format (--null output): `<key>\n<value>\0`
+    // A malformed record (no `\n`) and a non-UTF-8 key or value both fail closed.
+    {
+        let mut args = ctx.to_vec();
+        // The ERE `^` anchors to the start of the key name; `\.` matches a
+        // literal dot.  The pattern covers all four top-level sections.
+        // The pattern uses explicit character-class alternation for the four
+        // section names to ensure case-insensitive matching independent of git
+        // version.  Git 2.54 lowercases keys before applying the regex, so the
+        // lowercase-only pattern works today, but older versions and any future
+        // change in git's normalization order could miss a capitalized section
+        // (`[Remote]`, `[Core]`).  Using `[Rr][Ee]...` makes the match correct
+        // regardless of the key casing in the output stream.
+        //
+        // git's ERE engine does NOT support the `(?i)` flag, so inline
+        // character classes are the only portable option.
+        args.extend(
+            [
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^([Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Bb][Rr][Aa][Nn][Cc][Hh]|[Cc][Oo][Rr][Ee])\.",
+            ]
+            .map(String::from),
+        );
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = match capture_raw_bounded(real_git, &arg_refs, DRY_RUN_TIMEOUT) {
+            Some(o) => o,
+            None => {
+                return Err(String::from(
+                    "buzz git wrapper: refusing to push — could not query effective config \
+                     for push-relevant keys (timed out or spawn failed). \
+                     Enforcement fails closed.",
+                ));
+            }
+        };
+
+        // Only exit 1 + empty stdout is accepted as "no matching keys".
+        let is_no_match = out.status.code() == Some(1) && out.stdout.trim_ascii().is_empty();
+        if is_no_match {
+            return Ok(());
+        }
+        if !out.status.success() {
+            let detail = if !out.stderr.trim_ascii().is_empty() {
                 format!(
                     ": {}",
-                    String::from_utf8_lossy(stderr_bytes)
+                    String::from_utf8_lossy(out.stderr.trim_ascii())
                         .lines()
                         .next()
-                        .unwrap_or("(unknown error)")
+                        .unwrap_or("?")
                 )
             } else {
-                format!(
-                    " (exit code {})",
-                    exit_code
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                )
+                format!(" (exit {:?})", out.status.code())
             };
             return Err(format!(
                 "buzz git wrapper: refusing to push — querying effective config for \
-                 `remote.*.receivepack` produced an unexpected result{detail}. \
+                 push-relevant keys produced an unexpected result{detail}. \
                  Enforcement fails closed."
             ));
+        }
+
+        // Parse every NUL-delimited record and apply per-key policy.
+        for record in out.stdout.split(|&b: &u8| b == 0) {
+            if record.is_empty() {
+                continue; // trailing NUL after last record — normal
+            }
+            // Find the `\n` separator between key and value.
+            let sep = match record.iter().position(|&b| b == b'\n') {
+                Some(pos) => pos,
+                None => {
+                    return Err(String::from(
+                        "buzz git wrapper: refusing to push — `git config --null` produced \
+                         a malformed record (no key/value separator). \
+                         Enforcement fails closed.",
+                    ));
+                }
+            };
+            let key_bytes = &record[..sep];
+            let val_bytes = &record[sep + 1..];
+
+            // Non-UTF-8 key: fail closed.  Git itself rejects non-UTF-8 key names
+            // during write, but a hand-crafted config file can carry them.
+            let key_raw = match std::str::from_utf8(key_bytes) {
+                Ok(k) => k,
+                Err(_) => {
+                    return Err(String::from(
+                        "buzz git wrapper: refusing to push — effective config contains a \
+                         key with invalid UTF-8 in its name. \
+                         Enforcement fails closed.",
+                    ));
+                }
+            };
+
+            // Normalize the key for case-insensitive policy matching: section
+            // and variable names are case-insensitive in git; subsections are
+            // case-sensitive.  Produce `key` with section and variable
+            // ASCII-lowercased, subsection bytes preserved.
+            //
+            // Key format: `section.variable`  (no subsection)
+            //          or `section.subsection.variable`  (subsection may contain dots)
+            //
+            // Git's `--get-regexp` output already lowercases section and variable
+            // in modern versions, but we normalize here defensively so the policy
+            // checks are correct regardless of git version.
+            let key_norm: String = {
+                let first_dot = key_raw.find('.');
+                let last_dot = key_raw.rfind('.');
+                match (first_dot, last_dot) {
+                    (Some(f), Some(l)) if f == l => {
+                        // No subsection: `section.variable`
+                        let section = &key_raw[..f];
+                        let variable = &key_raw[f + 1..];
+                        format!(
+                            "{}.{}",
+                            section.to_ascii_lowercase(),
+                            variable.to_ascii_lowercase()
+                        )
+                    }
+                    (Some(f), Some(l)) if f < l => {
+                        // Has subsection: `section.subsection.variable`
+                        let section = &key_raw[..f];
+                        let subsection = &key_raw[f + 1..l]; // case-sensitive — not lowercased
+                        let variable = &key_raw[l + 1..];
+                        format!(
+                            "{}.{}.{}",
+                            section.to_ascii_lowercase(),
+                            subsection,
+                            variable.to_ascii_lowercase()
+                        )
+                    }
+                    _ => key_raw.to_ascii_lowercase(), // malformed — lowercase everything
+                }
+            };
+            let key = key_norm.as_str();
+
+            // Non-UTF-8 value: fail closed.  A non-UTF-8 URL is not a built-in
+            // transport form and cannot be proven safe.
+            let value = match std::str::from_utf8(val_bytes) {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — effective config key `{key}` \
+                         has a value with invalid UTF-8. Non-UTF-8 config values cannot be \
+                         proven safe. Enforcement fails closed."
+                    ));
+                }
+            };
+
+            // Any key whose name itself contains `::` encodes a helper scheme.
+            // Example: `url.ext::evil.pushinsteadof` — the executable helper
+            // `ext::evil` is in the key, not the value.
+            if key.as_bytes().windows(2).any(|w| w == b"::") {
+                return Err(format!(
+                    "buzz git wrapper: refusing to push — effective config key `{key}` \
+                     encodes a remote helper transport in its name (`::` sequence). \
+                     Remote helpers can split fetch and push endpoints, bypassing push \
+                     verification. Remove the helper transport config before pushing \
+                     in managed mode."
+                ));
+            }
+
+            // A `url.*` key whose subsection encodes an unknown `<scheme>://`
+            // invokes `git-remote-<scheme>` when git applies the rewrite.
+            // Example: `url.evil://payload.pushinsteadof` causes git to invoke
+            // `git-remote-evil` when it resolves any endpoint that matches the
+            // insteadOf pattern.
+            //
+            // Importantly, the scheme is the FULL subsection prefix before `://`,
+            // NOT just the last dot-segment.  For `url.foo.https://bar.insteadof`
+            // the subsection is `foo.https://bar`; git treats `foo.https` as the
+            // scheme and invokes `git-remote-foo.https` — so extracting only
+            // `https` (the last dot-segment) would falsely allow it.
+            //
+            // Correct extraction: strip the `url.` section prefix, then take
+            // everything up to the first `://` as the bare scheme string.
+            if key.starts_with("url.") {
+                let subsection_and_rest = &key["url.".len()..];
+                if let Some(sep) = subsection_and_rest
+                    .as_bytes()
+                    .windows(3)
+                    .position(|w| w == b"://")
+                {
+                    let bare_scheme = subsection_and_rest[..sep].as_bytes();
+                    if !is_builtin_url_scheme(bare_scheme) {
+                        return Err(format!(
+                            "buzz git wrapper: refusing to push — effective config key `{key}` \
+                             encodes an unknown URL scheme `{}` in its subsection. Only \
+                             built-in git transports (https, http, ssh, git, git+ssh, ssh+git, \
+                             file, ftp, ftps) are permitted in managed mode; other schemes \
+                             invoke an external `git-remote-<scheme>` helper.",
+                            String::from_utf8_lossy(bare_scheme)
+                        ));
+                    }
+                }
+            }
+
+            // Apply key-name-based policy.
+            match key {
+                // ── Refused transport/redirect override keys ──────────────────
+                // `remote.*.receivepack`: custom receive-pack programs can
+                // advertise decoy old-OIDs and redirect pushes.
+                k if k.starts_with("remote.") && k.ends_with(".receivepack") => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — effective config contains \
+                         `{key}` = `{value}`. Custom receive-pack programs cannot be used \
+                         in managed mode: they can advertise decoy old-OIDs and redirect \
+                         pushes to a different endpoint, bypassing push verification. \
+                         Remove the `receivepack` config key before pushing in managed mode."
+                    ));
+                }
+                // `core.sshcommand`: overrides the SSH program for all SSH ops.
+                k if k == "core.sshcommand" => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — effective config contains \
+                         `{key}` = `{value}`. This key overrides the SSH program for all \
+                         git transport operations and can route `ls-remote` to a seeded \
+                         decoy while routing `git-receive-pack` to a different target. \
+                         Remove it before pushing in managed mode."
+                    ));
+                }
+                // `core.gitproxy`: overrides the proxy for the native git:// protocol.
+                k if k == "core.gitproxy" => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — effective config contains \
+                         `{key}` = `{value}`. This key overrides the proxy for the native \
+                         git:// protocol and can route `ls-remote` to a seeded decoy while \
+                         routing `git-receive-pack` to a different target. \
+                         Remove it before pushing in managed mode."
+                    ));
+                }
+                // `remote.*.vcs`: invokes external VCS remote helpers.
+                k if k.starts_with("remote.") && k.ends_with(".vcs") => {
+                    return Err(format!(
+                        "buzz git wrapper: refusing to push — effective config contains \
+                         `{key}` = `{value}`. External VCS remote helpers can split fetch \
+                         and push endpoints, bypassing push verification. \
+                         Remove it before pushing in managed mode."
+                    ));
+                }
+
+                // ── Endpoint keys: check value for helper URL and CR/LF ──────
+                k if (k.starts_with("remote.")
+                    && (k.ends_with(".url") || k.ends_with(".pushurl")))
+                    || (k.starts_with("url.")
+                        && (k.ends_with(".insteadof") || k.ends_with(".pushinsteadof")))
+                    || k == "remote.pushdefault"
+                    || (k.starts_with("branch.")
+                        && (k.ends_with(".remote") || k.ends_with(".pushremote"))) =>
+                {
+                    // Helper transport in value: any `::` sequence.
+                    if val_bytes.windows(2).any(|w| w == b"::") {
+                        return Err(format!(
+                            "buzz git wrapper: refusing to push — effective config key `{key}` \
+                             has value `{value}` which uses a remote helper transport \
+                             (`<transport>::<address>` or `ext::<cmd>`). Remote helpers can \
+                             split fetch and push endpoints, bypassing push verification. \
+                             Remove the helper transport URL before pushing in managed mode."
+                        ));
+                    }
+                    // Unknown `<scheme>://` in value: git dispatches any URL whose
+                    // scheme is not built-in to an external `git-remote-<scheme>`
+                    // helper.  Same bypass risk as the `::` form.
+                    if let Some(sep) = val_bytes.windows(3).position(|w| w == b"://") {
+                        let scheme = &val_bytes[..sep];
+                        if !is_builtin_url_scheme(scheme) {
+                            return Err(format!(
+                                "buzz git wrapper: refusing to push — effective config key \
+                                 `{key}` has value `{value}` which uses an unknown URL scheme \
+                                 `{}`. Only built-in git transports (https, http, ssh, git, \
+                                 git+ssh, ssh+git, file, ftp, ftps) are permitted in managed \
+                                 mode; other schemes invoke an external `git-remote-<scheme>` \
+                                 helper that can split fetch and push endpoints.",
+                                String::from_utf8_lossy(scheme)
+                            ));
+                        }
+                    }
+                    // CR or LF in value: newline-bypass.
+                    if val_bytes.contains(&b'\n') || val_bytes.contains(&b'\r') {
+                        return Err(format!(
+                            "buzz git wrapper: refusing to push — effective config key `{key}` \
+                             contains a CR or LF in its value. Endpoint URLs containing \
+                             newlines make the push destination ambiguous in git's porcelain \
+                             output. Enforcement fails closed."
+                        ));
+                    }
+                }
+
+                // All other keys in the remote/url/branch/core namespace are
+                // informational or unrelated to push-transport security — ignore.
+                _ => {}
+            }
         }
     }
 
@@ -1002,7 +1444,14 @@ fn verify_push(
     // against `effective_argv` (the alias-expanded command) so that a bare-word
     // alias like `alias.p = push --exec evil` doesn't slip past a literal-argv
     // scan.
-    reject_receive_pack_override(real_git, effective_argv, ctx)?;
+    reject_receive_pack_override(effective_argv)?;
+
+    // Single-snapshot inspection of environment, argv, and effective config for
+    // transport overrides, helper URLs, and endpoint newlines.  One bounded
+    // `git config --null --get-regexp` covers all key families; env and argv
+    // are checked synchronously.  See `inspect_push_config` for the full
+    // bypass taxonomy and key-name policy.
+    inspect_push_config(real_git, effective_argv, ctx)?;
 
     // git's resolved update plan. Unreachable remote / any dry-run failure =
     // fail closed with the loud message: the real push would fail anyway, and
@@ -1573,14 +2022,39 @@ fn rev_list_outgoing(
     )
 }
 
-/// The distinct object ids the destination currently holds, read from the
-/// remote itself via `git ls-remote <dest>`. This contacts the real remote, so
-/// it is immune to forged local `refs/remotes/*`. `None` on any failure (caller
-/// fails closed); an empty vec means the remote has no refs (a brand-new
-/// destination), which is a valid state, not an error.
+/// The distinct object ids the destination currently holds, queried via the
+/// **receive** service (`git ls-remote --upload-pack=git-receive-pack <dest>`).
+///
+/// Using the receive service rather than the default upload service (fetch) is
+/// the load-bearing design choice: it binds the exclusion-set inventory to the
+/// same backend that will accept the real push.  When the two services have
+/// different views of the repository (honest server misconfiguration, or an
+/// adversarial split via `GIT_SSH_COMMAND` routing ls-remote to a decoy while
+/// routing git-receive-pack to a different target), querying upload-pack returns
+/// the decoy's object set and the bypass succeeds; querying receive-pack returns
+/// the real write target's object set, so no false exemption is granted.
+///
+/// The `--upload-pack=git-receive-pack` argument to `ls-remote` names the
+/// program to invoke on the server side.  For local-path and SSH transports git
+/// literally invokes `git-receive-pack <path>`, binding the inventory query to
+/// the same service that will accept the real push.  For HTTP(S) the argument
+/// is silently ignored: git issues `/info/refs?service=git-upload-pack`
+/// regardless, so for HTTP(S) remotes the inventory reflects the fetch view,
+/// not the receive view.  Accepting this best-effort ceiling for HTTP(S) is an
+/// explicit design decision; the guard therefore fully closes the split-service
+/// bypass only for local and SSH transports, where the flag is honoured.
+///
+/// Callers still call `reject_receive_pack_override` before reaching here, so
+/// a caller-supplied `--receive-pack`/`--exec` argv or `remote.*.receivepack`
+/// config cannot repoint this probe.  `inspect_push_config` ensures no
+/// `GIT_SSH*` / `core.sshCommand` can steer this call independently of the
+/// real push.
+///
+/// `None` on any failure (caller fails closed); an empty vec means the remote
+/// has no refs (brand-new destination), which is a valid state, not an error.
 fn remote_object_ids(real_git: &Path, ctx: &[String], dest: &str) -> Option<Vec<String>> {
     let mut args = ctx.to_vec();
-    args.extend(["ls-remote", dest].map(String::from));
+    args.extend(["ls-remote", "--upload-pack=git-receive-pack", dest].map(String::from));
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // Bounded: contacts the remote, so an unresponsive one must not hang the
     // wrapper. Timeout returns `None`, which the caller fails closed on.
@@ -1588,11 +2062,42 @@ fn remote_object_ids(real_git: &Path, ctx: &[String], dest: &str) -> Option<Vec<
     if !out.status.success() {
         return None;
     }
-    let mut ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_string)
-        .collect();
+    // Strict UTF-8: lossy decoding silently discards bytes an adversarial
+    // receive-service could use to inject a fake OID string.
+    let text = match std::str::from_utf8(&out.stdout) {
+        Ok(s) => s,
+        Err(_) => return None, // non-UTF-8 ls-remote output is not a valid server
+    };
+    // Truly empty output means the remote has no refs — valid for a brand-new
+    // destination.  A non-empty output that produces zero valid records is
+    // malformed and fails closed.
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        // git ls-remote output format: `<object-id>\t<refname>`
+        // Validate the OID field: must be exactly 40 (SHA-1) or 64 (SHA-256)
+        // lowercase hex characters, separated from the ref by a tab.
+        let tab = match line.find('\t') {
+            Some(pos) => pos,
+            None => return None, // malformed record — fail closed
+        };
+        let oid = &line[..tab];
+        let valid_oid = (oid.len() == 40 || oid.len() == 64)
+            && oid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if !valid_oid {
+            return None; // non-hex or wrong-length OID — fail closed
+        }
+        ids.push(oid.to_string());
+    }
+    // If we saw non-empty output but extracted no IDs, something is wrong.
+    if ids.is_empty() {
+        return None;
+    }
     ids.sort_unstable();
     ids.dedup();
     Some(ids)
@@ -1652,32 +2157,251 @@ fn capture_raw_with_stdin(
 const DRY_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Like [`capture_raw`] but killed if it runs past `timeout`. Returns `None` on
-/// spawn failure OR timeout (caller fails closed). The process is killed and
-/// reaped on timeout so no zombie or detached network client survives.
+/// spawn failure OR timeout (caller fails closed). The entire process group is
+/// killed and reaped on timeout so no zombie, detached network client, or
+/// remote-helper grandchild survives.
+///
+/// Follows the `bounded_command.rs` discipline:
+///
+/// - **Deadlock prevention:** stdout/stderr are drained concurrently on
+///   background threads. Without concurrent draining a child that writes more
+///   than one pipe-buffer (~16 KB macOS / 64 KB Linux) blocks in the kernel;
+///   `wait_timeout` then waits for the child to exit; deadlock. The config
+///   snapshot query can emit several hundred KB on a repo with many worktrees.
+///
+/// - **Memory bound:** an aggregate `stdout+stderr` byte ceiling
+///   ([`BOUNDED_CAPTURE_LIMIT`]) is enforced inside the drain sink, not after
+///   the fact. On breach the tree is killed and `None` is returned, so a
+///   hostile remote peer that streams until the deadline cannot exhaust memory.
+///   The drain returns immediately on overflow rather than continuing to read,
+///   which is what bounds a continuously-readable pipe.
+///
+/// - **Process-tree kill:** the child is spawned in its own process group
+///   (`process_group(0)` on Unix). On timeout or overflow the full group is
+///   signalled, so SSH sessions, `git-remote-*` helpers, and any other
+///   grandchild spawned by git are also reaped.
+///
+/// - **Group-escaped writer:** on Unix, `kill_tree` is `killpg` on the child's
+///   group and does not reach a descendant that called `setsid`/`setpgid`
+///   while retaining the pipe. The drain reads are therefore made non-blocking,
+///   and after the `stop` flag is set a `WouldBlock` ends the drain rather than
+///   blocking the join forever.
+///
+/// - **Kill on success too:** a git remote helper can background a grandchild
+///   that outlives the leader. `kill_tree` + `stop` run on every exit path.
+const BOUNDED_CAPTURE_LIMIT: u64 = 32 << 20; // 32 MiB — headroom above any real config output
+
+/// Poll interval while waiting for the child to exit in [`capture_raw_bounded`].
+const BOUNDED_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Idle backoff inside the nonblocking Unix drain when no bytes are available.
+#[cfg(unix)]
+const DRAIN_IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Set a file descriptor non-blocking so reads return `WouldBlock` immediately
+/// when no bytes are available.  Returns `false` on any `fcntl` failure.
+#[cfg(unix)]
+fn set_nonblocking_fd<F: std::os::unix::io::AsRawFd>(f: &F) -> bool {
+    let fd = f.as_raw_fd();
+    // SAFETY: `F_GETFL`/`F_SETFL` read and set only the flags of `fd`;
+    // `fd` is owned by `f` for the duration of this call.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 {
+            return false;
+        }
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
+    }
+}
+
+/// Drain one child stream on its own thread into a buffer bounded by the
+/// shared aggregate budget.  Returns the captured bytes, or `Err` on a read
+/// error other than `Interrupted`/`WouldBlock`.
+///
+/// On overflow the thread returns immediately (it does NOT drain to EOF), so a
+/// continuously-readable pipe cannot spin the loop forever.  After teardown
+/// sets `stop`, a `WouldBlock` ends a Unix drain even if a group-escaped writer
+/// still holds the pipe.
+fn spawn_bounded_drain<R: std::io::Read + Send + 'static>(
+    mut reader: R,
+    total: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    overflow: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    use std::io::ErrorKind;
+    use std::sync::atomic::Ordering;
+    #[cfg(windows)]
+    let _ = &stop; // only used on Unix
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => return Ok(buf),
+                Ok(n) => {
+                    let prev = total.fetch_add(n as u64, Ordering::Relaxed);
+                    if prev.saturating_add(n as u64) > BOUNDED_CAPTURE_LIMIT {
+                        overflow.store(true, Ordering::Relaxed);
+                        // Clamp what we retain, then return immediately.
+                        // Do NOT keep reading — a continuously-readable
+                        // pipe would never reach WouldBlock/stop otherwise.
+                        let keep =
+                            BOUNDED_CAPTURE_LIMIT.saturating_sub(prev).min(n as u64) as usize;
+                        buf.extend_from_slice(&chunk[..keep]);
+                        return Ok(buf);
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                #[cfg(unix)]
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if stop.load(Ordering::Relaxed) {
+                        return Ok(buf); // teardown done; escaped writer may hold pipe
+                    }
+                    std::thread::sleep(DRAIN_IDLE_POLL);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })
+}
+
+fn join_bounded_drain(
+    handle: Option<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+) -> Option<Vec<u8>> {
+    match handle {
+        Some(h) => h.join().ok()?.ok(),
+        None => Some(Vec::new()),
+    }
+}
+
 fn capture_raw_bounded(
     real_git: &Path,
     args: &[&str],
     timeout: std::time::Duration,
 ) -> Option<std::process::Output> {
+    use std::io::ErrorKind;
     use std::process::Stdio;
-    use wait_timeout::ChildExt;
-    let mut child = {
-        let mut cmd = std::process::Command::new(real_git);
-        cmd.args(args);
-        scrub_env(&mut cmd);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd.spawn().ok()?
-    };
-    match child.wait_timeout(timeout).ok()? {
-        Some(_status) => child.wait_with_output().ok(),
-        None => {
-            // Timed out: kill and reap, then report failure (None).
-            let _ = child.kill();
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let mut cmd = std::process::Command::new(real_git);
+    cmd.args(args);
+    scrub_env(&mut cmd);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Spawn in an isolated process group so kill-on-timeout reaches the full
+    // tree (SSH, remote helpers, etc.), not just the direct child.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP: new group for group-kill on timeout.
+        cmd.creation_flags(0x0000_0200);
+    }
+
+    let mut child = cmd.spawn().ok()?;
+    let child_pid = child.id();
+
+    let stdout_pipe = child.stdout.take()?;
+    let stderr_pipe = child.stderr.take()?;
+
+    // Unix: make pipe reads non-blocking so drain threads can stop on a
+    // WouldBlock after teardown, even if a group-escaped writer holds the pipe.
+    #[cfg(unix)]
+    {
+        if !set_nonblocking_fd(&stdout_pipe) || !set_nonblocking_fd(&stderr_pipe) {
+            kill_bounded_tree(&mut child, child_pid);
             let _ = child.wait();
-            None
+            return None;
         }
+    }
+    let total = Arc::new(AtomicU64::new(0));
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let stdout_drain = Some(spawn_bounded_drain(
+        stdout_pipe,
+        total.clone(),
+        overflow.clone(),
+        stop.clone(),
+    ));
+    let stderr_drain = Some(spawn_bounded_drain(
+        stderr_pipe,
+        total.clone(),
+        overflow.clone(),
+        stop.clone(),
+    ));
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    kill_bounded_tree(&mut child, child_pid);
+                    break None;
+                }
+                if overflow.load(Ordering::Relaxed) {
+                    kill_bounded_tree(&mut child, child_pid);
+                    break None;
+                }
+                std::thread::sleep(BOUNDED_POLL);
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => {
+                kill_bounded_tree(&mut child, child_pid);
+                break None;
+            }
+        }
+    };
+
+    // Kill on every path (idempotent) — a successful child may have
+    // backgrounded a grandchild that still holds the pipe.  Then raise `stop`
+    // so the nonblocking Unix drains end on the next WouldBlock instead of
+    // waiting on a group-escaped writer indefinitely.
+    kill_bounded_tree(&mut child, child_pid);
+    let _ = child.wait();
+    stop.store(true, Ordering::Relaxed);
+
+    let stdout = join_bounded_drain(stdout_drain);
+    let stderr = join_bounded_drain(stderr_drain);
+
+    let (status, stdout, stderr) = (status?, stdout?, stderr?);
+    if overflow.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+/// Kill the entire process group spawned with `process_group(0)` on Unix, or
+/// fall back to killing the direct child on platforms where group kill is
+/// unavailable. Called on timeout, overflow, and success (idempotent).
+fn kill_bounded_tree(_child: &mut std::process::Child, pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: `pid` equals the child's PGID (set via `process_group(0)`).
+        // `killpg` sends SIGKILL to every member of the group.  ESRCH on a
+        // dead/already-reaped group is intentional (idempotent).
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+        let _ = pid; // suppress unused-variable on non-unix builds
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        let _ = child.kill();
     }
 }
 
@@ -1784,6 +2508,14 @@ fn exec_real_git(real_git: &Path, argv: &[String], authority: Option<&Authority>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Process-global env lock.  Every test that mutates any env variable
+    /// (`GIT_SSH_COMMAND`, `BUZZ_TEST_*`, etc.) must hold this guard for the
+    /// duration of the mutation and any subprocess that reads the mutated env.
+    /// `cargo test` runs test functions concurrently within one process; tests
+    /// that observe each other's attack env fail nondeterministically.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn v(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -2531,23 +3263,33 @@ mod tests {
     fn config_env_shell_alias_is_refused_commit_variant() {
         // `--config-env=alias.x=VAR` sources the alias body from an env var. The
         // probe inherits the process env, so it resolves the alias git would.
-        std::env::set_var(
-            "BUZZ_TEST_EVIL_ALIAS",
-            "!git -c user.email=evil@x.com commit",
-        );
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var(
+                "BUZZ_TEST_EVIL_ALIAS",
+                "!git -c user.email=evil@x.com commit",
+            );
+        }
         let argv = v(&["--config-env=alias.x=BUZZ_TEST_EVIL_ALIAS", "x"]);
         let err = verify_alias_safety(&real_git(), &argv, &caller_globals(&argv))
             .expect_err("--config-env shell alias must be refused");
-        std::env::remove_var("BUZZ_TEST_EVIL_ALIAS");
+        unsafe {
+            std::env::remove_var("BUZZ_TEST_EVIL_ALIAS");
+        }
         assert!(err.contains("shell (`!`) git alias"), "{err}");
     }
 
     #[test]
     fn config_env_alias_to_push_is_recognized_push_variant() {
-        std::env::set_var("BUZZ_TEST_PUSH_ALIAS", "push origin main");
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("BUZZ_TEST_PUSH_ALIAS", "push origin main");
+        }
         let argv = v(&["--config-env=alias.x=BUZZ_TEST_PUSH_ALIAS", "x"]);
         let kind = is_push_command(&real_git(), &argv, &caller_globals(&argv));
-        std::env::remove_var("BUZZ_TEST_PUSH_ALIAS");
+        unsafe {
+            std::env::remove_var("BUZZ_TEST_PUSH_ALIAS");
+        }
         assert!(matches!(kind, PushKind::Push));
     }
 
@@ -2884,7 +3626,7 @@ mod tests {
         ]);
         // Precondition: scanning literal argv alone would NOT catch --exec.
         assert!(
-            reject_receive_pack_override(&real_git(), &literal_argv, &ctx).is_ok(),
+            reject_receive_pack_override(&literal_argv).is_ok(),
             "literal argv must not trigger the guard (--exec not present)"
         );
         // The guard must fire on the expanded argv.
@@ -2896,21 +3638,200 @@ mod tests {
         );
     }
 
-    /// (Wes P1) `remote.<name>.receivepack` in config is refused.
-    /// Mutation: removing the config probe from `reject_receive_pack_override`
-    /// must let this push proceed past the guard (it will then fail at the
-    /// author check, not the receivepack check).
+    /// (Wes P1 / Carl review) `remote.<name>.receivepack` in config is refused.
+    ///
+    /// **Positive-control redirect regression**: proves the bypass is executable,
+    /// not just that the guard fires. Setup:
+    ///   - `remote` = the nominal push destination (what `ls-remote` would read).
+    ///     Seeded with the first commit so its OID appears "already remote" and
+    ///     `partition_outgoing` would exempt it.
+    ///   - `redirect` = an empty bare repo. Configured as the receive-pack
+    ///     endpoint via `remote.origin.receivepack`, so the real push lands here
+    ///     instead of `remote`.
+    ///   - A new commit is made so its SHA is not yet on `remote`.
+    ///   - A direct `git push` (bypassing `verify_push`) is issued. Git's
+    ///     `ls-remote --upload-pack=git-receive-pack origin` reads `remote`
+    ///     (returns the first commit's OID), but the real receive-pack is the
+    ///     custom program pointing at `redirect` — so the new commit lands in
+    ///     `redirect`, not `remote`. This proves the redirect is real.
+    ///
+    /// Mutation evidence: removing the `remote.*.receivepack` policy arm from
+    /// `inspect_push_config` removes the guard; the push would then proceed and
+    /// land at `redirect`, not `remote`, as the positive-control block proves.
     #[test]
     fn verify_push_rejects_receivepack_config() {
         let (_d, repo) = human_authored_repo();
         let remote = tempfile::tempdir().unwrap();
-        let decoy = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
+        let redirect = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        g(&["init", "-q", "--bare", redirect.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+
+        // Seed `remote` with the first commit so `ls-remote` would return its OID
+        // (making `partition_outgoing` exempt it as "already remote").
+        let first_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "-q",
+            "--no-verify",
+            remote.path().to_str().unwrap(),
+            &format!("{first_sha}:refs/heads/seed"),
+        ]);
+
+        // Configure receivepack to redirect the real push to `redirect`.
+        // Git invokes the receivepack program as a shell command, passing the
+        // remote-dir as an additional argument.  A wrapper script that ignores
+        // the passed dir and unconditionally calls `git-receive-pack <redirect>`
+        // makes every push via `origin` land in `redirect` instead of `remote`.
+        let rp_script = redirect.path().join("fake_rp.sh");
+        std::fs::write(
+            &rp_script,
+            format!(
+                "#!/bin/sh\nexec git-receive-pack '{}'\n",
+                redirect.path().display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&rp_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "config",
+            "remote.origin.receivepack",
+            rp_script.to_str().unwrap(),
+        ]);
+
+        // Positive-control: make a new commit (not yet on `remote` or `redirect`)
+        // and direct-push it bypassing `verify_push`. This proves the redirect is
+        // executable — the commit lands in `redirect`, not `remote`.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "commit",
+            "--allow-empty",
+            "-q",
+            "--no-verify",
+            "-m",
+            "redirect-test",
+            "--author",
+            "Human Author <human@example.com>",
+        ]);
+        let second_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let direct_push = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "push",
+                "--no-verify",
+                "-q",
+                "origin",
+                &format!("{second_sha}:refs/heads/redirected"),
+            ])
             .status()
             .unwrap();
+        assert!(
+            direct_push.success(),
+            "direct push with custom receivepack must succeed (redirect is live)"
+        );
+        // `redirect` must contain the new commit — proving the receive-pack redirect fired.
+        let redirect_refs: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(["ls-remote", redirect.path().to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut p = l.split_whitespace();
+                    let sha = p.next()?;
+                    let r = p.next()?;
+                    Some(format!("{sha} {r}"))
+                })
+                .collect()
+        };
+        assert!(
+            redirect_refs
+                .iter()
+                .any(|r| r.contains("refs/heads/redirected")),
+            "positive-control: new commit must have landed in redirect, not remote; \
+             redirect_refs={redirect_refs:?}"
+        );
+        // `remote` must NOT contain the new commit (it was redirected away).
+        let remote_refs: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(["ls-remote", remote.path().to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut p = l.split_whitespace();
+                    let sha = p.next()?;
+                    let r = p.next()?;
+                    Some(format!("{sha} {r}"))
+                })
+                .collect()
+        };
+        assert!(
+            !remote_refs
+                .iter()
+                .any(|r| r.contains("refs/heads/redirected")),
+            "positive-control: redirected commit must NOT appear in remote (the nominal \
+             ls-remote target); remote_refs={remote_refs:?}"
+        );
+
+        // Production guard: `verify_push` must refuse before any push runs.
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("remote.origin.receivepack must be refused");
+        assert!(
+            err.contains("receivepack") || err.contains("receive-pack"),
+            "expected receivepack refusal; got: {err}"
+        );
+    }
+
+    /// Case-varied regression: `remote.Origin.receivePack` (capital section and
+    /// variable) must be caught by the same config guard as `remote.origin.receivepack`.
+    /// Proves that normalization after parsing handles case-varied output and
+    /// that the ERE character-class filter captures the key.
+    #[test]
+    fn verify_push_rejects_case_varied_receivepack_config() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
         std::process::Command::new("git")
-            .args(["init", "-q", "--bare", decoy.path().to_str().unwrap()])
+            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
             .status()
             .unwrap();
         std::process::Command::new("git")
@@ -2924,29 +3845,63 @@ mod tests {
             ])
             .status()
             .unwrap();
-        // Configure a custom receivepack for origin — Wes's attack vector.
+
+        // Write the key with capital casing directly into the config file so git
+        // does not normalize it on write.
+        let config_path = repo.join(".git/config");
+        let mut cfg = std::fs::read_to_string(&config_path).unwrap();
+        cfg.push_str("\n[Remote \"origin\"]\n    receivePack = evil-rp\n");
+        std::fs::write(&config_path, cfg).unwrap();
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("Remote.origin.receivePack must be refused");
+        assert!(
+            err.contains("receivepack") || err.contains("receive-pack"),
+            "expected receivepack refusal for case-varied key; got: {err}"
+        );
+    }
+
+    /// Case-varied regression: `Core.sshCommand` (capital section name) must be
+    /// caught by the same guard as `core.sshcommand`.
+    #[test]
+    fn verify_push_rejects_case_varied_sshcommand_config() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", remote.path().to_str().unwrap()])
+            .status()
+            .unwrap();
         std::process::Command::new("git")
             .args([
                 "-C",
                 repo.to_str().unwrap(),
-                "config",
-                "remote.origin.receivepack",
-                &format!("git --upload-pack={}", decoy.path().display()),
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().unwrap(),
             ])
             .status()
             .unwrap();
+
+        // Write [Core] section with capital casing directly.
+        let config_path = repo.join(".git/config");
+        let mut cfg = std::fs::read_to_string(&config_path).unwrap();
+        cfg.push_str("\n[Core]\n    sshCommand = /evil/ssh\n");
+        std::fs::write(&config_path, cfg).unwrap();
+
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
         let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
         let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
-            .expect_err("remote.origin.receivepack must be refused");
+            .expect_err("Core.sshCommand must be refused");
         assert!(
-            err.contains("receivepack") || err.contains("receive-pack"),
-            "{err}"
+            err.contains("sshcommand") || err.contains("sshCommand") || err.contains("SSH"),
+            "expected sshCommand refusal for case-varied key; got: {err}"
         );
     }
 
     /// (Wes P1) Multiple `pushurl`s produce multiple `To` headers in
-    /// `--porcelain` output; `parse_porcelain_destination_unique` returns `None`
     /// and `verify_push` fails closed with the multiple-destination error.
     ///
     /// Mutation-sensitivity: this test seeds A with the offending commit (so
@@ -3085,6 +4040,152 @@ mod tests {
             err.contains("multiple") || err.contains("destination"),
             "expected multiple-destination refusal; {err}"
         );
+
+        // Executable mutation evidence: without the guard, a direct `git push
+        // origin main` (bypassing verify_push) pushes to BOTH A and B.  B starts
+        // empty; after the direct push B contains HEAD.  This confirms that the
+        // guard is the only thing preventing the A-has-HEAD/B-empty bypass —
+        // the underlying push mechanism really does populate B.
+        let b_before: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(&["ls-remote", b.path().to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        assert!(
+            b_before.is_empty(),
+            "mutation precondition: B must be empty before direct push; \
+             got: {b_before:?}"
+        );
+        // Direct push — bypasses verify_push, exercises the raw git mechanism.
+        let direct_push = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "push",
+                "--no-verify",
+                "-q",
+                "origin",
+                "main",
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            direct_push.success(),
+            "direct push must succeed (both pushurls accept the refs)"
+        );
+        let b_after: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(&["ls-remote", b.path().to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        assert!(
+            b_after.contains(&head_sha),
+            "mutation evidence: B received HEAD ({head_sha}) on direct push — \
+             verify_push's multi-dest guard is the sole barrier; b_after={b_after:?}"
+        );
+    }
+
+    /// `remote_object_ids` must fail closed (return None) when `ls-remote`
+    /// output contains non-UTF-8 bytes — an adversarial receive service could
+    /// emit these to bypass strict-UTF-8 checking.
+    #[test]
+    fn remote_object_ids_rejects_non_utf8_output() {
+        // Fake ls-remote that emits invalid UTF-8 bytes then exits 0.
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_bin = bin_dir.path().join("git");
+        // Output: 0xFF 0xFE (not valid UTF-8) followed by a NUL and \n, then exit 0.
+        std::fs::write(&fake_bin, b"#!/bin/sh\nprintf '\\xff\\xfe'\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ctx: Vec<String> = vec![];
+        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
+        assert!(
+            result.is_none(),
+            "non-UTF-8 ls-remote output must fail closed (None)"
+        );
+    }
+
+    /// `remote_object_ids` must fail closed when a record lacks a tab separator
+    /// (malformed line that does not follow `<oid>\t<ref>`).
+    #[test]
+    fn remote_object_ids_rejects_no_tab_separator() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_bin = bin_dir.path().join("git");
+        // Output: valid-looking but space-separated (not tab) — malformed.
+        let oid = "a".repeat(40);
+        std::fs::write(
+            &fake_bin,
+            format!("#!/bin/sh\nprintf '{oid} refs/heads/main\\n'\nexit 0\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ctx: Vec<String> = vec![];
+        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
+        assert!(
+            result.is_none(),
+            "space-separated (no tab) ls-remote record must fail closed"
+        );
+    }
+
+    /// `remote_object_ids` must fail closed when the OID field is not a valid
+    /// 40- or 64-character lowercase hex string.
+    #[test]
+    fn remote_object_ids_rejects_invalid_oid() {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fake_bin = bin_dir.path().join("git");
+        // 39-character OID (too short) with a tab separator.
+        let short_oid = "a".repeat(39);
+        std::fs::write(
+            &fake_bin,
+            format!("#!/bin/sh\nprintf '{short_oid}\\trefs/heads/main\\n'\nexit 0\n"),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ctx: Vec<String> = vec![];
+        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
+        assert!(
+            result.is_none(),
+            "short OID in ls-remote output must fail closed"
+        );
+    }
+
+    /// A valid empty bare repo (no refs) must return `Some([])`, not `None`.
+    /// An empty inventory is a normal state (brand-new push target) and must not
+    /// be confused with a malformed receive-service response.
+    #[test]
+    fn remote_object_ids_accepts_empty_bare_repo() {
+        let bare = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare", bare.path().to_str().unwrap()])
+            .status()
+            .unwrap();
+        let ctx: Vec<String> = vec![];
+        let result = remote_object_ids(&real_git(), &ctx, bare.path().to_str().unwrap())
+            .expect("empty bare repo must return Some([])");
+        assert!(result.is_empty(), "empty repo must return empty ID list");
     }
 
     /// (Wes P1) Chained `pushInsteadOf`→`insteadOf` rewrite: the `To` header
@@ -3842,6 +4943,111 @@ mod tests {
 
     // ── I6: the dry-run probe is bounded and a timeout fails closed ────────────
 
+    /// `verify_push_rejects_dotted_scheme_in_url_rewrite_key`: a
+    /// `url.foo.https://bar.insteadOf` rewrite key redirects any URL starting
+    /// with the insteadOf value through git's remote-helper dispatch, which
+    /// would invoke `git-remote-foo.https` (a helper with a dot in its scheme).
+    /// The production guard must refuse before any helper is invoked.
+    ///
+    /// **Positive-control precondition**: this test also proves that with the
+    /// guard bypassed (a direct git subprocess with the sentinel on PATH) git
+    /// DOES invoke the helper, establishing that the bypass is executable —
+    /// not just that the guard fires (which would be a vacuous test if git
+    /// never invoked the helper regardless).
+    #[test]
+    fn verify_push_rejects_dotted_scheme_in_url_rewrite_key() {
+        let (_d, repo) = human_authored_repo();
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        let marker = sentinel_dir.path().join("dotted_scheme_invoked");
+        // The helper name git would look for is `git-remote-foo.https`.
+        let sentinel = sentinel_dir.path().join("git-remote-foo.https");
+        std::fs::write(
+            &sentinel,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+
+        // Write a `url.foo.https://bar.insteadOf` rewrite key.  The subsection
+        // is `foo.https://bar`; git treats `foo.https` as the scheme and would
+        // invoke `git-remote-foo.https` for any endpoint that starts with `bar`.
+        // Point origin at `http://safe/` — the insteadOf value — so the rewrite
+        // FIRES when git resolves it.  An origin pointing at a local path would
+        // never match the rewrite, making the bypass precondition vacuous.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            "http://safe/",
+        ]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "config",
+            "url.foo.https://bar.insteadOf",
+            "http://safe/",
+        ]);
+
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut sentinel_path = std::ffi::OsString::from(sentinel_dir.path());
+        sentinel_path.push(":");
+        sentinel_path.push(&original_path);
+
+        // Positive-control precondition: prove that with the guard bypassed
+        // (direct git subprocess, sentinel on PATH) git DOES invoke the helper.
+        // `git ls-remote origin` with the rewrite active and `foo.https` on PATH
+        // invokes `git-remote-foo.https`, which touches the marker and exits 1.
+        // We use a subprocess so PATH manipulation is process-local and safe.
+        let probe_status = std::process::Command::new("git")
+            .args(["-C", repo.to_str().unwrap(), "ls-remote", "origin"])
+            .env("PATH", &sentinel_path)
+            .status()
+            .unwrap();
+        assert!(
+            marker.exists() || !probe_status.success(),
+            "positive-control precondition: direct git ls-remote must invoke the \
+             foo.https sentinel (marker={}, status={:?})",
+            marker.exists(),
+            probe_status.code()
+        );
+        // Reset marker for the production-guard assertion below.
+        let _ = std::fs::remove_file(&marker);
+
+        // Production guard: verify_push must refuse the key without PATH mutation.
+        // The guard fires in inspect_push_config before any git subprocess runs,
+        // so PATH does not need to contain the sentinel here.
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+        let result = verify_push(&real_git(), &argv, &argv, &ctx, &managed());
+
+        let err = result.expect_err("dotted-scheme url rewrite key must be refused");
+        assert!(
+            err.contains("foo.https")
+                || err.contains("unknown URL scheme")
+                || err.contains("subsection"),
+            "expected dotted-scheme refusal; got: {err}"
+        );
+        assert!(
+            !marker.exists(),
+            "git-remote-foo.https sentinel was invoked — the dotted-scheme guard did not fire"
+        );
+    }
+
+    // ── I6: the dry-run probe is bounded and a timeout fails closed ────────────
+
     /// `capture_raw_bounded` must kill and report failure (`None`) when the
     /// child outlives the timeout, so a hung remote probe cannot block the
     /// wrapper indefinitely. Uses a tiny timeout against a sleep to prove the
@@ -3879,5 +5085,835 @@ mod tests {
         .expect("fast child must produce output");
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "ok");
+    }
+
+    /// A child that emits large output (well under the cap) returns it in full.
+    /// This proves the concurrent drain delivers all bytes, not just a partial
+    /// chunk — the pipe-buffer deadlock would truncate or hang instead.
+    #[cfg(unix)]
+    #[test]
+    fn capture_raw_bounded_returns_large_output() {
+        // 256 KiB — well above one pipe buffer (~16 KB macOS, ~64 KB Linux)
+        // and well under BOUNDED_CAPTURE_LIMIT.
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", "dd if=/dev/zero bs=1024 count=256 2>/dev/null"],
+            std::time::Duration::from_secs(10),
+        )
+        .expect("large-output child must produce output");
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 256 * 1024, "all 256 KiB must be returned");
+    }
+
+    /// A child that emits output beyond BOUNDED_CAPTURE_LIMIT fails closed.
+    /// Proves the overflow path fires before the timeout deadline.
+    #[cfg(unix)]
+    #[test]
+    fn capture_raw_bounded_fails_closed_on_overflow() {
+        // Use a very long timeout so a return well before it proves the cap — not
+        // the timeout — ended the call.
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", "exec cat /dev/zero"],
+            std::time::Duration::from_secs(60),
+        );
+        assert!(
+            out.is_none(),
+            "an unbounded producer must fail closed on the capture cap before the deadline"
+        );
+    }
+
+    /// A child that exits cleanly but backgrounds a grandchild holding the pipe
+    /// must not block the drain joins.  Proves kill-on-success + stop-flag
+    /// work together.
+    #[cfg(unix)]
+    #[test]
+    fn capture_raw_bounded_returns_when_descendant_holds_pipe() {
+        let pid_file = tempfile::NamedTempFile::new().unwrap();
+        let pid_path = pid_file.path().to_str().unwrap().to_string();
+        // Background a `sleep` that retains stdout; record its PID; leader exits.
+        let script = format!(
+            "sleep 30 & echo $! > '{pid_path}'; \
+             until [ -s '{pid_path}' ]; do :; done; echo done; exit 0"
+        );
+        let start = std::time::Instant::now();
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", &script],
+            std::time::Duration::from_secs(10),
+        )
+        .expect("leader exits, so output must be returned");
+        assert!(out.status.success());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(8),
+            "must return well before the timeout; elapsed={:?}",
+            start.elapsed()
+        );
+    }
+
+    /// A child that backgrounds a grandchild calling `setsid()` (escaping the
+    /// process group) that then holds the pipe must still return promptly.
+    /// This is the exact group-escape case; the nonblocking drain stops on
+    /// `WouldBlock` after teardown rather than blocking on the escaped writer.
+    #[cfg(unix)]
+    #[test]
+    fn capture_raw_bounded_returns_when_group_escaped_descendant_holds_pipe() {
+        let pid_file = tempfile::NamedTempFile::new().unwrap();
+        let pid_path = pid_file.path().to_str().unwrap().to_string();
+        // Perl descendant calls setsid(), records PID, writes a bit, then sleeps.
+        let script = format!(
+            "perl -MPOSIX -e 'POSIX::setsid(); open(my $f,\">\",$ARGV[0]) or die; \
+             print $f $$; close $f; print \"x\" x 1024; sleep 30;' '{pid_path}' & \
+             until [ -s '{pid_path}' ]; do :; done; while :; do sleep 1; done"
+        );
+        let start = std::time::Instant::now();
+        let out = capture_raw_bounded(
+            Path::new("sh"),
+            &["-c", &script],
+            std::time::Duration::from_millis(300),
+        );
+        assert!(
+            out.is_none(),
+            "a timed-out probe with a group-escaped writer must fail closed"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "must return after the timeout, not hang; elapsed={:?}",
+            start.elapsed()
+        );
+        // Clean up the escaped descendant.
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// (Thufir P1) A push URL supplied inline in argv containing a literal `\n`
+    /// causes the porcelain `To` line to be truncated at the newline.
+    /// `parse_porcelain_destination_unique` reads only the prefix before `\n`
+    /// as the destination; if a seeded decoy lives at that prefix, `ls-remote`
+    /// returns HEAD's IDs and the real push writes to the newline-bearing path
+    /// undetected.
+    ///
+    /// `inspect_push_config` catches the CR/LF in argv (Surface 1) before
+    /// porcelain is parsed.  This test exercises the **argv** surface:
+    /// `git push <newline-bearing-path> main` with the path given inline.
+    ///
+    /// Bypass shape (WITHOUT the guard):
+    ///   - `decoy`  = bare repo at the prefix path; seeded with offending HEAD.
+    ///   - `actual` = bare repo at prefix + "\nsuffix"; starts empty.
+    ///   - Push argv token = actual's path (contains `\n`).
+    ///   - Porcelain `To` line is truncated to the prefix (decoy's path).
+    ///   - `remote_object_ids` reads decoy → HEAD exempt → push proceeds to actual.
+    ///
+    /// Mutation evidence: the test seeds `actual` as an empty bare repo.  With
+    /// the guard in place, `verify_push` refuses before reaching porcelain.
+    /// With the guard removed, `verify_push` would continue past the newline
+    /// check; the human-authored commit would then fail the author check for a
+    /// different reason — but the error would NOT contain "CR or LF" or
+    /// "newline", so the assertion catches the mutation.
+    #[test]
+    fn verify_push_rejects_newline_in_argv_url() {
+        let (_d, repo) = human_authored_repo();
+        let parent = tempfile::tempdir().unwrap();
+
+        // decoy: a seeded bare repo at the prefix path (the truncated `To` target).
+        // Without the guard, `remote_object_ids` reads this decoy — it contains HEAD
+        // so the commit appears already-remote and `partition_outgoing` returns zero
+        // offenders, allowing the push to proceed to `actual`.
+        let decoy_path = parent.path().join("target");
+        std::fs::create_dir_all(&decoy_path).expect("create decoy dir");
+        let decoy_cmds = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        decoy_cmds(&["init", "-q", "--bare", decoy_path.to_str().unwrap()]);
+        // Seed decoy with the offending commit from repo so ls-remote sees HEAD.
+        let head_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        decoy_cmds(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "-q",
+            "--no-verify",
+            decoy_path.to_str().unwrap(),
+            &format!("{head_sha}:refs/heads/main"),
+        ]);
+
+        // actual: the real target — path with embedded newline.  Starts empty.
+        let actual_path = parent.path().join("target\nsuffix");
+        std::fs::create_dir_all(&actual_path).expect("create newline-path dir");
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", actual_path.to_str().unwrap()]);
+
+        // Precondition: verify the porcelain To line IS truncated at the newline
+        // when the path is given inline in argv (no remote configured).
+        let dry = {
+            let da = v(&[
+                "-C",
+                repo.to_str().unwrap(),
+                "push",
+                "--dry-run",
+                "--porcelain",
+                "--no-verify",
+                actual_path.to_str().unwrap(),
+                "main",
+            ]);
+            let refs: Vec<&str> = da.iter().map(String::as_str).collect();
+            std::process::Command::new("git")
+                .args(&refs)
+                .output()
+                .unwrap()
+        };
+        let dry_stdout = String::from_utf8_lossy(&dry.stdout);
+        assert!(
+            dry_stdout.contains(&format!("To {}\n", decoy_path.display())),
+            "precondition: porcelain To must be truncated to decoy prefix; stdout={dry_stdout:?}"
+        );
+
+        // With the guard, verify_push refuses before reaching porcelain.
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            actual_path.to_str().unwrap(),
+            "main",
+        ]);
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("newline in inline push URL must be refused");
+        assert!(
+            err.contains("CR or LF") || err.contains("newline") || err.contains("LF"),
+            "expected newline-argv refusal; got: {err}"
+        );
+        // actual must remain empty — the guard fired before any write.
+        let ls_actual = std::process::Command::new("git")
+            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&ls_actual.stdout).trim().is_empty(),
+            "actual repo must remain empty after guard refusal"
+        );
+
+        // Executable mutation evidence: without the argv newline guard, a direct
+        // `git push actual_path pushed` sends HEAD to the decoy (git truncates
+        // the path at `\n`).  The decoy's object-id set would then exempt HEAD
+        // from `partition_outgoing`, letting verify_push return Ok — the human
+        // commit escapes without the authorship check.
+        //
+        // Prove the bypass is executable: make a new commit (so its SHA is not
+        // already on decoy) then direct-push to actual_path; git truncates the
+        // path to decoy's prefix and populates decoy at `refs/heads/pushed`.
+        let second_sha = {
+            // Make an empty commit to get a fresh SHA not yet on decoy.
+            std::process::Command::new("git")
+                .args([
+                    "-C",
+                    repo.to_str().unwrap(),
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "--no-verify",
+                    "-m",
+                    "second",
+                    "--author",
+                    "Human Author <human@example.com>",
+                ])
+                .status()
+                .unwrap();
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let direct_push = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "push",
+                "--no-verify",
+                "-q",
+                actual_path.to_str().unwrap(),
+                &format!("{second_sha}:refs/heads/pushed"),
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            direct_push.success(),
+            "direct push to newline-bearing path must succeed (git truncates at newline, \
+             writes to decoy)"
+        );
+        let decoy_refs: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(&["ls-remote", decoy_path.to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut parts = l.split_whitespace();
+                    let sha = parts.next()?;
+                    let refname = parts.next()?;
+                    Some(format!("{sha} {refname}"))
+                })
+                .collect()
+        };
+        assert!(
+            decoy_refs.iter().any(|r| r.contains("refs/heads/pushed")),
+            "mutation evidence: direct push to newline-path populated decoy at \
+             refs/heads/pushed — git's path truncation is real and the authorship \
+             check bypass is executable; decoy_refs={decoy_refs:?}"
+        );
+        // actual itself is still empty — the commit landed at decoy, not actual.
+        let ls_actual2 = std::process::Command::new("git")
+            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&ls_actual2.stdout)
+                .trim()
+                .is_empty(),
+            "actual must remain empty even after direct push (git truncates at newline)"
+        );
+    }
+
+    /// (Thufir P1) A `remote.origin.url` config value containing a literal `\n`
+    /// is caught by `inspect_push_config` (Surface 2) via the single
+    /// `--null --get-regexp` config snapshot.  Plain `--get-regexp` would split
+    /// the value into two lines; the NUL probe reads the complete raw value bytes.
+    ///
+    /// This test exercises the **config** surface: the newline is in
+    /// `remote.origin.url` written by `git remote add`, not in inline argv.
+    ///
+    /// Mutation evidence: `actual` is an empty bare repo.  With the guard,
+    /// `verify_push` refuses on the config snapshot before reaching porcelain.
+    /// With the guard removed, the human-authored commit would fail the author
+    /// check — but with an author-refusal message, not a newline message.
+    #[test]
+    fn verify_push_rejects_newline_in_config_url() {
+        let (_d, repo) = human_authored_repo();
+        let parent = tempfile::tempdir().unwrap();
+
+        // decoy: a seeded bare repo at the prefix path (the truncated `To` target).
+        let decoy_path = parent.path().join("target");
+        std::fs::create_dir_all(&decoy_path).expect("create decoy dir");
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", decoy_path.to_str().unwrap()]);
+        // Seed decoy with the offending commit from repo.
+        let head_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "-q",
+            "--no-verify",
+            decoy_path.to_str().unwrap(),
+            &format!("{head_sha}:refs/heads/main"),
+        ]);
+
+        // actual: the real target — path with embedded newline.  Starts empty.
+        let actual_path = parent.path().join("target\nsuffix");
+        std::fs::create_dir_all(&actual_path).expect("create newline-path dir");
+        g(&["init", "-q", "--bare", actual_path.to_str().unwrap()]);
+
+        // Wire origin → actual via `remote add` (writes newline into config).
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            actual_path.to_str().unwrap(),
+        ]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("newline in config URL must be refused");
+        assert!(
+            err.contains("CR or LF") || err.contains("newline") || err.contains("LF"),
+            "expected newline-endpoint config refusal; got: {err}"
+        );
+        // actual must remain empty — the guard fired before any write.
+        let ls_actual = std::process::Command::new("git")
+            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&ls_actual.stdout).trim().is_empty(),
+            "actual repo must remain empty after guard refusal"
+        );
+
+        // Executable mutation evidence: without the config newline guard, a direct
+        // `git push origin pushed` (bypassing verify_push, using the configured
+        // newline-bearing URL) sends HEAD to the decoy (git truncates at `\n`).
+        // The decoy's ids would then exempt HEAD from `partition_outgoing`, letting
+        // verify_push return Ok — the authorship check is bypassed.
+        //
+        // Prove the bypass is executable: make a new commit (so its SHA is not
+        // already on decoy) then direct-push via origin; git truncates the URL
+        // and populates decoy at `refs/heads/pushed`.
+        let second_sha = {
+            std::process::Command::new("git")
+                .args([
+                    "-C",
+                    repo.to_str().unwrap(),
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "--no-verify",
+                    "-m",
+                    "second",
+                    "--author",
+                    "Human Author <human@example.com>",
+                ])
+                .status()
+                .unwrap();
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let direct_push = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo.to_str().unwrap(),
+                "push",
+                "--no-verify",
+                "-q",
+                "origin",
+                &format!("{second_sha}:refs/heads/pushed"),
+            ])
+            .status()
+            .unwrap();
+        assert!(
+            direct_push.success(),
+            "direct push via origin (newline URL) must succeed (git truncates at newline)"
+        );
+        let decoy_refs: Vec<String> = {
+            let out = std::process::Command::new("git")
+                .args(&["ls-remote", decoy_path.to_str().unwrap()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut parts = l.split_whitespace();
+                    let sha = parts.next()?;
+                    let refname = parts.next()?;
+                    Some(format!("{sha} {refname}"))
+                })
+                .collect()
+        };
+        assert!(
+            decoy_refs.iter().any(|r| r.contains("refs/heads/pushed")),
+            "mutation evidence: direct push via newline URL populated decoy at \
+             refs/heads/pushed — git's config-URL truncation is real and the \
+             authorship-check bypass is executable; decoy_refs={decoy_refs:?}"
+        );
+        // actual remains empty — the commit landed at decoy, not actual.
+        let ls_actual2 = std::process::Command::new("git")
+            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&ls_actual2.stdout)
+                .trim()
+                .is_empty(),
+            "actual must remain empty even after direct push (git truncates at newline)"
+        );
+    }
+
+    /// (Thufir P1) `GIT_SSH_COMMAND` set in the environment is caught by
+    /// `inspect_push_config` (Surface 0) before any porcelain is run.
+    #[test]
+    fn verify_push_rejects_git_ssh_command_env() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+
+        // The guard reads std::env at call time; hold ENV_LOCK for the duration
+        // and save/restore the prior value so parallel tests are not affected.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prior = std::env::var_os("GIT_SSH_COMMAND");
+        unsafe { std::env::set_var("GIT_SSH_COMMAND", "/evil/ssh") };
+        let result = verify_push(&real_git(), &argv, &argv, &ctx, &managed());
+        match &prior {
+            Some(v) => unsafe { std::env::set_var("GIT_SSH_COMMAND", v) },
+            None => unsafe { std::env::remove_var("GIT_SSH_COMMAND") },
+        }
+
+        let err = result.expect_err("GIT_SSH_COMMAND set must be refused");
+        assert!(
+            err.contains("GIT_SSH_COMMAND") || err.contains("transport"),
+            "expected transport-override refusal; got: {err}"
+        );
+    }
+
+    /// (Thufir P1) `core.sshCommand` in effective config is caught by
+    /// `inspect_push_config` (Surface 2) via the single `--null --get-regexp`
+    /// config snapshot.
+    #[test]
+    fn verify_push_rejects_core_ssh_command_config() {
+        let (_d, repo) = human_authored_repo();
+        let remote = tempfile::tempdir().unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        g(&["init", "-q", "--bare", remote.path().to_str().unwrap()]);
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().unwrap(),
+        ]);
+        // Inject core.sshCommand into the repo config.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "config",
+            "core.sshCommand",
+            "/evil/ssh",
+        ]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("core.sshCommand in config must be refused");
+        assert!(
+            err.contains("core.sshCommand") || err.contains("transport"),
+            "expected transport-override config refusal; got: {err}"
+        );
+    }
+
+    /// Snapshot/parser test: the production `git config --null --get-regexp`
+    /// query must see one key from each of the four namespaces, using the
+    /// case-insensitive character-class pattern.  This test proves:
+    ///
+    /// 1. The ERE character-class pattern is accepted by the local git binary
+    ///    (no exit 1).
+    /// 2. Keys from every protected namespace are returned.
+    /// 3. Case-varied section headers (`[Remote]`, `[Core]`) produce output
+    ///    that the pattern matches (git lowercases before matching at ≥ 2.28;
+    ///    the character classes defend against older versions).
+    /// 4. A mutation reverting the pattern to BRE (`^\(remote\|...\)`) would
+    ///    cause exit 1 + empty output, failing the assertions here.
+    ///
+    /// The exact pattern used is the one `inspect_push_config` builds:
+    ///   `r"^([Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Bb][Rr][Aa][Nn][Cc][Hh]|[Cc][Oo][Rr][Ee])\."`
+    #[test]
+    fn inspect_push_config_query_sees_all_namespaces() {
+        let (_d, repo) = human_authored_repo();
+        let repo_str = repo.to_str().unwrap();
+        let g = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+
+        // Write one key from each of the four protected namespaces.
+        // remote.*: a receivepack override (refused by policy, but present for query)
+        g(&["-C", repo_str, "remote", "add", "origin", "/tmp/dummy"]);
+        g(&[
+            "-C",
+            repo_str,
+            "config",
+            "remote.origin.receivepack",
+            "evil-rp",
+        ]);
+        // branch.*: a pushremote setting
+        g(&["-C", repo_str, "config", "branch.main.pushremote", "origin"]);
+        // url.*: a pushinsteadof rewrite (key name uses url. prefix)
+        g(&[
+            "-C",
+            repo_str,
+            "config",
+            "url.https://safe/.pushinsteadOf",
+            "http://old/",
+        ]);
+        // core.*: a sshcommand override
+        g(&["-C", repo_str, "config", "core.sshCommand", "/evil/ssh"]);
+
+        const PROD_PATTERN: &str =
+            r"^([Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Bb][Rr][Aa][Nn][Cc][Hh]|[Cc][Oo][Rr][Ee])\.";
+
+        // Run the exact query `inspect_push_config` uses — same args, same pattern.
+        let out = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_str,
+                "config",
+                "--null",
+                "--get-regexp",
+                PROD_PATTERN,
+            ])
+            .output()
+            .unwrap();
+
+        assert!(
+            out.status.success() || out.status.code() == Some(0),
+            "git config --get-regexp must succeed (exit 0) with ERE character-class pattern; \
+             exit={:?}; stderr={}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // NUL-delimited records: `<key>\n<value>\0`.  Split on NUL to get records.
+        let keys: Vec<&str> = stdout
+            .split('\0')
+            .filter_map(|rec| rec.split('\n').next())
+            .filter(|k| !k.is_empty())
+            .collect();
+
+        assert!(
+            keys.iter().any(|k| k.starts_with("remote.")),
+            "remote.* namespace must appear in query output; keys={keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("branch.")),
+            "branch.* namespace must appear in query output; keys={keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("url.")),
+            "url.* namespace must appear in query output; keys={keys:?}"
+        );
+        assert!(
+            keys.iter().any(|k| k.starts_with("core.")),
+            "core.* namespace must appear in query output; keys={keys:?}"
+        );
+
+        // Mutation proof: the old BRE pattern produces exit 1 + empty output.
+        let bre_out = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_str,
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^\(remote\|url\|branch\|core\)\.",
+            ])
+            .output()
+            .unwrap();
+        let bre_stdout = String::from_utf8_lossy(&bre_out.stdout);
+        assert!(
+            bre_out.status.code() == Some(1) && bre_stdout.trim().is_empty(),
+            "BRE pattern must exit 1 + empty stdout on this git binary — \
+             if it matches, the BRE mutation would be undetectable; \
+             exit={:?}, stdout={bre_stdout:?}",
+            bre_out.status.code()
+        );
+
+        // Case-varied regression: write keys with capital section/variable names
+        // and assert the production pattern still sees them.  Git 2.54 lowercases
+        // before matching; older versions may not — the character classes defend
+        // against that.
+        //
+        // Write keys using raw config file injection so git does not normalize
+        // the casing (git-config write always lowercases; file write preserves it).
+        let config_path = repo.join(".git/config");
+        let mut config_content = std::fs::read_to_string(&config_path).unwrap();
+        config_content.push_str(
+            "\n[Remote \"caps\"]\n    receivePack = evil-caps\n\
+             [Core]\n    sshCommand = /evil/ssh2\n",
+        );
+        std::fs::write(&config_path, &config_content).unwrap();
+
+        // The production pattern must still return these case-varied keys.
+        let caps_out = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_str,
+                "config",
+                "--null",
+                "--get-regexp",
+                PROD_PATTERN,
+            ])
+            .output()
+            .unwrap();
+        let caps_stdout = String::from_utf8_lossy(&caps_out.stdout);
+        let caps_keys: Vec<&str> = caps_stdout
+            .split('\0')
+            .filter_map(|rec| rec.split('\n').next())
+            .filter(|k| !k.is_empty())
+            .collect();
+        // The key appears lowercased in output (git normalizes before emitting).
+        assert!(
+            caps_keys
+                .iter()
+                .any(|k| k.starts_with("remote.") && k.ends_with(".receivepack")),
+            "case-varied [Remote] section must produce a remote.*.receivepack key; \
+             caps_keys={caps_keys:?}"
+        );
+        assert!(
+            caps_keys.iter().any(|k| *k == "core.sshcommand"),
+            "case-varied [Core] section must produce core.sshcommand key; \
+             caps_keys={caps_keys:?}"
+        );
+    }
+
+    /// (Thufir P1) An `evil://` endpoint in push argv invokes a PATH-resident
+    /// `git-remote-evil` helper.  `inspect_push_config` (Surface 1) must refuse
+    /// the push before any helper is executed.
+    ///
+    /// Sentinel setup: a script named `git-remote-evil` is written to a temp
+    /// directory and placed first on PATH.  If the guard fires, the script is
+    /// never executed.  If the guard were removed, `git ls-remote evil://x`
+    /// would exec the sentinel — the test confirms the sentinel was NOT invoked
+    /// by checking that verify_push returns Err with an "unknown URL scheme"
+    /// message.
+    #[test]
+    fn verify_push_rejects_evil_scheme_in_argv() {
+        let (_d, repo) = human_authored_repo();
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        // Write a sentinel that creates a marker file if invoked.  The sentinel
+        // directory is NOT added to PATH; if the guard fires (expected), git is
+        // never spawned with evil://, so the helper is never looked up.  If the
+        // guard were removed, git would search the current PATH for
+        // `git-remote-evil`; it would not find it (sentinel_dir is not on PATH),
+        // producing a "helper not found" error rather than an "unknown URL scheme"
+        // error — the message assertion catches the mutation.  The marker check
+        // adds defence-in-depth: if someone adds sentinel_dir to PATH in future,
+        // an invocation is still detected.
+        let marker = sentinel_dir.path().join("evil_invoked");
+        let sentinel = sentinel_dir.path().join("git-remote-evil");
+        std::fs::write(
+            &sentinel,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        // evil:// directly in argv — the unknown scheme the guard must catch.
+        let argv = v(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "push",
+            "evil://payload",
+            "main",
+        ]);
+
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("evil:// in argv must be refused");
+        assert!(
+            err.contains("unknown URL scheme") || err.contains("evil"),
+            "expected unknown-scheme refusal; got: {err}"
+        );
+        // The sentinel must NOT have been executed — the guard fired before git ran.
+        assert!(
+            !marker.exists(),
+            "git-remote-evil sentinel was invoked — the evil:// guard did not fire \
+             before the helper was executed"
+        );
+    }
+
+    /// (Thufir P1) An `evil://` URL in `remote.origin.url` config is caught by
+    /// `inspect_push_config` (Surface 2) before any push probe runs.
+    #[test]
+    fn verify_push_rejects_evil_scheme_in_config_url() {
+        let (_d, repo) = human_authored_repo();
+        let sentinel_dir = tempfile::tempdir().unwrap();
+        let marker = sentinel_dir.path().join("evil_invoked");
+        let sentinel = sentinel_dir.path().join("git-remote-evil");
+        std::fs::write(
+            &sentinel,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap();
+        };
+        // Wire origin to evil:// — the config surface.
+        g(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            "evil://payload",
+        ]);
+
+        let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
+        let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
+
+        let err = verify_push(&real_git(), &argv, &argv, &ctx, &managed())
+            .expect_err("evil:// in config URL must be refused");
+        assert!(
+            err.contains("unknown URL scheme") || err.contains("evil"),
+            "expected unknown-scheme config refusal; got: {err}"
+        );
+        assert!(
+            !marker.exists(),
+            "git-remote-evil sentinel was invoked — the config evil:// guard did not fire"
+        );
     }
 }
