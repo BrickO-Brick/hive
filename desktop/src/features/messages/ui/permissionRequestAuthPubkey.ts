@@ -1,6 +1,6 @@
 import { KIND_STREAM_MESSAGE } from "@/shared/constants/kinds";
 import type { TimelineMessage } from "@/features/messages/types";
-import { isPermissionRequestSentinel } from "@/shared/lib/permissionRequest";
+import { computePermissionRequest } from "@/shared/lib/computePermissionRequest";
 
 /**
  * Returns the agent pubkey to use for the `PermissionRequestCard` for a given
@@ -31,26 +31,40 @@ export function getPermissionRequestAgentPubkey(
 }
 
 /**
- * Returns `true` only when the message body is a permission-request sentinel
- * AND the signer is a known agent (the trusted card path will render).
+ * Returns `true` only when `computePermissionRequest` would return a non-null
+ * payload for this message — i.e., when the trusted card WILL render.
  *
- * Used by `MessageRow` to decide whether to suppress markdown rendering.
- * Shape-only detection (`isPermissionRequestSentinel`) is NOT sufficient —
- * a forged sentinel (wrong signer) passes the shape gate, is rejected by
- * `computePermissionRequest`, and would leave a blank row if prose were
- * suppressed before the trust check.
+ * Used by `MessageRow` to suppress prose rendering. The check is intentionally
+ * identical to what `PermissionRequestCardBlock` computes so that prose is
+ * suppressed if and only if a card renders — closing the blank-row gap from
+ * every case `computePermissionRequest` rejects:
+ *   - forged signer (signerPubkey ≠ agentPubkey)
+ *   - born-resolved-no-provenance (state resolved, no editSignerPubkey)
+ *   - correlation-mismatch resolved body
  *
- * Mirrors `getConfigNudgeAuthorPubkey`'s prose-suppression contract — the
- * card path owns the prose-vs-card decision.
+ * Mirrors `selectProseOrPermission` — the card owns the prose-suppression
+ * decision by construction rather than by a parallel approximation.
  */
-export function isTrustedPermissionRequestSentinel(
-  message: Pick<TimelineMessage, "kind" | "signerPubkey" | "body">,
+export function hasPermissionRequestCard(
+  message: Pick<
+    TimelineMessage,
+    "kind" | "signerPubkey" | "body" | "editSignerPubkey" | "id" | "preEditBody"
+  >,
   isKnownAgentPubkey: (pubkey: string) => boolean,
 ): boolean {
-  // Trust gate first — if the signer is not a known agent, the card will not
-  // render, so prose suppression must NOT happen.
-  if (!getPermissionRequestAgentPubkey(message, isKnownAgentPubkey)) {
-    return false;
-  }
-  return isPermissionRequestSentinel(message.body);
+  const agentPubkey = getPermissionRequestAgentPubkey(
+    message,
+    isKnownAgentPubkey,
+  );
+  return (
+    computePermissionRequest(
+      message.body,
+      true,
+      agentPubkey,
+      message.signerPubkey,
+      message.editSignerPubkey,
+      message.id,
+      message.preEditBody,
+    ) !== null
+  );
 }

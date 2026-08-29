@@ -632,3 +632,66 @@ test("test_no_description_does_not_break_pending_card", async () => {
   );
   assert.ok(allowBtn !== null, "buttons must render without description");
 });
+
+test("test_born_resolved_no_provenance_renders_nothing", async () => {
+  // A kind-9 whose body is already "resolved" but has no edit provenance
+  // (no editSignerPubkey, no preEditBody). computePermissionRequest rejects
+  // it — born-resolved cards bypass the agent-signed-edit requirement and
+  // would render a completed card with zero proof of owner action.
+  // The block returns null; hasPermissionRequestCard also returns false so
+  // MessageRow falls back to prose (no blank row).
+  const container = await renderBlock({
+    content: makeResolvedContent(),
+    signerPubkey: AGENT_PUBKEY,
+    agentPubkey: AGENT_PUBKEY,
+    editSignerPubkey: undefined, // no edit provenance
+    id: MESSAGE_ID,
+    preEditBody: undefined,
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+  const card = container.querySelector("[data-permission-request]");
+  assert.equal(
+    card,
+    null,
+    "born-resolved sentinel without edit provenance must not render any card",
+  );
+});
+
+test("test_correlation_mismatch_resolved_renders_nothing", async () => {
+  // Resolved body where originalEventId ≠ message.id — the edit claims to
+  // resolve a DIFFERENT card. computePermissionRequest rejects it.
+  // The block returns null; hasPermissionRequestCard also returns false so
+  // MessageRow falls back to prose (no blank row).
+  const OTHER_EVENT_ID =
+    "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321";
+  const mismatchedResolved = JSON.stringify({
+    v: 1,
+    state: "resolved",
+    requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+    originalEventId: OTHER_EVENT_ID, // ← names a different event
+    sessionId: "sess-fixture-001",
+    turnId: "turn-fixture-xyz",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-reject"],
+    labels: { "opt-allow": "Allow once", "opt-reject": "Reject" },
+    outcome: "applied",
+    chosenOptionId: "opt-allow",
+  });
+  const container = await renderBlock({
+    content: mismatchedResolved,
+    signerPubkey: AGENT_PUBKEY,
+    agentPubkey: AGENT_PUBKEY,
+    editSignerPubkey: AGENT_PUBKEY,
+    id: MESSAGE_ID, // ← MESSAGE_ID ≠ OTHER_EVENT_ID
+    preEditBody: makePendingContent(),
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+  const card = container.querySelector("[data-permission-request]");
+  assert.equal(
+    card,
+    null,
+    "correlation-mismatch resolved body must not render any card",
+  );
+});

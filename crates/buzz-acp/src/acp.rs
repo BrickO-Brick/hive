@@ -3379,11 +3379,10 @@ impl AcpClient {
                 // Build and sign the kind-9 sentinel event ONCE before inserting
                 // the entry — the resolved edit retransmits the same signed event
                 // on retry, matching the spec requirement.
-                let description_owned: Option<String> = msg
-                    .pointer("/params/subject")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| truncate_to_bytes(s, SENTINEL_STRING_MAX_BYTES));
+                // Extract a human-readable description from the real producer
+                // shapes — see `description_from_request_permission` for the
+                // full precedence rationale.
+                let description_owned: Option<String> = description_from_request_permission(&msg);
                 let sentinel_event = {
                     let keys_opt = self.agent_relay_keys.clone();
                     let channel_id_opt = self.sentinel_channel_id;
@@ -3860,6 +3859,35 @@ fn sentinel_option_fields(actions: &CardActions) -> (Vec<serde_json::Value>, ser
         labels.insert(id.to_string(), serde_json::Value::String(capped));
     }
     (option_ids, labels.into())
+}
+
+/// Extract a human-readable description from a `session/request_permission`
+/// JSON-RPC message, trying real producer shapes in priority order:
+///
+/// 1. `params.title` — buzz-agent v2 top-level string (`request_permission_params`
+///    in `crates/buzz-agent/src/wire.rs`, version >= 2).
+/// 2. `params.subject.toolCall.title` — v2 nested fallback (same value, different
+///    path).
+/// 3. `params.toolCall.title` — buzz-agent v1 and codex-acp permissions-request.
+///
+/// Returns `None` when no non-empty title is found in any of these paths, or when
+/// the `msg` argument does not have a `params` object.
+///
+/// Extracted as a pure function (rather than inline in the event handler) so
+/// tests can exercise it with verbatim wire shapes without going through the full
+/// permission-request lifecycle.
+pub(crate) fn description_from_request_permission(msg: &serde_json::Value) -> Option<String> {
+    [
+        msg.pointer("/params/title").and_then(|v| v.as_str()),
+        msg.pointer("/params/subject/toolCall/title")
+            .and_then(|v| v.as_str()),
+        msg.pointer("/params/toolCall/title")
+            .and_then(|v| v.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|s| !s.is_empty())
+    .map(|s| truncate_to_bytes(s, SENTINEL_STRING_MAX_BYTES))
 }
 
 /// Build the JSON payload for a kind-9 PENDING sentinel card.
@@ -7674,6 +7702,72 @@ mod tests {
         assert!(
             std::str::from_utf8(desc.as_bytes()).is_ok(),
             "truncated description must be valid UTF-8"
+        );
+    }
+
+    // ── F2: description extraction from real producer wire shapes ─────────────
+    //
+    // These tests call `description_from_request_permission` with verbatim wire
+    // shapes produced by real adapters. If the extraction pointer changes, at
+    // least one test goes red — preventing the "green tests, dead feature" trap.
+
+    #[test]
+    fn description_from_v2_params_title() {
+        // buzz-agent v2: `request_permission_params(2, ...)` from wire.rs.
+        // `params.title` is the top-level string; `params.subject` is an OBJECT.
+        // Verbatim shape from `request_permission_params` in
+        // `crates/buzz-agent/src/wire.rs` (version >= 2 branch).
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "ses-1",
+                "title": "Run shell command",
+                "subject": {
+                    "type": "tool_call",
+                    "toolCall": {
+                        "toolCallId": "tc-abc",
+                        "title": "Run shell command",
+                        "rawInput": {"cmd": "ls"},
+                    },
+                },
+                "options": [],
+            }
+        });
+        let desc = description_from_request_permission(&msg);
+        assert_eq!(
+            desc.as_deref(),
+            Some("Run shell command"),
+            "v2 params.title must be extracted as description"
+        );
+    }
+
+    #[test]
+    fn description_from_v1_toolcall_title() {
+        // buzz-agent v1: `request_permission_params(1, ...)` from wire.rs.
+        // No top-level `title`; `params.toolCall.title` carries the name.
+        // Also matches codex-acp's permissions-request variant (kind: "other").
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": "ses-2",
+                "toolCall": {
+                    "toolCallId": "tc-def",
+                    "title": "Allow file access",
+                    "kind": "other",
+                    "rawInput": {},
+                },
+                "options": [],
+            }
+        });
+        let desc = description_from_request_permission(&msg);
+        assert_eq!(
+            desc.as_deref(),
+            Some("Allow file access"),
+            "v1 params.toolCall.title must be extracted as description"
         );
     }
 

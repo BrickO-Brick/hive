@@ -353,8 +353,10 @@ additional round trip.
 
 The event content is a compact JSON object that matches the D6 frozen schema
 (`requestNonce`, `optionIds`, `labels`, `expiresAt`, `description`, …). `description`
-is sourced from `params.subject` of the `session/request_permission` message and is
-`null` when the adapter did not provide a subject. `optionIds` is a
+is sourced from `params.title` (buzz-agent v2), `params.subject.toolCall.title`
+(v2 fallback), or `params.toolCall.title` (buzz-agent v1 / codex-acp) of the
+`session/request_permission` message — the first non-empty value wins. It is
+`null` when no adapter-provided title is found. `optionIds` is a
 **two-action contract**: exactly one `allow_once` and one `reject_once`, in that
 order — the harness selects them via `select_card_actions` and fails closed if
 either is absent or ambiguous, so no other option (e.g. `allow_always`) can ever
@@ -424,8 +426,10 @@ an unrenderable card. Labels and `description` are lossy display strings and are
 only fields truncated rather than rejected; truncation lands on a UTF-8 char boundary
 so the result is always valid UTF-8 within the byte limit the Desktop parser accepts.
 Label values in the sentinel come directly from the ACP options' `name` fields;
-render them verbatim. `description` comes from `params.subject` in the
-`session/request_permission` message and describes the operation being authorized.
+render them verbatim. `description` is sourced from the adapter's title field —
+`params.title` (buzz-agent v2), `params.subject.toolCall.title` (v2 fallback),
+or `params.toolCall.title` (v1 / codex-acp) — and describes the operation being
+authorized.
 
 ### Sentinel authenticity
 
