@@ -703,24 +703,39 @@ export function runWholeBlobSyncSuite({
     };
     const restore = installFakeWindow(win);
     const tauri = installEchoTauri("pk-collide2");
+    // fetchEvents call sequence:
+    //   1 — edit-1 pre-publish fetch (empty → edit-1 publishes)
+    //   2 — edit-1 confirmation (paused; edit-2 queued during pause, then
+    //        released with peer winner so adoptRemote fires with stale gen)
+    //   3 — edit-2 pre-publish fetch (peer winner → publishBaseline fold →
+    //        edit-2 publishes above winner)
+    //   4 — edit-2 confirmation (edit-2's own event → confirmed)
     mock.method(relayClient, "fetchEvents", () => {
       fetchCalls++;
-      if (fetchCalls <= 2) return Promise.resolve([]); // pre-pub empty, confirmation empty
-      if (fetchCalls === 3)
+      if (fetchCalls === 1) return Promise.resolve([]); // edit-1 pre-pub: empty
+      if (fetchCalls === 2)
         return new Promise((res) => {
           releaseConfirmation = () => res(storedHead);
-        });
+        }); // edit-1 confirmation: paused until second edit is queued
       return Promise.resolve(storedHead);
     });
     mock.method(relayClient, "publishEvent", (event) => {
       publishCalls++;
-      storedHead = [
-        tauri.mintHead(
-          makeCollisionWinnerStore(),
-          event.created_at,
-          "0-peer-winner",
-        ),
-      ];
+      if (publishCalls === 1) {
+        // Edit-1 ACK resolves; relay retained the peer's same-second blob.
+        // Minted through the echo seam so it decrypts. No explicit id so the
+        // auto-generated peer-N id is lexicographically greater than our
+        // attempted evt-N — remoteAdvancedSince returns false for edit-2's
+        // baseline check (peer-N > evt-N), so edit-2 publishes without folding.
+        storedHead = [
+          tauri.mintHead(makeCollisionWinnerStore(), event.created_at),
+        ];
+        return Promise.resolve();
+      }
+      // Edit-2 publishes above the winner and is retained by the relay.
+      // Storing the actual signed event so confirmRetainedHead returns
+      // { kind: "confirmed" } and discardPending fires rather than adoptRemote.
+      storedHead = [event];
       return Promise.resolve();
     });
     try {
@@ -728,29 +743,56 @@ export function runWholeBlobSyncSuite({
       const adopted = [];
       manager.setOnRemoteAdopted((r) => adopted.push(r));
 
-      manager[publishMethod](makeCollisionStoreA()); // first edit
-      await fireDelay(2000); // publishes A; confirmation (fetchCalls=3) hangs
+      // Queue edit-1 and let its debounce fire. ACK resolves immediately, but
+      // the confirmation fetch pauses at fetchCalls===2.
+      manager[publishMethod](makeCollisionStoreA());
+      await fireDelay(2000); // debounce → fc=1 (empty) → publish → fc=2 (confirmation hangs)
+      // releaseConfirmation is set synchronously when fc=2 is called; the while
+      // loop is a safety net for the rare case the chain hasn't flushed yet.
       while (releaseConfirmation === null) await Promise.resolve();
 
-      // Second edit queued while confirmation is still in-flight.
+      // Queue edit-2 AFTER the ACK but BEFORE confirmation resolves.
       manager[publishMethod](makeCollisionStoreSnd());
-      releaseConfirmation(); // confirmation returns peer winner
+
+      // Release confirmation with the peer winner. adoptRemote fires stale-gen
+      // (gen=1 vs pendingGeneration=2) and returns early without clearing pending.
+      releaseConfirmation();
       for (let i = 0; i < 100; i++) await Promise.resolve();
 
-      // After the fix: adoptRemote folds the winner into the NEW baseline (the
-      // second edit's cycle) so pre-publish sees equality and publishes.
-      await fireDelay(2000);
-      for (let i = 0; i < 100; i++) await Promise.resolve();
-
-      assert.equal(
-        publishCalls,
-        2,
-        "second edit must publish above the confirmed winner",
-      );
+      // Stale-gen adopt does not fire onRemoteAdopted and does not clear pending.
       assert.equal(
         adopted.length,
         0,
-        "second edit must not adopt the winner away",
+        "stale-gen adopt must not fire onRemoteAdopted for the newer pending edit",
+      );
+      assert.notEqual(
+        manager.getPendingStore(),
+        null,
+        "edit-2 must still be pending after the stale-gen adopt",
+      );
+
+      // Fire edit-2's debounce. Its pre-publish fetch sees the peer winner; the
+      // baseline fold (publishBaseline ← winner, since peer-N < our evt-N is
+      // false so remoteAdvancedSince is false) means it publishes above the
+      // winner rather than adopting it.
+      await fireDelay(2000);
+      for (let i = 0; i < 100; i++) await Promise.resolve();
+
+      assert.equal(publishCalls, 2, "edit-2 publishes above the peer winner");
+      assert.equal(
+        adopted.length,
+        0,
+        "edit-2 must not be adopted away — no phantom-baseline poisoning",
+      );
+      assert.equal(
+        manager.getPendingStore(),
+        null,
+        "edit-2 clears via its own confirmed publish",
+      );
+      assert.equal(
+        readOutbox("pk-collide2", RELAY),
+        null,
+        "edit-2's durable outbox is cleared on confirmation",
       );
       manager.destroy();
     } finally {
