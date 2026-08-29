@@ -872,7 +872,7 @@ async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head() {
     // Simulate the persona being updated on disk (prompt rewritten) — this is
     // the state `set_persona_shared` sees after the persona save lands.
     let m1_after = member("m1", "Updated prompt after publish-retry.");
-    write_stores(dir.path(), &[t.clone()], &[m1_after]);
+    write_stores(dir.path(), std::slice::from_ref(&t), &[m1_after]);
 
     // Build a PreparedPersonaPublication for m1 at the updated-prompt state.
     // This mirrors what `set_persona_shared` does before calling
