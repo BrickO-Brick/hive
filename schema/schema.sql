@@ -2309,16 +2309,14 @@ CREATE INDEX identity_lifecycle_selectors_asserted_history
         (community_id, asserted_history_id, selector_kind);
 
 -- Serializes policy-revision inserts per community: each new revision must
--- strictly exceed the current maximum, and each effective_at must strictly
--- exceed the current maximum effective_at (FI-INV-06 — stable assertion
--- policy; a revision that moves either coordinate backward is incoherent).
--- The per-community advisory lock prevents two concurrent writers from both
--- passing a plain SELECT MAX() check and committing conflicting revisions.
+-- strictly exceed the current maximum (FI-INV-06 — stable assertion policy
+-- anchor; a backfilled or replayed revision is incoherent). The per-community
+-- advisory lock prevents two concurrent writers from both passing a plain
+-- SELECT MAX() check and committing conflicting revisions.
 CREATE FUNCTION identity_enrollment_policy_revision_guard_v1() RETURNS TRIGGER AS $$
 DECLARE
     lock_key BIGINT;
     max_revision BIGINT;
-    max_effective_at TIMESTAMPTZ;
 BEGIN
     -- Acquire a per-community exclusive transaction-scoped advisory lock so
     -- that concurrent insertions serialize here. The key is a stable hash of
@@ -2329,8 +2327,8 @@ BEGIN
     );
     PERFORM pg_advisory_xact_lock(lock_key);
 
-    SELECT MAX(policy_revision), MAX(effective_at)
-    INTO max_revision, max_effective_at
+    SELECT MAX(policy_revision)
+    INTO max_revision
     FROM identity_enrollment_policies
     WHERE community_id = NEW.community_id;
 
@@ -2340,16 +2338,6 @@ BEGIN
         RAISE EXCEPTION
             'policy_revision % does not strictly exceed current maximum % for community %',
             NEW.policy_revision, max_revision, NEW.community_id
-            USING ERRCODE = 'check_violation',
-                  CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
-    END IF;
-
-    IF max_effective_at IS NOT NULL
-        AND NEW.effective_at <= max_effective_at
-    THEN
-        RAISE EXCEPTION
-            'effective_at % does not strictly exceed current maximum % for community %',
-            NEW.effective_at, max_effective_at, NEW.community_id
             USING ERRCODE = 'check_violation',
                   CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
     END IF;
@@ -3031,6 +3019,7 @@ CREATE TABLE authorization_authentication_denial_attempts (
     reason_code SMALLINT NOT NULL CHECK (
         reason_code IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
     ),
+    attempt_id UUID NOT NULL,
     audit_event_id UUID NOT NULL,
     audit_event_kind SMALLINT NOT NULL DEFAULT 9 CHECK (audit_event_kind = 9),
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
@@ -3045,8 +3034,12 @@ CREATE TABLE authorization_authentication_denial_attempts (
     FOREIGN KEY (community_id, audit_event_id, audit_event_kind, operation_id)
         REFERENCES authorization_events (community_id, event_id, event_kind, operation_id)
         DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (community_id, operation_id, audit_event_kind, attempt_id)
+        REFERENCES authorization_events (community_id, operation_id, event_kind, attempt_id)
+        DEFERRABLE INITIALLY DEFERRED,
     CHECK (operation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
-    CHECK (correlation_id <> '00000000-0000-0000-0000-000000000000'::uuid)
+    CHECK (correlation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
+    CHECK (attempt_id <> '00000000-0000-0000-0000-000000000000'::uuid)
 );
 
 -- Exact per-operation authority-version attribution for restore. Empty
@@ -3299,12 +3292,15 @@ CREATE TRIGGER authorization_authentication_denial_attempts_no_truncate
 
 -- Bidirectional deferred guard: a kind-9 (pre-authentication denial) audit
 -- event must commit with exactly one denial attempt; a denial attempt must
--- commit with its audit event present and kind-9. Both directions deferred so
+-- commit with its audit event present, kind-9, and matching semantic
+-- coordinates (correlation_id and reason_code). Both directions deferred so
 -- event and attempt may be inserted in any order inside one transaction.
 CREATE FUNCTION authorization_denial_attempt_guard_v1()
 RETURNS TRIGGER AS $$
 DECLARE
     found_event_kind SMALLINT;
+    found_correlation_id UUID;
+    found_reason_code SMALLINT;
     attempt_count BIGINT;
 BEGIN
     IF TG_TABLE_NAME = 'authorization_events' THEN
@@ -3325,10 +3321,34 @@ BEGIN
                 USING ERRCODE = 'check_violation',
                       CONSTRAINT = 'authorization_denial_attempt_event_cardinality';
         END IF;
+
+        -- Verify semantic coordinates match between event and denial attempt.
+        SELECT correlation_id, reason_code
+        INTO found_correlation_id, found_reason_code
+        FROM authorization_authentication_denial_attempts
+        WHERE community_id = NEW.community_id
+          AND audit_event_id = NEW.event_id;
+
+        IF found_correlation_id IS DISTINCT FROM NEW.correlation_id THEN
+            RAISE EXCEPTION
+                'denial attempt correlation_id % does not match event correlation_id % for event %',
+                found_correlation_id, NEW.correlation_id, NEW.event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
+        END IF;
+
+        IF found_reason_code IS DISTINCT FROM NEW.reason_code THEN
+            RAISE EXCEPTION
+                'denial attempt reason_code % does not match event reason_code % for event %',
+                found_reason_code, NEW.reason_code, NEW.event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
+        END IF;
     ELSE
         -- Firing from the denial-attempt side: verify the audit event is kind-9
         -- and that exactly one denial attempt references it.
-        SELECT event_kind INTO found_event_kind
+        SELECT event_kind, correlation_id, reason_code
+        INTO found_event_kind, found_correlation_id, found_reason_code
         FROM authorization_events
         WHERE community_id = NEW.community_id
           AND event_id = NEW.audit_event_id;
@@ -3347,6 +3367,23 @@ BEGIN
                 found_event_kind
                 USING ERRCODE = 'check_violation',
                       CONSTRAINT = 'authorization_denial_attempt_event_kind';
+        END IF;
+
+        -- Verify semantic coordinates match.
+        IF found_correlation_id IS DISTINCT FROM NEW.correlation_id THEN
+            RAISE EXCEPTION
+                'denial attempt correlation_id % does not match event correlation_id % for event %',
+                NEW.correlation_id, found_correlation_id, NEW.audit_event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
+        END IF;
+
+        IF found_reason_code IS DISTINCT FROM NEW.reason_code THEN
+            RAISE EXCEPTION
+                'denial attempt reason_code % does not match event reason_code % for event %',
+                NEW.reason_code, found_reason_code, NEW.audit_event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
         END IF;
 
         SELECT count(*) INTO attempt_count

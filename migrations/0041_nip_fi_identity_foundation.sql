@@ -414,16 +414,14 @@ CREATE INDEX identity_lifecycle_selectors_asserted_history
         (community_id, asserted_history_id, selector_kind);
 
 -- Serializes policy-revision inserts per community: each new revision must
--- strictly exceed the current maximum, and each effective_at must strictly
--- exceed the current maximum effective_at (FI-INV-06 — stable assertion
--- policy; a revision that moves either coordinate backward is incoherent).
--- The per-community advisory lock prevents two concurrent writers from both
--- passing a plain SELECT MAX() check and committing conflicting revisions.
+-- strictly exceed the current maximum (FI-INV-06 — stable assertion policy
+-- anchor; a backfilled or replayed revision is incoherent). The per-community
+-- advisory lock prevents two concurrent writers from both passing a plain
+-- SELECT MAX() check and committing conflicting revisions.
 CREATE FUNCTION identity_enrollment_policy_revision_guard_v1() RETURNS TRIGGER AS $$
 DECLARE
     lock_key BIGINT;
     max_revision BIGINT;
-    max_effective_at TIMESTAMPTZ;
 BEGIN
     -- Acquire a per-community exclusive transaction-scoped advisory lock so
     -- that concurrent insertions serialize here. The key is a stable hash of
@@ -434,8 +432,8 @@ BEGIN
     );
     PERFORM pg_advisory_xact_lock(lock_key);
 
-    SELECT MAX(policy_revision), MAX(effective_at)
-    INTO max_revision, max_effective_at
+    SELECT MAX(policy_revision)
+    INTO max_revision
     FROM identity_enrollment_policies
     WHERE community_id = NEW.community_id;
 
@@ -445,16 +443,6 @@ BEGIN
         RAISE EXCEPTION
             'policy_revision % does not strictly exceed current maximum % for community %',
             NEW.policy_revision, max_revision, NEW.community_id
-            USING ERRCODE = 'check_violation',
-                  CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
-    END IF;
-
-    IF max_effective_at IS NOT NULL
-        AND NEW.effective_at <= max_effective_at
-    THEN
-        RAISE EXCEPTION
-            'effective_at % does not strictly exceed current maximum % for community %',
-            NEW.effective_at, max_effective_at, NEW.community_id
             USING ERRCODE = 'check_violation',
                   CONSTRAINT = 'identity_enrollment_policy_revision_monotonic';
     END IF;
