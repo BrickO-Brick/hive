@@ -10,6 +10,7 @@ import {
   installTauriMock,
   installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
+import { runWholeBlobSyncSuite } from "./wholeBlobSync.shared.test.mjs";
 
 function makeStore(overrides = {}) {
   return {
@@ -27,372 +28,55 @@ function makeSectionsStore(sections = []) {
 const RELAY = "wss://r.test";
 const RELAY_KEY = encodeURIComponent(RELAY);
 
-// ─── destroy() must cancel pending publish, not flush ─────────────────────────
+// ─── 17 shared whole-blob sync invariants ─────────────────────────────────────
 
-// Regression guard for the community-switch cross-relay publish vector:
-// edit sections in relay A → destroy() is called (relayUrl dep change) →
-// no publish should fire.
-test("destroy: cancels pending publish without flushing to the relay", () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-test", RELAY);
-    manager.publishSections(
-      makeStore({ sections: [{ id: "s1", name: "Work", order: 0 }] }),
-    );
-    assert.ok(fw._hasTimer(), "debounce timer should be set");
-    manager.destroy();
-    assert.ok(!fw._hasTimer(), "debounce timer should be cleared on destroy");
-    assert.equal(publishCalls.length, 0);
-    assert.equal(manager.getPendingStore(), null);
-  } finally {
-    restore();
-    mock.reset();
-  }
+runWholeBlobSyncSuite({
+  label: "sections",
+  SyncManager: ChannelSectionSyncManager,
+  publishMethod: "publishSections",
+  fetchRemoteMethod: "fetchRemoteSections",
+  subscribeMethod: "subscribeToSections",
+  watermarkLane: "channel-sections",
+  readOutbox: readChannelSectionsOutbox,
+  makeStore,
+  makeNonEmptyStore: () =>
+    makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
+  decryptPayload: JSON.stringify({
+    version: 1,
+    sections: [{ id: "remote-section-from-relay", name: "Remote", order: 0 }],
+    assignments: {},
+  }),
+  emptyDecryptPayload: JSON.stringify({
+    version: 1,
+    sections: [],
+    assignments: {},
+  }),
+  checkAdoptedStore: (store) =>
+    store.sections.some((s) => s.id === "remote-section-from-relay"),
+  makeOverlapStoreA: () =>
+    makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
+  makeOverlapStoreB: () =>
+    makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
+  checkOverlapPending: (store) => store?.sections?.[0]?.id === "b",
+  checkOverlapOutbox: (outbox) => outbox?.store?.sections?.[0]?.id === "b",
+  makeLiveDebounceStore: () =>
+    makeSectionsStore([{ id: "local", name: "Local", order: 0 }]),
+  liveRemoteDecryptPayload: JSON.stringify({
+    version: 1,
+    sections: [{ id: "remote-during-debounce", name: "Remote", order: 0 }],
+    assignments: {},
+  }),
+  makeCollisionStoreA: () =>
+    makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
+  makeCollisionWinnerStore: () =>
+    makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
+  makeCollisionStoreSnd: () =>
+    makeSectionsStore([{ id: "second", name: "Second", order: 0 }]),
+  makeCollisionStoreLsr: () =>
+    makeSectionsStore([{ id: "loser", name: "Loser", order: 0 }]),
 });
 
-// Regression guard for the timer-fired race: debounce fires → doPublish awaits
-// fetchOwnBlobBeforePublish → destroy() called → publishEvent must not fire.
-test("destroy: aborts in-flight doPublish after fetchOwnBlobBeforePublish resolves", async () => {
-  let releaseFetch = null;
-  const publishCalls = [];
-  mock.method(
-    relayClient,
-    "fetchEvents",
-    () =>
-      new Promise((res) => {
-        releaseFetch = () => res([]);
-      }),
-  );
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-race", RELAY);
-    manager.publishSections(
-      makeStore({ sections: [{ id: "s1", name: "Work", order: 0 }] }),
-    );
-    fw._fireTimer(); // starts doPublish, which is now awaiting fetchOwnBlobBeforePublish
-    manager.destroy();
-    releaseFetch();
-    await new Promise((r) => setTimeout(r, 0));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "publishEvent must not fire after destroy",
-    );
-  } finally {
-    restore();
-    mock.reset();
-  }
-});
-
-test("destroy: is safe to call with no pending publish", () => {
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-no-pending", RELAY);
-    assert.doesNotThrow(() => manager.destroy());
-  } finally {
-    restore();
-  }
-});
-
-// ─── Boot seed-publish guard (the revert-fix regression suite) ────────────────
-// Wiring tests 1-3 drive the production bootstrap() path; policy tested once
-// in sidebarSyncWatermark.test.mjs.
-
-// 1. fetch failed → hold, pendingStore null (mutation: remove failed guard → seed queued)
-test("revert-fix: fetch failed (error) does not trigger seed-publish via bootstrap", async () => {
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.reject(new Error("relay timeout")),
-  );
-  mock.method(relayClient, "publishEvent", () => Promise.resolve());
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-fail", RELAY);
-    const result = await manager.bootstrap(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    assert.equal(result.action, "hold");
-    assert.equal(manager.getPendingStore(), null);
-  } finally {
-    restore();
-    mock.reset();
-  }
-});
-
-// 2. absent + prior watermark → hold, pendingStore null (mutation: clear watermark → seed queued)
-test("revert-fix: absent fetch with prior watermark blocks seed-publish via bootstrap", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  mock.method(relayClient, "publishEvent", () => Promise.resolve());
-  const fw = makeFakeWindow();
-  fw.localStorage.setItem(
-    `buzz-sync-watermark.v1:channel-sections:pk-stale:${RELAY_KEY}`,
-    "1700000000",
-  );
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-stale", RELAY);
-    assert.ok(
-      Number(
-        fw.localStorage.getItem(
-          `buzz-sync-watermark.v1:channel-sections:pk-stale:${RELAY_KEY}`,
-        ) ?? "0",
-      ) > 0,
-    );
-    const result = await manager.bootstrap(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    assert.equal(result.action, "hold");
-    assert.equal(manager.getPendingStore(), null);
-  } finally {
-    restore();
-    mock.reset();
-  }
-});
-
-// 3. absent + zero watermark + non-empty → seed queued (mutation: remove seed call → pendingStore null)
-test("revert-fix: absent fetch with zero watermark seeds via bootstrap (first-sync preserved)", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  mock.method(relayClient, "publishEvent", () => Promise.resolve());
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-fresh", RELAY);
-    const result = await manager.bootstrap(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    assert.equal(result.action, "hold");
-    assert.ok(manager.getPendingStore() !== null);
-  } finally {
-    restore();
-    mock.reset();
-  }
-});
-
-// 4. Adopt-winner: a newer remote head at pre-publish time supersedes the local
-//    edit — the manager must NOT publish, must hand the remote to the adopt
-//    sink, and must clear the pending/outbox so the loser can't be replayed.
-// Mutation test: reverting adopt→republish makes onRemoteAdopted never fire and
-// publishEvent fire instead.
-test("adopt-winner: newer remote head at pre-publish adopts remote and skips publish", async () => {
-  const REMOTE_ID = "remote-section-from-relay";
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.resolve([
-      {
-        pubkey: "pk-lww",
-        content: "good-cipher",
-        created_at: 200,
-        id: "evt-remote",
-      },
-    ]),
-  );
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock(
-    JSON.stringify({
-      version: 1,
-      sections: [{ id: REMOTE_ID, name: "Remote", order: 0 }],
-      assignments: {},
-    }),
-  );
-  try {
-    const manager = new ChannelSectionSyncManager("pk-lww", RELAY);
-    const adopted = [];
-    manager.setOnRemoteAdopted((r) => adopted.push(r));
-    manager.publishSections(
-      makeSectionsStore([{ id: "local-s", name: "Local", order: 0 }]),
-    );
-    // Outbox persisted synchronously on the edit.
-    assert.ok(
-      readChannelSectionsOutbox("pk-lww", RELAY) !== null,
-      "edit must be persisted to the durable outbox",
-    );
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "must not publish when a newer remote head wins LWW",
-    );
-    assert.equal(adopted.length, 1, "adopt sink must receive the remote");
-    assert.ok(
-      adopted[0].store.sections.some((s) => s.id === REMOTE_ID),
-      "adopted store must be the remote content",
-    );
-    assert.equal(manager.getPendingStore(), null, "pending must be cleared");
-    assert.equal(
-      readChannelSectionsOutbox("pk-lww", RELAY),
-      null,
-      "outbox must be cleared on adopt so the loser is never replayed",
-    );
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 4b. Local edit wins (no newer remote head): publishes and clears the outbox.
-test("adopt-winner: local edit at/ahead of head publishes and clears outbox", async () => {
-  // The relay retains our own write, so the post-ACK confirmation fetch reads
-  // it back and confirms — clearing the outbox.
-  let storedHead = [];
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (event) => {
-    publishCalls.push(event);
-    storedHead = [event];
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installEchoTauri("pk-win");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-win", RELAY);
-    manager.publishSections(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(publishCalls.length, 1, "local edit must be published");
-    assert.equal(
-      readChannelSectionsOutbox("pk-win", RELAY),
-      null,
-      "outbox must be cleared once the edit is confirmed retained",
-    );
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 4c. Timestamp clamp: a remote head far in the future must not make the
-//     published createdAt walk past the relay's ±15min window.
-// Mutation test: removing the Math.min clamp lets createdAt = lastRemote+1
-// (~now+3600), which exceeds now + MAX_PUBLISH_FUTURE_SECS.
-test("timestamp clamp: published createdAt stays inside the relay future window", async () => {
-  const nowSecs = Math.floor(Date.now() / 1000);
-  const farFutureHead = nowSecs + 3_600; // 1h ahead — beyond the ±15min window
-  let call = 0;
-  mock.method(relayClient, "fetchEvents", () => {
-    call++;
-    // First call: fetchRemoteSections during a manual head prime; subsequent:
-    // pre-publish fetch. Return the far-future undecryptable head each time so
-    // lastRemoteCreatedAt is pushed to farFutureHead but the store still
-    // publishes (local edit is what we're stamping).
-    return Promise.resolve([
-      {
-        pubkey: "pk-clamp",
-        content: "good-cipher",
-        created_at: call === 1 ? farFutureHead : 0,
-        id: "evt-clamp",
-      },
-    ]);
-  });
-  let signedCreatedAt = null;
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock(
-    JSON.stringify({ version: 1, sections: [], assignments: {} }),
-  );
-  mock.method(relayClient, "publishEvent", (evt) => {
-    signedCreatedAt = evt.created_at;
-    return Promise.resolve();
-  });
-  try {
-    const manager = new ChannelSectionSyncManager("pk-clamp", RELAY);
-    // Prime lastRemoteCreatedAt to the far-future head.
-    await manager.fetchRemoteSections();
-    manager.publishSections(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    // Fire debounce; pre-publish fetch returns created_at=0 so local wins.
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.ok(signedCreatedAt !== null, "publish must have been attempted");
-    assert.ok(
-      signedCreatedAt <= Math.floor(Date.now() / 1000) + 840,
-      `createdAt must be clamped inside the future window — got ${signedCreatedAt}`,
-    );
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// ─── Unreadable head: retain, never overwrite (Carl P1) ───────────────────────
-
-// A pre-publish head event exists but cannot be decrypted (transient keychain
-// fault, future NIP-44 scheme). We cannot inspect it to decide adopt-or-publish,
-// so publishing our blob over it would blindly clobber authoritative state.
-// Fix: `retain` — keep the durable pending edit and retry, never publish.
-// Mutation: reverting `retain` to `publish` fires publishEvent and drops the
-// head's unread state.
-test("unreadable head (decrypt failure) retains the pending edit and retries, never publishing", async () => {
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.resolve([
-      {
-        pubkey: "pk-undec",
-        content: "bad-cipher",
-        created_at: 500,
-        id: "evt-undec",
-      },
-    ]),
-  );
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-undec", RELAY);
-    manager.publishSections(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "must not publish over a head we could not read",
-    );
-    assert.ok(
-      manager.getPendingStore() !== null,
-      "unreadable head must retain the pending edit",
-    );
-    assert.ok(
-      readChannelSectionsOutbox("pk-undec", RELAY) !== null,
-      "durable outbox must survive an unreadable head",
-    );
-    assert.ok(fw._hasTimer(), "a retry must be scheduled");
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
+// ─── Sections-specific: malformed (non-JSON) head payload ─────────────────────
 
 // A malformed payload that decrypts to non-JSON is equally unreadable:
 // `decryptAndParse` throws in `JSON.parse` and returns null, so the manager
@@ -415,7 +99,6 @@ test("malformed (non-JSON) head payload retains the pending edit, never publishi
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  // Decrypts cleanly but the plaintext is not JSON — parsing throws.
   const tauri = installTauriMock("not-json{");
   try {
     const manager = new ChannelSectionSyncManager("pk-badver", RELAY);
@@ -440,6 +123,8 @@ test("malformed (non-JSON) head payload retains the pending edit, never publishi
     mock.reset();
   }
 });
+
+// ─── Sections-specific: unsupported version (Carl P1.2 regression) ────────────
 
 // Carl P1.2 regression (sections): an unsupported/future payload version
 // arriving from the relay must trigger the retain/retry path, never publish
@@ -470,7 +155,6 @@ test("unsupported head payload version (sections) retains the pending edit, neve
   });
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
-  // Decrypts cleanly but carries a future schema version the parser now rejects.
   const tauri = installTauriMock(
     JSON.stringify({ version: 2, sections: [], assignments: {} }),
   );
@@ -498,314 +182,12 @@ test("unsupported head payload version (sections) retains the pending edit, neve
   }
 });
 
-// ─── Failed pre-publish fetch: retain, never publish (Carl P1) ────────────────
+// ─── Sections-specific: serialized generations ───────────────────────────────
 
-// The pre-publish fetch THROWS (timeout / auth / socket) — this is NOT proof
-// that no head exists. Publishing here would sign above a stale watermark and
-// could erase an unseen newer head during a transient outage. Fix: `retain` —
-// keep the durable pending edit and retry, never publish on a failed fetch.
-// Mutation: reverting the catch to `publish` fires publishEvent over the unseen
-// head.
-test("failed pre-publish fetch retains the pending edit and retries, never publishing", async () => {
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.reject(new Error("socket timeout")),
-  );
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-fetchfail", RELAY);
-    manager.publishSections(
-      makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-    );
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "must not publish when the pre-publish fetch failed",
-    );
-    assert.ok(
-      manager.getPendingStore() !== null,
-      "a failed fetch must retain the pending edit",
-    );
-    assert.ok(
-      readChannelSectionsOutbox("pk-fetchfail", RELAY) !== null,
-      "durable outbox must survive a failed fetch",
-    );
-    assert.ok(fw._hasTimer(), "a retry must be scheduled");
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 5. live-sub: undecryptable event on live path records head before decrypt
-// Mutation test: removing recordRemoteHead before decrypt in the live callback
-// leaves watermark at 0 after a live event.
-test("revert-fix: undecryptable live event advances watermark before decrypt attempt", async () => {
-  let liveCallback = null;
-  mock.method(relayClient, "subscribeLive", (_filter, onEvent) => {
-    liveCallback = onEvent;
-    return Promise.resolve(async () => {});
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  try {
-    const manager = new ChannelSectionSyncManager("pk-live", RELAY);
-    assert.equal(
-      fw.localStorage.getItem(
-        `buzz-sync-watermark.v1:channel-sections:pk-live:${RELAY_KEY}`,
-      ),
-      null,
-      "watermark starts absent",
-    );
-    await manager.subscribeToSections(() => {});
-    assert.ok(
-      liveCallback !== null,
-      "subscribeLive must have captured the callback",
-    );
-    liveCallback({
-      pubkey: "pk-live",
-      content: "!bad-cipher!",
-      created_at: 1700005555,
-      id: "live-evt-1",
-    });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      Number(
-        fw.localStorage.getItem(
-          `buzz-sync-watermark.v1:channel-sections:pk-live:${RELAY_KEY}`,
-        ) ?? "0",
-      ) >= 1700005555,
-      "live undecryptable event must advance the watermark before decrypt is attempted",
-    );
-  } finally {
-    restore();
-    mock.reset();
-  }
-});
-
-// 6. Overlapping publishes (fix 1): an older in-flight publish must not clear a
-//    newer edit queued while it was in flight. Regression for the generation
-//    compare-and-swap on discardPending — reverting the gen guard makes the
-//    older completion null out B's pendingStore + outbox.
-test("overlapping publishes: older completion does not erase a newer queued edit", async () => {
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  // First publish blocks until we release it; a second publish is queued while
-  // the first is in flight.
-  let releaseFirst = null;
-  let publishCalls = 0;
-  mock.method(relayClient, "publishEvent", () => {
-    publishCalls++;
-    if (publishCalls === 1) {
-      return new Promise((res) => {
-        releaseFirst = res;
-      });
-    }
-    return Promise.resolve();
-  });
-  // A multi-slot timer fake: each setTimeout is retained by delay so we can fire
-  // the debounce independently and inspect what remains.
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-      get length() {
-        return storage.size;
-      },
-      key: (i) => [...storage.keys()][i] ?? null,
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    await Promise.resolve();
-    await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
-  const tauri = installTauriMock("{}");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-overlap", RELAY);
-    const storeA = makeSectionsStore([{ id: "a", name: "A", order: 0 }]);
-    const storeB = makeSectionsStore([{ id: "b", name: "B", order: 0 }]);
-
-    manager.publishSections(storeA);
-    await fireDelay(2000); // debounce → doPublish(A) awaits publishEvent
-    while (releaseFirst === null) await Promise.resolve();
-
-    // Edit B arrives while A is still in flight.
-    manager.publishSections(storeB);
-    assert.deepEqual(
-      manager.getPendingStore()?.sections.map((s) => s.id),
-      ["b"],
-      "B is now the pending edit",
-    );
-    assert.equal(
-      readChannelSectionsOutbox("pk-overlap", RELAY).store.sections[0].id,
-      "b",
-      "outbox holds B",
-    );
-
-    // A completes — its success path must NOT clear B's pending/outbox.
-    releaseFirst();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    assert.deepEqual(
-      manager.getPendingStore()?.sections.map((s) => s.id),
-      ["b"],
-      "older completion must leave B pending",
-    );
-    assert.ok(
-      readChannelSectionsOutbox("pk-overlap", RELAY) !== null,
-      "older completion must leave B's outbox intact",
-    );
-    assert.ok(
-      [...timers.values()].some((t) => t.ms === 2000),
-      "B's debounce timer must survive so it still publishes",
-    );
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 7. Live remote during debounce (pass-2 finding 1): a remote head accepted
-//    while a local edit is debouncing must be adopted at pre-publish, not
-//    overwritten. The live event advances the watermark before doPublish runs,
-//    so comparing the fetched head against the mutable watermark would see
-//    equality and publish over the newer remote. The pre-publish check compares
-//    against the baseline frozen at publishSections instead. Mutation: comparing
-//    against lastRemoteCreatedAt rather than publishBaseline republishes local.
-test("live remote during debounce is adopted at pre-publish, not overwritten", async () => {
-  const remoteEvent = {
-    id: "remote-event",
-    pubkey: "pk-livedebounce",
-    content: "good-cipher",
-    created_at: 1_700_000_100,
-    kind: 30078,
-    tags: [["d", "channel-sections"]],
-    sig: "s",
-  };
-  // Pre-publish fetch returns the same live head that arrived during debounce.
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve([remoteEvent]));
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  let live = null;
-  mock.method(relayClient, "subscribeLive", async (_filter, cb) => {
-    live = cb;
-    return async () => {};
-  });
-
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-      get length() {
-        return storage.size;
-      },
-      key: (i) => [...storage.keys()][i] ?? null,
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 50; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
-  const tauri = installTauriMock(
-    JSON.stringify({
-      version: 1,
-      sections: [{ id: "remote", name: "Remote", order: 0 }],
-      assignments: {},
-    }),
-  );
-  try {
-    const manager = new ChannelSectionSyncManager("pk-livedebounce", RELAY);
-    const adopted = [];
-    manager.setOnRemoteAdopted((remote) => adopted.push(remote.eventId));
-    await manager.subscribeToSections(() => {});
-    assert.ok(live, "live subscription installed");
-
-    manager.publishSections(
-      makeSectionsStore([{ id: "local", name: "Local", order: 0 }]),
-    );
-    // A genuinely later remote head is accepted and delivered while local is
-    // pending — this advances the watermark past the frozen baseline.
-    live(remoteEvent);
-    for (let i = 0; i < 50; i++) await Promise.resolve();
-
-    await fireDelay(2000);
-
-    assert.equal(
-      publishCalls.length,
-      0,
-      "later remote head must prevent the local publish",
-    );
-    assert.deepEqual(
-      adopted,
-      ["remote-event"],
-      "the remote accepted after the edit began must be adopted",
-    );
-    assert.equal(manager.getPendingStore(), null, "pending cleared on adopt");
-    assert.equal(
-      readChannelSectionsOutbox("pk-livedebounce", RELAY),
-      null,
-      "outbox cleared on adopt so the loser can't replay",
-    );
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 8. Serialized generations (fix round 3, pass-3 finding 1): an older in-flight
-//    publish that completes after a newer edit is queued must NOT be mistaken
-//    for a remote that advanced past the newer edit's baseline. A blocks in
-//    publishEvent; B is queued; A succeeds; B's pre-publish fetch returns A's
-//    accepted head. Because the baseline is frozen at B's own cycle start —
-//    after A's completion recorded its head — B publishes above A instead of
-//    adopting it. Mutation: freezing the baseline at publishSections (before the
-//    prior cycle completes) makes B see A as a post-baseline remote and adopt it.
+// An older in-flight publish that completes after a newer edit is queued must
+// NOT be mistaken for a remote that advanced past the newer edit's baseline.
+// Mutation: freezing the baseline at publishSections (before the prior cycle
+// completes) makes B see A as a post-baseline remote and adopt it.
 test("serialized generations: older completion does not make the newer edit adopt it", async () => {
   let releaseFirst = null;
   let publishCalls = 0;
@@ -814,8 +196,6 @@ test("serialized generations: older completion does not make the newer edit adop
   mock.method(relayClient, "publishEvent", (event) => {
     publishCalls++;
     if (publishCalls === 1) {
-      // A's publish blocks; when it resolves, its event becomes the stored head
-      // the next pre-publish fetch will return.
       return new Promise((res) => {
         releaseFirst = () => {
           storedHead = [event];
@@ -850,21 +230,16 @@ test("serialized generations: older completion does not make the newer edit adop
     for (let i = 0; i < 100; i++) await Promise.resolve();
   };
   const restore = installFakeWindow(fakeWindow);
-  // A and B round-trip through the echo seam so each publish becomes a
-  // decryptable retained head the post-ACK confirmation can read back.
   const tauri = installEchoTauri("pk-serial");
   try {
     const manager = new ChannelSectionSyncManager("pk-serial", RELAY);
     const adopted = [];
     manager.setOnRemoteAdopted((remote) => adopted.push(remote.eventId));
-
     manager.publishSections(
       makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
     );
-    await fireDelay(2000); // A's cycle → publishEvent(A) blocks
+    await fireDelay(2000);
     while (releaseFirst === null) await Promise.resolve();
-
-    // B is queued while A is still in flight; its cycle must defer.
     manager.publishSections(
       makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
     );
@@ -873,13 +248,9 @@ test("serialized generations: older completion does not make the newer edit adop
       ["b"],
       "B is the pending edit while A is in flight",
     );
-
-    releaseFirst(); // A completes, recording its head; the freed lane drives B
+    releaseFirst();
     for (let i = 0; i < 100; i++) await Promise.resolve();
-    // If B's cycle did not auto-drive on the freed lane, its debounce timer is
-    // still pending — fire it.
     if ([...timers.values()].some((t) => t.ms === 2000)) await fireDelay(2000);
-
     assert.deepEqual(adopted, [], "B must not adopt the older generation A");
     assert.equal(
       publishCalls,
@@ -889,7 +260,7 @@ test("serialized generations: older completion does not make the newer edit adop
     assert.equal(
       manager.getPendingStore(),
       null,
-      "B's pending clears via its own confirmed publish, not A's completion",
+      "B's pending clears via its own confirmed publish",
     );
     manager.destroy();
   } finally {
@@ -899,11 +270,9 @@ test("serialized generations: older completion does not make the newer edit adop
   }
 });
 
-// 9. Serialized generations (fix round 3, pass-3 finding 1): a stale generation
-//    must never sign/publish after a newer edit is queued. A blocks in the
-//    pre-publish fetch; B is queued during that await; A must abort before
-//    signing. Mutation: dropping the post-fetch generation re-check in doPublish
-//    lets the stale A continue to publishEvent.
+// A stale generation must never sign/publish after a newer edit is queued.
+// Mutation: dropping the post-fetch generation re-check in doPublish lets the
+// stale A continue to publishEvent.
 test("serialized generations: a stale generation aborts before publishing", async () => {
   let releaseFetch = null;
   const publishCalls = [];
@@ -949,17 +318,13 @@ test("serialized generations: a stale generation aborts before publishing", asyn
     manager.publishSections(
       makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
     );
-    await fireDelay(2000); // A's cycle → doPublish(A) awaits fetchEvents
+    await fireDelay(2000);
     while (releaseFetch === null) await Promise.resolve();
-
-    // B is queued while A is blocked in its pre-publish fetch.
     manager.publishSections(
       makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
     );
-
-    releaseFetch(); // A's fetch resolves; A must see gen moved and abort
+    releaseFetch();
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.equal(
       publishCalls.length,
       0,
@@ -968,7 +333,7 @@ test("serialized generations: a stale generation aborts before publishing", asyn
     assert.deepEqual(
       manager.getPendingStore()?.sections.map((s) => s.id),
       ["b"],
-      "B remains the pending edit, owning convergence",
+      "B remains the pending edit",
     );
     manager.destroy();
   } finally {
@@ -978,10 +343,11 @@ test("serialized generations: a stale generation aborts before publishing", asyn
   }
 });
 
+// ─── Sections-specific: ambiguous ACK ────────────────────────────────────────
+
 // Installs a Tauri mock whose sign_event returns a caller-controlled id per
 // call (so overlapping publishes get distinct event ids) and whose
-// nip44_encrypt_to_self can be made to block, exposing the encrypt/sign await
-// window. `signIds` is consumed in order; the encrypt block is armed on demand.
+// nip44_encrypt_to_self can be made to block.
 function installSeamTauriMock(payload, signIds) {
   const orig = globalThis.window?.__TAURI_INTERNALS__;
   if (typeof globalThis.window === "undefined") globalThis.window = {};
@@ -1029,12 +395,12 @@ function installSeamTauriMock(payload, signIds) {
   };
 }
 
-// 10. Ambiguous ACK (fix round 4, pass-4 finding 1): the relay accepts A but the
-//     client's ACK is lost (publish promise rejects as a timeout). B was queued
-//     mid-flight. When B's pre-publish fetch returns A's accepted head, it must
-//     recognise A as OUR OWN accepted predecessor — fold it forward and publish
-//     above it — not adopt it and erase B. Mutation: dropping the
-//     ambiguousAttemptIds fold makes B classify A as a foreign advance and adopt.
+// Ambiguous ACK: the relay accepts A but the client's ACK is lost. B was queued
+// mid-flight. When B's pre-publish fetch returns A's accepted head, it must
+// recognise A as OUR OWN accepted predecessor — fold it forward and publish
+// above it — not adopt it and erase B.
+// Mutation: dropping the ambiguousAttemptIds fold makes B classify A as a
+// foreign advance and adopt.
 test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappear", async () => {
   let releaseFirst = null;
   let publishCalls = 0;
@@ -1043,8 +409,6 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
   mock.method(relayClient, "publishEvent", (event) => {
     publishCalls++;
     if (publishCalls === 1) {
-      // A reaches the relay and is stored, but the ACK never arrives: the
-      // promise rejects as a timeout after the frame has left.
       return new Promise((_res, reject) => {
         releaseFirst = () => {
           storedHead = [
@@ -1062,8 +426,6 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
         };
       });
     }
-    // B publishes above A and is retained; its post-ACK confirmation reads it
-    // back (same signed id, our pubkey) and confirms, clearing B's pending edit.
     storedHead = [
       {
         id: "event-b",
@@ -1113,22 +475,18 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
     const manager = new ChannelSectionSyncManager("pk-ambiguous", RELAY);
     const adopted = [];
     manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
-
     manager.publishSections(
       makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
     );
-    await fireDelay(2000); // A's cycle → publishEvent(A) blocks
+    await fireDelay(2000);
     while (releaseFirst === null) await Promise.resolve();
-
     manager.publishSections(
       makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
     );
-
-    releaseFirst(); // A's ACK is lost; A is stored on the relay regardless
+    releaseFirst();
     for (let i = 0; i < 100; i++) await Promise.resolve();
     if ([...timers.values()].some((t) => t.ms === 2000)) await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.deepEqual(
       adopted,
       [],
@@ -1152,21 +510,14 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
   }
 });
 
-// 11. Ambiguous ACK, negative case (fix round 4, pass-4 finding 1): the fold is
-//     gated on an exact id-match against a prior attempt. An advancing head
-//     whose id is NOT one of our attempts is a genuine foreign winner and must
-//     be ADOPTED, never folded. A's ACK is lost (transient) so its id stays in
-//     the ambiguous set, but the head that surfaces is a DIFFERENT foreign id —
-//     proof the relay never accepted A. B must adopt the foreign winner, not
-//     fold it and publish above it. Mutation: dropping the ambiguousAttemptIds
-//     id-guard (folding any advance) makes B erase the foreign winner.
+// A foreign head (id NOT in our attempt set) must be adopted, not folded.
+// Mutation: dropping the ambiguousAttemptIds id-guard (folding any advance)
+// makes B erase the foreign winner.
 test("ambiguous ACK: a foreign head is adopted, not folded as our own", async () => {
   let publishCalls = 0;
   let fetchCalls = 0;
   mock.method(relayClient, "fetchEvents", () => {
     fetchCalls++;
-    // 1: A's pre-publish fetch (empty → A publishes, then its ACK times out).
-    // 2+: B's pre-publish fetch surfaces a FOREIGN winner (id != A's attempt).
     if (fetchCalls === 1) return Promise.resolve([]);
     return Promise.resolve([
       {
@@ -1182,7 +533,6 @@ test("ambiguous ACK: a foreign head is adopted, not folded as our own", async ()
   });
   mock.method(relayClient, "publishEvent", () => {
     publishCalls++;
-    // A's ACK is lost as a transient timeout; the relay never stored A.
     if (publishCalls === 1)
       return Promise.reject(
         new Error("Timed out publishing channel sections."),
@@ -1225,20 +575,16 @@ test("ambiguous ACK: a foreign head is adopted, not folded as our own", async ()
     const manager = new ChannelSectionSyncManager("pk-reject", RELAY);
     const adopted = [];
     manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
-
     manager.publishSections(
       makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
     );
-    await fireDelay(2000); // A's cycle → publishEvent rejects (ACK lost)
+    await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    // B is queued; it supersedes A's scheduled retry.
     manager.publishSections(
       makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
     );
     if ([...timers.values()].some((t) => t.ms === 2000)) await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.deepEqual(
       adopted,
       ["foreign-winner"],
@@ -1257,12 +603,12 @@ test("ambiguous ACK: a foreign head is adopted, not folded as our own", async ()
   }
 });
 
-// 12. Pre-sign generation guard seam (fix round 4, pass-4 review): the guard
-//     immediately before signing/publishing (post-encrypt) must be individually
-//     load-bearing. B arrives DURING A's encrypt/sign await — past the
-//     post-fetch guard — so only the pre-sign guard can stop A publishing a
-//     stale store. Mutation: dropping the gen re-check at the pre-sign guard
-//     lets stale A reach publishEvent after B was queued.
+// Pre-sign generation guard seam: the guard immediately before signing/publishing
+// (post-encrypt) must be individually load-bearing. B arrives DURING A's
+// encrypt/sign await — past the post-fetch guard — so only the pre-sign guard
+// can stop A publishing a stale store.
+// Mutation: dropping the gen re-check at the pre-sign guard lets stale A reach
+// publishEvent after B was queued.
 test("serialized generations: a newer edit during encrypt/sign aborts the pre-sign publish", async () => {
   const publishCalls = [];
   mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
@@ -1297,23 +643,19 @@ test("serialized generations: a newer edit during encrypt/sign aborts the pre-si
   const tauri = installSeamTauriMock("{}", ["event-a", "event-b"]);
   try {
     const manager = new ChannelSectionSyncManager("pk-seam", RELAY);
-    tauri.armEncryptBlock(); // A's encrypt will block, exposing the sign window
+    tauri.armEncryptBlock();
     manager.publishSections(
       makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
     );
-    await fireDelay(2000); // A's cycle → passes post-fetch guard, blocks in encrypt
+    await fireDelay(2000);
     while (!tauri.hasEncryptBlocked()) await Promise.resolve();
-
-    // B is queued while A is mid encrypt/sign — after A's post-fetch guard.
     manager.publishSections(
       makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
     );
-
-    tauri.releaseEncrypt(); // A resumes; the pre-sign guard must abort it
+    tauri.releaseEncrypt();
     for (let i = 0; i < 100; i++) await Promise.resolve();
     if ([...timers.values()].some((t) => t.ms === 2000)) await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.equal(
       publishCalls.length,
       1,
@@ -1323,356 +665,6 @@ test("serialized generations: a newer edit during encrypt/sign aborts the pre-si
       publishCalls[0].id,
       "event-b",
       "the surviving publish is B, not the stale A",
-    );
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 13a-pre. Same-second collision, single edit, confirmation-retain path: after
-//     the ACK resolves and confirmation transiently fails (retain), the retry's
-//     pre-publish fetch sees the peer same-second winner. The loser must ADOPT
-//     the winner, not republish above it. This verifies the generation guard in
-//     foldSupersedingAttemptWinner: if the baseline attempt id was registered at
-//     the current generation (no newer edit queued), the fold must not fire.
-//     Mutation: removing the `attempt < this.pendingGeneration` guard from
-//     foldSupersedingAttemptWinner could cause a retry to republish above the
-//     winner when the baseline was previously poisoned by a prior-generation
-//     attempt; this companion test proves the correct adopt behavior holds in
-//     the single-edit path (baseline id is empty → guard is moot; adopt fires).
-test("same-second collision: single-edit retry adopts winner, does not republish", async () => {
-  let fetchCalls = 0;
-  let publishCalls = 0;
-  let storedHead = [];
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const win = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(win);
-  const tauri = installEchoTauri("pk-collide3");
-  // fetchEvents call sequence:
-  //   1 — pre-publish fetch (empty → publishes)
-  //   2 — confirmation (returns empty / no head → retain, simulating transient fault)
-  //   3 — retry pre-publish fetch (peer winner → should adopt, not republish)
-  mock.method(relayClient, "fetchEvents", () => {
-    fetchCalls++;
-    if (fetchCalls === 1) return Promise.resolve([]); // pre-publish: empty
-    if (fetchCalls === 2) return Promise.resolve([]); // confirmation: no head → retain
-    return Promise.resolve(storedHead); // retry pre-publish: peer winner
-  });
-  mock.method(relayClient, "publishEvent", (event) => {
-    publishCalls++;
-    // Relay retained the peer's same-second lower-id blob; our attempt lost.
-    storedHead = [
-      tauri.mintHead(
-        makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
-        event.created_at,
-        "0-peer-winner", // lexicographically < "evt-1" (our signed attempt id)
-      ),
-    ];
-    return Promise.resolve();
-  });
-  try {
-    const manager = new ChannelSectionSyncManager("pk-collide3", RELAY);
-    const adopted = [];
-    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
-
-    manager.publishSections(
-      makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
-    );
-    await fireDelay(2000); // publish OK, confirmation gets no head → retain
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    // Confirmation returned retain → retry timer scheduled.
-    // Fire the retry; its pre-publish fetch returns the peer winner.
-    await fireDelay(2000);
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    // No second edit was queued; the generation guard blocks the fold. The
-    // loser must ADOPT the peer winner, not publish again above it.
-    assert.equal(publishCalls, 1, "retry does not republish above the winner");
-    assert.equal(adopted.length, 1, "retry adopts the peer winner");
-    assert.equal(
-      manager.getPendingStore(),
-      null,
-      "pending edit is cleared by the adopt",
-    );
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 13a. Same-second collision variant (Carl r6 P1 / queued-during-confirmation):
-//     the second edit is queued AFTER the publish ACK but BEFORE
-//     confirmRetainedHead resolves, so pendingGeneration bumps while the first
-//     edit's confirmation fetch is still in flight. When confirmation returns
-//     the peer winner, adoptRemote fires with stale gen — the second edit owns
-//     pending. Without the fix, adoptRemote returns early leaving the second
-//     edit's baseline as our attempted (non-retained) id; the second edit's
-//     pre-publish check then sees the winner as having advanced past that
-//     phantom and adopts it away. With the fix, adoptRemote folds the winner
-//     into the current baseline (same-second lower-id scope) so the second
-//     edit's pre-publish check sees equality and publishes above the true head.
-//     Mutation: reverting the adoptRemote foldSupersedingAttemptWinner call
-//     makes the second edit adopt the winner instead of publishing above it.
-test("same-second collision: second edit queued during confirmation survives", async () => {
-  let fetchCalls = 0;
-  let releaseConfirmation = null;
-  let publishCalls = 0;
-  let storedHead = [];
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const win = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(win);
-  const tauri = installEchoTauri("pk-collide2");
-  // fetchEvents call sequence:
-  //   1 — edit-1 pre-publish fetch (empty → edit-1 publishes)
-  //   2 — edit-1 confirmation (paused; edit-2 queued during pause, then
-  //        released with peer winner so adoptRemote fires with stale gen)
-  //   3 — edit-2 pre-publish fetch (peer winner → fold → edit-2 publishes)
-  //   4 — edit-2 confirmation (edit-2's own event → confirmed)
-  mock.method(relayClient, "fetchEvents", () => {
-    fetchCalls++;
-    if (fetchCalls === 1) return Promise.resolve([]); // edit-1 pre-publish: empty
-    if (fetchCalls === 2) {
-      return new Promise((resolve) => {
-        releaseConfirmation = () => resolve(storedHead);
-      });
-    }
-    return Promise.resolve(storedHead);
-  });
-  mock.method(relayClient, "publishEvent", (event) => {
-    publishCalls++;
-    if (publishCalls === 1) {
-      // Edit-1 ACK resolves; relay retained the peer's same-second lower-id
-      // blob. Minted through the echo seam so it decrypts.
-      storedHead = [
-        tauri.mintHead(
-          makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
-          event.created_at,
-          "0-peer-winner", // lexicographically < "evt-1" (our signed attempt id)
-        ),
-      ];
-      return Promise.resolve();
-    }
-    // Edit-2 publishes above the winner and is retained.
-    storedHead = [event];
-    return Promise.resolve();
-  });
-  try {
-    const manager = new ChannelSectionSyncManager("pk-collide2", RELAY);
-    const adopted = [];
-    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
-
-    // Queue edit-1 and let its debounce fire. ACK resolves immediately, but
-    // the confirmation fetch pauses at fetchCalls===2.
-    manager.publishSections(
-      makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
-    );
-    await fireDelay(2000);
-    while (releaseConfirmation === null) await Promise.resolve();
-
-    // Queue edit-2 AFTER the ACK but BEFORE confirmation resolves.
-    manager.publishSections(
-      makeSectionsStore([{ id: "next", name: "Next", order: 0 }]),
-    );
-
-    // Release confirmation with the peer winner. adoptRemote fires stale-gen;
-    // the fix folds the winner into publishBaseline.
-    releaseConfirmation();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    // Stale-gen adopt does not fire onRemoteAdopted (the newer edit owns pending)
-    // and does not clear the pending store.
-    assert.equal(
-      adopted.length,
-      0,
-      "stale-gen adopt does not fire onRemoteAdopted for the newer pending edit",
-    );
-    assert.notEqual(
-      manager.getPendingStore(),
-      null,
-      "edit-2 is still pending after the stale-gen adopt",
-    );
-
-    // Fire edit-2's debounce. Its pre-publish fetch sees the peer winner; the
-    // repaired baseline means it publishes above the winner rather than adopting.
-    await fireDelay(2000);
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    assert.equal(publishCalls, 2, "edit-2 publishes above the peer winner");
-    assert.equal(
-      adopted.length,
-      0,
-      "edit-2 is NOT adopted away — no phantom-baseline poisoning",
-    );
-    assert.equal(
-      manager.getPendingStore(),
-      null,
-      "edit-2 clears via its own confirmed publish",
-    );
-    assert.equal(
-      readChannelSectionsOutbox("pk-collide2", RELAY),
-      null,
-      "edit-2's durable outbox is cleared on confirmation",
-    );
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// 13. Same-second whole-blob collision (Carl r6 P1): two windows publish
-//     distinct blobs stamped at the same created_at; the relay retains only the
-//     lower event id and OKs the loser as a no-op (`Duplicate`). A publish OK is
-//     therefore NOT proof of retention. The losing window must fetch the
-//     authoritative head, see a DIFFERENT readable event, and ADOPT it — never
-//     record its own non-retained tuple as the baseline. Critically, its NEXT
-//     edit must then survive: it must publish above the adopted winner, not be
-//     mistaken for a competing remote and adopted away. Mutation: recording the
-//     attempted tuple on OK alone (dropping confirmRetainedHead) makes the loser
-//     fold a nonexistent head into its baseline and erase its next edit.
-test("same-second collision: loser adopts the winner and its next edit survives", async () => {
-  let publishCalls = 0;
-  let storedHead = [];
-  mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
-  const t = (() => {
-    const storage = new Map();
-    const timers = new Map();
-    let nextId = 1;
-    return {
-      win: {
-        localStorage: {
-          getItem: (k) => storage.get(k) ?? null,
-          setItem: (k, v) => storage.set(k, v),
-          removeItem: (k) => storage.delete(k),
-        },
-        setTimeout: (fn, ms) => {
-          const id = nextId++;
-          timers.set(id, { fn, ms });
-          return id;
-        },
-        clearTimeout: (id) => timers.delete(id),
-      },
-      fireDelay: async (ms) => {
-        const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-        assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-        timers.delete(entry[0]);
-        entry[1].fn();
-        for (let i = 0; i < 100; i++) await Promise.resolve();
-      },
-    };
-  })();
-  const restore = installFakeWindow(t.win);
-  const tauri = installEchoTauri("pk-collide");
-  mock.method(relayClient, "publishEvent", (event) => {
-    publishCalls++;
-    if (publishCalls === 1) {
-      // Our blob is OK'd but immediately superseded: the retained head is a
-      // peer window's distinct blob at the same second (lower event id wins).
-      // Minted through the echo seam so it decrypts back to a readable store.
-      storedHead = [
-        tauri.mintHead(
-          makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
-          event.created_at,
-        ),
-      ];
-      return Promise.resolve();
-    }
-    // Our second edit publishes above the adopted winner and is retained.
-    storedHead = [event];
-    return Promise.resolve();
-  });
-  try {
-    const manager = new ChannelSectionSyncManager("pk-collide", RELAY);
-    const adopted = [];
-    manager.setOnRemoteAdopted((r) => adopted.push(r.eventId));
-
-    manager.publishSections(
-      makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
-    );
-    await t.fireDelay(2000); // publish OK, but the peer blob is what's retained
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    // The loser adopts the peer winner rather than recording its own
-    // non-retained tuple; its first edit is not silently kept as a phantom head.
-    assert.equal(adopted.length, 1, "loser adopts the true retained winner");
-    assert.equal(
-      manager.getPendingStore(),
-      null,
-      "the losing edit is resolved by adopting the winner, not left dangling",
-    );
-
-    // The NEXT edit must survive: it publishes above the adopted winner and is
-    // confirmed retained — never adopted away as if it were a competing remote.
-    manager.publishSections(
-      makeSectionsStore([{ id: "next", name: "Next", order: 0 }]),
-    );
-    await t.fireDelay(2000);
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    assert.equal(publishCalls, 2, "the next edit publishes above the winner");
-    assert.equal(
-      adopted.length,
-      1,
-      "the next edit is NOT adopted away — no phantom-baseline poisoning",
-    );
-    assert.equal(
-      manager.getPendingStore(),
-      null,
-      "the next edit clears via its own confirmed publish",
-    );
-    assert.equal(
-      readChannelSectionsOutbox("pk-collide", RELAY),
-      null,
-      "the next edit's durable outbox is cleared on confirmation",
     );
     manager.destroy();
   } finally {

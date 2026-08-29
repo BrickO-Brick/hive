@@ -1,12 +1,14 @@
-import { normalizeRelayUrl } from "@/shared/lib/normalizeRelayUrl";
 import {
-  clearOwnOutbox,
-  enumerateOutbox,
-  reclaimOutbox,
-  writeOwnOutbox,
-} from "./sidebarSyncWatermark";
+  clearOutbox,
+  makeStorageKey,
+  readOutbox,
+  readStore,
+  reclaimSubsumedOutbox,
+  writeOutbox,
+} from "./mergeLaneStorage.shared";
 
 const STORAGE_KEY_PREFIX = "buzz-channel-mutes.v1";
+const OUTBOX_KEY_PREFIX = "buzz-channel-mutes-outbox.v1";
 export const MAX_CHANNEL_MUTE_ENTRIES = 500;
 
 export type ChannelMuteEntry = {
@@ -40,10 +42,7 @@ export const DEFAULT_STORE: ChannelMuteStore = Object.freeze({
  * returned (used only during one-time migration in `readChannelMutesStore`).
  */
 export function storageKey(pubkey: string, relayUrl?: string): string {
-  if (!relayUrl) return `${STORAGE_KEY_PREFIX}:${pubkey}`;
-  const normalized = normalizeRelayUrl(relayUrl);
-  // Encode the normalized relay so it can't contain the `:` delimiter.
-  return `${STORAGE_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalized)}`;
+  return makeStorageKey(STORAGE_KEY_PREFIX, pubkey, relayUrl);
 }
 
 export function parseMutePayload(json: unknown): ChannelMuteStore | null {
@@ -142,77 +141,13 @@ export function readChannelMutesStore(
   pubkey: string,
   relayUrl?: string,
 ): ChannelMuteStore {
-  try {
-    const key = storageKey(pubkey, relayUrl);
-    const scoped = parseRaw(window.localStorage.getItem(key));
-
-    // Unscoped read: the key IS the legacy key, so there is nothing to claim.
-    if (!relayUrl) return scoped ?? DEFAULT_STORE;
-
-    const legacyKey = storageKey(pubkey);
-    const legacy = parseRaw(window.localStorage.getItem(legacyKey));
-    const legacyHasData =
-      legacy !== null && Object.keys(legacy.channels).length > 0;
-
-    // No importable legacy value remains — an existing scoped copy is proven
-    // owned. This short-circuits every read after a completed claim.
-    if (!legacyHasData) return scoped ?? DEFAULT_STORE;
-
-    // A consumable legacy key still coexists with (or would seed) the scoped
-    // key; neither is safe to expose until that legacy key is provably gone.
-    return claimLegacy(key, legacyKey, scoped ?? legacy, scoped !== null);
-  } catch {
-    return DEFAULT_STORE;
-  }
-}
-
-/**
- * Enforce the ownership invariant: expose `owned` only once the legacy key is
- * provably gone. Write the scoped copy when it is not already present, delete
- * the legacy key, and confirm the delete took. On failure return
- * `DEFAULT_STORE`, and roll back a scoped copy WE just wrote only when the
- * legacy key is provably still present — if legacy is already gone (a delete
- * that succeeded before a later read threw), the scoped copy is the sole
- * surviving copy and must be kept, and if the probe itself throws we keep it
- * too, favoring no-data-loss. A kept-but-unproven copy is never exposed while
- * an importable legacy key remains (the read-time gate above), so it can never
- * seed early; the next healthy read completes or retries the claim.
- */
-function claimLegacy(
-  key: string,
-  legacyKey: string,
-  owned: ChannelMuteStore,
-  scopedExists: boolean,
-): ChannelMuteStore {
-  try {
-    if (!scopedExists) window.localStorage.setItem(key, JSON.stringify(owned));
-    window.localStorage.removeItem(legacyKey);
-    if (window.localStorage.getItem(legacyKey) !== null) {
-      // Delete did not take — do not expose data another relay could import.
-      if (!scopedExists) window.localStorage.removeItem(key);
-      return DEFAULT_STORE;
-    }
-    return owned;
-  } catch {
-    if (!scopedExists) {
-      try {
-        // Roll back only if legacy is provably still importable: keeping the
-        // scoped copy then would let a second relay scope claim legacy too
-        // (double-seed). If legacy is already gone, the scoped copy is the only
-        // one left and must be kept — rolling it back is permanent data loss.
-        if (window.localStorage.getItem(legacyKey) !== null) {
-          window.localStorage.removeItem(key);
-        }
-      } catch {
-        // Residual (deliberate): the legacy delete AND this probe both throw,
-        // so we cannot prove legacy gone. We keep the scoped copy to favor
-        // no-data-loss; while legacy remains the read-time gate keeps it hidden
-        // so it cannot seed early, but if storage partially recovers and this
-        // window then switches relays, both scopes can carry the legacy value.
-      }
-    }
-    return DEFAULT_STORE;
-  }
+  return readStore(
+    STORAGE_KEY_PREFIX,
+    pubkey,
+    relayUrl,
+    parseRaw,
+    DEFAULT_STORE,
+  );
 }
 
 export function boundMuteStore(
@@ -337,15 +272,6 @@ export function mutedChannelIdsFromStore(store: ChannelMuteStore): Set<string> {
   );
 }
 
-const OUTBOX_KEY_PREFIX = "buzz-channel-mutes-outbox.v1";
-
-// The single shared key written by builds before the outbox was keyed
-// per-window. Enumerated as one more record so an edit persisted by a prior
-// build still resumes, and reclaimed by the same relay-gated rule.
-function legacyOutboxKey(pubkey: string, relayUrl: string): string {
-  return `${OUTBOX_KEY_PREFIX}:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
-}
-
 /**
  * Persist this window's unpublished edit under its own outbox key. Written
  * synchronously on every click as a single unconditional `setItem` (no shared-
@@ -357,7 +283,7 @@ export function writeChannelMutesOutbox(
   store: ChannelMuteStore,
   relayUrl: string,
 ): void {
-  writeOwnOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl, boundMuteStore(store));
+  writeOutbox(OUTBOX_KEY_PREFIX, pubkey, store, relayUrl, boundMuteStore);
 }
 
 /**
@@ -369,16 +295,12 @@ export function readChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
 ): ChannelMuteStore | null {
-  const records = enumerateOutbox(
+  return readOutbox(
     OUTBOX_KEY_PREFIX,
-    legacyOutboxKey(pubkey, relayUrl),
     pubkey,
     relayUrl,
     parseMutePayload,
-  );
-  if (records.length === 0) return null;
-  return records.reduce<ChannelMuteStore>(
-    (acc, r) => mergeStores(acc, r.store),
+    mergeStores,
     DEFAULT_STORE,
   );
 }
@@ -388,7 +310,7 @@ export function clearChannelMutesOutbox(
   pubkey: string,
   relayUrl: string,
 ): void {
-  clearOwnOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl);
+  clearOutbox(OUTBOX_KEY_PREFIX, pubkey, relayUrl);
 }
 
 /**
@@ -417,13 +339,13 @@ export function reclaimSubsumedMutesOutbox(
   relayUrl: string,
   head: ChannelMuteStore,
 ): void {
-  reclaimOutbox(
+  reclaimSubsumedOutbox(
     OUTBOX_KEY_PREFIX,
-    legacyOutboxKey(pubkey, relayUrl),
     pubkey,
     relayUrl,
     parseMutePayload,
-    (record) => isMutesStoreSubsumedBy(record.store, head),
+    isMutesStoreSubsumedBy,
+    head,
   );
 }
 
