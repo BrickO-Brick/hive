@@ -274,6 +274,15 @@ fn redact_acp_write_for_observer(value: &serde_json::Value) -> serde_json::Value
     redacted
 }
 
+fn log_acp_write(value: &serde_json::Value) {
+    let diagnostic = redact_acp_write_for_observer(value);
+    tracing::debug!(
+        target: "acp::wire",
+        "→ {}",
+        serde_json::to_string(&diagnostic).unwrap_or_default()
+    );
+}
+
 /// Build the merged `CODEX_CONFIG` environment-variable value for a Codex agent spawn.
 ///
 /// Returns `Some(json_string)` when `has_generated_codex_config` is true (Buzz injected a
@@ -850,8 +859,6 @@ impl AcpClient {
             "params": params,
         });
 
-        let diagnostic_msg = redact_acp_write_for_observer(&msg);
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&diagnostic_msg).unwrap_or_default());
         if let Err(e) = self.write_ndjson(&msg).await {
             self.last_prompt_id = None;
             self.current_hard_deadline = None;
@@ -1116,6 +1123,7 @@ impl AcpClient {
     /// (e.g., it's stuck or dead), the write would otherwise block forever.
     async fn write_ndjson(&mut self, value: &serde_json::Value) -> Result<(), AcpError> {
         const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        log_acp_write(value);
         let line = serde_json::to_string(value)?;
         tokio::time::timeout(WRITE_TIMEOUT, async {
             self.stdin.write_all(line.as_bytes()).await?;
@@ -1156,8 +1164,6 @@ impl AcpClient {
             "method": method,
             "params": params,
         });
-
-        tracing::debug!(target: "acp::wire", "→ {}", &serde_json::to_string(&msg).unwrap_or_default());
 
         // Wrap write + read in a single timeout so a hung agent can't block forever.
         // We cannot use an async block that borrows `self` mutably across two awaits
@@ -1222,7 +1228,6 @@ impl AcpClient {
             "params": params,
         });
 
-        tracing::debug!(target: "acp::wire", "→ (notification) {}", &serde_json::to_string(&msg).unwrap_or_default());
         self.write_ndjson(&msg).await?;
         Ok(())
     }
@@ -1508,11 +1513,6 @@ impl AcpClient {
                                 "method": method,
                                 "params": params,
                             });
-                            tracing::debug!(
-                                target: "acp::wire",
-                                "→ {}",
-                                serde_json::to_string(&msg).unwrap_or_default()
-                            );
                             match self.write_ndjson(&msg).await {
                                 Ok(()) => {
                                     pending_steer = Some((id, transport, req.ack_tx));
@@ -2401,6 +2401,30 @@ fn configure_no_window(cmd: &mut tokio::process::Command) {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Default)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    struct CapturedLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedLogWriter(self.0.clone())
+        }
+    }
+
     #[test]
     fn stop_reason_parses_all_known_values() {
         assert_eq!(StopReason::from_str("end_turn"), Some(StopReason::EndTurn));
@@ -2649,6 +2673,41 @@ mod tests {
             wire["params"]["mcpServers"][0]["env"][2]["value"],
             "broker-secret"
         );
+    }
+
+    #[test]
+    fn session_new_wire_log_redacts_mcp_environment_values() {
+        let wire = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": {
+                "mcpServers": [{
+                    "name": "buzz-mcp",
+                    "command": "buzz-mcp",
+                    "args": [],
+                    "env": [{
+                        "name": "BUZZ_BROKER_CREDENTIAL",
+                        "value": "must-not-reach-the-wire-log"
+                    }]
+                }]
+            }
+        });
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || log_acp_write(&wire));
+
+        let captured = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(captured.contains("session/new"));
+        assert!(captured.contains("BUZZ_BROKER_CREDENTIAL"));
+        assert!(captured.contains(OBSERVER_REDACTED_ENV_VALUE));
+        assert!(!captured.contains("must-not-reach-the-wire-log"));
     }
 
     #[test]
