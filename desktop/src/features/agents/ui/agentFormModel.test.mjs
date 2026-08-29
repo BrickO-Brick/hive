@@ -117,6 +117,112 @@ test("test_pooled_name_instance_name_not_materialized_even_when_names_differ", (
   );
 });
 
+// ── Regression test 1b: pooled instances — explicit name change emits (Carl round-5, IMPORTANT 2) ──
+//
+// The hasNamePool guard previously suppressed ALL instance-name diffs when the
+// definition had a name pool. This made it impossible for a user to rename their
+// pooled instance: the change would be silently swallowed. The guard is NOT
+// load-bearing for the definition-rename safeguard — when only a D-field
+// changes, instanceName stays equal to inst.name in the seed, so the diff is
+// already false without it. Removing the guard allows explicit pooled-instance
+// renames to reach the backend.
+
+test("test_pooled_explicit_rename_emits_agentInput", () => {
+  // A pool-named instance: user explicitly changes the visible instance name.
+  const definition = makeDefinition({
+    displayName: "Bot",
+    namePool: ["Scout", "Ranger"],
+  });
+  const instance = makeInstance({ name: "Scout" });
+
+  const ctx = { kind: "instance-with-definition", definition, instance };
+  const saved = seedAgentFormModel(ctx);
+
+  // User renames the pooled instance — sets instanceName to a new value.
+  const next = { ...saved, instanceName: "Scout-alpha" };
+  const emit = emitAgentFormDiff(saved, next, ctx);
+
+  // D-field unchanged — no definition update.
+  assert.equal(
+    emit.personaInput,
+    null,
+    "pooled rename must not update the definition",
+  );
+  // I-field: explicit rename must emit agentInput with the new name.
+  assert.ok(
+    emit.agentInput,
+    "explicit pooled instance rename must emit agentInput",
+  );
+  assert.equal(
+    emit.agentInput.name,
+    "Scout-alpha",
+    "agentInput.name must equal the new instance name",
+  );
+});
+
+test("test_pooled_clear_emits_agentInput", () => {
+  // Clearing the pooled instance name results in nameChanged=true (the canSubmit
+  // gate blocks blank names, but the model emits the diff regardless — the gate
+  // prevents submission before we reach emit, but the model must still be
+  // correct about what changed if it were somehow reached).
+  const definition = makeDefinition({
+    displayName: "Bot",
+    namePool: ["Scout", "Ranger"],
+  });
+  const instance = makeInstance({ name: "Scout" });
+
+  const ctx = { kind: "instance-with-definition", definition, instance };
+  const saved = seedAgentFormModel(ctx);
+
+  // User clears the pooled instance name (empty string).
+  const next = { ...saved, instanceName: "" };
+  const emit = emitAgentFormDiff(saved, next, ctx);
+
+  // The clear emits as a name change (empty string != "Scout").
+  assert.ok(
+    emit.agentInput,
+    "a cleared pooled instance name must emit agentInput (canSubmit gate blocks it before submission)",
+  );
+  assert.equal(
+    emit.agentInput.name,
+    "",
+    "emitted name must be the cleared empty string",
+  );
+});
+
+test("test_cleared_instance_name_emits_empty_not_displayName_fallback", () => {
+  // When instanceName is cleared (undefined in the model, from buildNextAgentFormModel
+  // returning undefined for a trimmed empty string), the emit must use "" NOT
+  // fall back to displayName.trim(). The old fallback (next.instanceName ??
+  // next.displayName.trim()) silently renamed the instance to the definition name
+  // instead of treating the clear as an intended empty.
+  const definition = makeDefinition({
+    displayName: "Alice",
+    namePool: [],
+  });
+  const instance = makeInstance({ name: "Alice" });
+
+  const ctx = { kind: "instance-with-definition", definition, instance };
+  const saved = seedAgentFormModel(ctx);
+
+  // Simulate buildNextAgentFormModel with an empty instanceName field:
+  // "  ".trim() || undefined = undefined.
+  const next = { ...saved, instanceName: undefined };
+  const emit = emitAgentFormDiff(saved, next, ctx);
+
+  // A cleared instanceName (undefined) should emit agentInput.name = "" (the
+  // intended "clear"), not fall back to displayName.trim() = "Alice".
+  assert.ok(
+    emit.agentInput,
+    "undefined instanceName != inst.name must emit agentInput",
+  );
+  assert.equal(
+    emit.agentInput.name,
+    "",
+    "cleared instanceName must emit empty string, not the definition displayName",
+  );
+});
+
 test("test_no_name_pool_explicit_instance_name_change_emits_agentInput", () => {
   // Without a name pool, explicitly editing the instanceName field should
   // produce an agentInput with the new name.

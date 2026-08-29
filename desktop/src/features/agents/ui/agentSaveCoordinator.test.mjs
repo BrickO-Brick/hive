@@ -1631,8 +1631,8 @@ test("test_publish_throws_post_persist_does_not_settle_as_full_success", async (
     assert.equal(warnings.length, 1, "exactly one warning toast");
     assert.match(
       warnings[0].message,
-      /saved.*publishing.*failed|publishing.*failed|not published/i,
-      "warning must indicate the persona saved but publication failed",
+      /saved locally.*not.*published|could not be published|saved.*not published/i,
+      "warning must indicate the persona saved locally but publication failed",
     );
     assert.match(
       warnings[0].message,
@@ -1680,7 +1680,7 @@ test("test_publish_throws_post_persist_returns_false_not_partial_failure_toast",
     );
     assert.match(
       warnings[0].message,
-      /publishing.*failed|catalog.*failed|not published/i,
+      /could not be published|saved locally.*not.*published|not published/i,
       "warning must indicate publishing was the failure, not the save itself",
     );
     // Must NOT use the partial-failure wording "profile saved. profile failed"
@@ -1688,6 +1688,162 @@ test("test_publish_throws_post_persist_returns_false_not_partial_failure_toast",
       warnings[0].message,
       /profile failed/i,
       "must not use the partial D/I-failure wording for a publish-only failure",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+// ── Test family 11: P1-1 publish retry seam (Carl round-5 pass-2) ─────────────
+//
+// When the initial save+publish command throws after the persona is on disk, the
+// coordinator now attempts a publish-only retry via publishRetry(def.id) before
+// reporting failure. This keeps the toast copy honest:
+//
+//   - If the retry succeeds: full-success path fires — onDone is called and the
+//     success toast names the persona and publication status.
+//   - If the retry also fails: terminal warning without "reopen to retry"
+//     (the flush loop holds the enqueued head and will retry automatically).
+//   - If no publishRetry seam is provided: same terminal warning, no false
+//     "reopen to retry" copy.
+//
+// The existing family-10 tests remain unchanged: they verify the publishFailed
+// flag is set and onDone is not called on the initial throw. These family-11
+// tests cover the retry layer on top.
+
+test("test_publish_retry_succeeds_settles_as_full_success", async () => {
+  // Initial updatePersonaAndPublish throws (retain step failed), but the
+  // persona IS observed as persisted. publishRetry succeeds → coordinator
+  // should call onDone and return true.
+  const cap = captureToasts();
+  try {
+    const persisted = makeDefinition({ displayName: "Alice" });
+    let retryCalls = 0;
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => {
+        throw new Error("failed to open retention db");
+      },
+      refetchStores: async () => ({ persona: persisted, agent: null }),
+      publishRetry: async () => {
+        retryCalls++;
+        return { persona: persisted, publicationStatus: "published" };
+      },
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      true,
+      "coordinator must return true when the publish retry succeeds",
+    );
+    assert.equal(
+      opts._calls.onDone,
+      1,
+      "onDone must be called on retry success",
+    );
+    assert.equal(retryCalls, 1, "publishRetry must be called exactly once");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 0, "no warning toast when retry succeeds");
+    const successes = cap.captured.filter((c) => c.kind === "success");
+    assert.equal(successes.length, 1, "success toast must fire after retry");
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_publish_retry_failure_shows_terminal_warning_not_reopen", async () => {
+  // Both the initial publish and the retry fail — should report a terminal
+  // state without "reopen to retry publishing".
+  const cap = captureToasts();
+  try {
+    const persisted = makeDefinition({ displayName: "Alice" });
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => {
+        throw new Error("relay unreachable: connection refused");
+      },
+      refetchStores: async () => ({ persona: persisted, agent: null }),
+      publishRetry: async () => {
+        throw new Error("relay still unreachable");
+      },
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      false,
+      "coordinator must return false when retry also fails",
+    );
+    assert.equal(opts._calls.onDone, 0, "onDone must not be called");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1, "exactly one warning toast");
+    // Must say "saved locally" or similar — NOT "reopen to retry".
+    assert.match(
+      warnings[0].message,
+      /saved locally|saved.*not.*published|could not be published/i,
+      "warning must indicate saved locally but not published",
+    );
+    assert.doesNotMatch(
+      warnings[0].message,
+      /reopen to retry publishing/i,
+      "terminal state must not tell the user to reopen — that is a lie",
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("test_no_publish_retry_seam_shows_terminal_warning_not_reopen", async () => {
+  // No publishRetry provided — coordinator must still not say "reopen to retry".
+  const cap = captureToasts();
+  try {
+    const persisted = makeDefinition({ displayName: "Alice" });
+    const opts = makeOpts({
+      ctx: {
+        kind: "definition-only",
+        definition: makeDefinition({ displayName: "Alice" }),
+      },
+      personaInput: makePersonaInput({ displayName: "Alice" }),
+      publishCatalogUpdates: true,
+      updatePersonaAndPublish: async () => {
+        throw new Error("failed to open retention db");
+      },
+      refetchStores: async () => ({ persona: persisted, agent: null }),
+      // publishRetry intentionally omitted (no seam available).
+    });
+
+    const result = await runAgentSaveCoordinator(opts);
+
+    assert.equal(
+      result,
+      false,
+      "coordinator must return false with no retry seam",
+    );
+    assert.equal(opts._calls.onDone, 0, "onDone must not be called");
+    const warnings = cap.captured.filter((c) => c.kind === "warning");
+    assert.equal(warnings.length, 1, "exactly one warning toast");
+    assert.match(
+      warnings[0].message,
+      /saved locally|saved.*not.*published|could not be published/i,
+      "must indicate saved locally not published",
+    );
+    assert.doesNotMatch(
+      warnings[0].message,
+      /reopen to retry publishing/i,
+      "no-seam terminal state must not say reopen to retry",
     );
   } finally {
     cap.restore();

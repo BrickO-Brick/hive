@@ -24,6 +24,7 @@ import type {
   UpdateManagedAgentInput,
   UpdatePersonaInput,
 } from "@/shared/api/types";
+import { setPersonaShared } from "@/shared/api/tauriPersonas";
 import type { PersonaSharePublicationResult } from "@/shared/api/tauriPersonas";
 import {
   seedAgentFormModel,
@@ -286,6 +287,12 @@ export function useAgentEditMergedSubmit(
           runtimes: s.runtimes.length > 0 ? s.runtimes : undefined,
           updatePersona: s.updatePersona,
           updatePersonaAndPublish: s.updatePersonaAndPublish,
+          // Publish-only retry: when save+publish succeeds on disk but the
+          // publication step throws, re-publish the current on-disk head via
+          // set_persona_shared without writing any field changes.  The persona
+          // is already shared=true (it was shared when the save+publish path
+          // was reached), so passing true re-publishes the current head.
+          publishRetry: (id: string) => setPersonaShared(id, true),
           updateManagedAgent: async (upd) => {
             if (!inst)
               throw new Error("No instance in definition-only context");
@@ -317,8 +324,13 @@ export function useAgentEditMergedSubmit(
         });
 
         if (!success) {
+          // The coordinator already reported the specific failure via toast.
+          // This error banner is a secondary indicator for users who miss the
+          // toast — use an accurate summary that covers all false-return paths.
           setSaveError(
-            new Error("Some changes may not have persisted. Reopen to retry."),
+            new Error(
+              "Some changes may not have fully saved — see the notification above for details.",
+            ),
           );
         }
         if (success && inst) {

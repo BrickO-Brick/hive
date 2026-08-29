@@ -79,6 +79,16 @@ export type SaveCoordinatorOptions = {
   updatePersonaAndPublish: (
     input: UpdatePersonaInput,
   ) => Promise<PersonaSharePublicationResult>;
+  /**
+   * Publish the current on-disk definition to the catalog without writing any
+   * field changes. Called when the initial save+publish succeeded on disk but
+   * the publication step threw — the persona is persisted, so the retry only
+   * needs to re-attempt the relay submission.  Uses the share-toggle strict
+   * path (`set_persona_shared`) which reads the definition from disk, so no
+   * field payload is needed.  If omitted the coordinator falls back to a
+   * terminal "saved locally, not published" report.
+   */
+  publishRetry?: (personaId: string) => Promise<PersonaSharePublicationResult>;
   updateManagedAgent: (
     input: UpdateManagedAgentInput,
   ) => Promise<{ agent: ManagedAgent; profileSyncError: string | null }>;
@@ -122,6 +132,7 @@ export async function runAgentSaveCoordinator(
     updateManagedAgent,
     setAutoRestart,
     setStartOnAppLaunch,
+    publishRetry,
     refetchStores,
     onDone,
     onSavedWhileStopped,
@@ -418,18 +429,46 @@ export async function runAgentSaveCoordinator(
 
   if (!observedRemainder && publishFailed) {
     // The persona persisted but the publish command threw before returning a
-    // status — the relay was never reached. "Save and publish" did not deliver
-    // its promise: report "saved but not published" and keep the dialog open so
-    // the user can retry (re-submitting will re-attempt the publish path).
+    // status — the relay was never reached. Attempt a publish-only retry via
+    // set_persona_shared (reads the current on-disk definition; no field write
+    // needed). If the retry succeeds, fall through to full success. If it
+    // fails (or no retry seam is available), report a terminal "saved locally,
+    // not published" state — the flush loop will re-attempt on reconnect, and
+    // the user can re-open and save again to force a retry.
     const personaName =
       observedPersona?.displayName ??
       personaInput?.displayName ??
       def?.displayName ??
       "Agent";
-    toast.warning(
-      `${personaName} saved, but publishing to the catalog failed: ${firstError ?? "unknown error"} — reopen to retry publishing.`,
-    );
-    return false;
+    if (publishRetry && def) {
+      let retryError: string | null = null;
+      try {
+        const retryResult = await publishRetry(def.id);
+        publicationStatus = retryResult.publicationStatus;
+        // Retry succeeded — the persona is published. Clear publishFailed and
+        // fall through to the full-success branch below.
+        publishFailed = false;
+      } catch (err) {
+        retryError = err instanceof Error ? err.message : "unknown error";
+      }
+      if (publishFailed) {
+        // Retry also failed — terminal state: the relay was not reached in
+        // either attempt. The flush loop holds the enqueued head and will
+        // re-publish on reconnect. Surface an accurate message without
+        // implying the user can fix it by reopening.
+        toast.warning(
+          `${personaName} saved locally, but could not be published to the catalog: ${retryError ?? firstError ?? "unknown error"} — it will be retried automatically.`,
+        );
+        return false;
+      }
+      // publishFailed is now false — fall through to full success.
+    } else {
+      // No retry seam available — terminal state (same as retry failure).
+      toast.warning(
+        `${personaName} saved locally, but could not be published to the catalog: ${firstError ?? "unknown error"} — it will be retried automatically.`,
+      );
+      return false;
+    }
   }
 
   if (!observedRemainder) {

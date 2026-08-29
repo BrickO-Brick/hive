@@ -540,12 +540,13 @@ export function emitAgentFormDiff(
 
     const nameChanged =
       isI("instanceName") &&
-      !hasNamePool &&
-      // Use the raw instanceName value — do not fall back to displayName when
-      // instanceName is empty string. An empty instanceName means the user
-      // deliberately cleared the field; the canSubmit gate blocks submission
-      // when it is blank, so if we reach here with "" the instance is
-      // definition-only and has no name change to emit.
+      // Pool-named instances: the hasNamePool guard previously suppressed every
+      // instanceName diff, but it was not load-bearing for the definition-rename
+      // case: when only a D-field changes the seeded instanceName still equals
+      // inst.name, so the diff is already false without the guard. Removing the
+      // guard lets an explicit user rename/clear on a pooled instance emit
+      // correctly. The canSubmit gate blocks blank names (pool or not), so an
+      // accidental clear cannot reach this path with an empty string.
       (next.instanceName ?? "") !== inst.name;
     const systemPromptChanged =
       isI("systemPrompt") &&
