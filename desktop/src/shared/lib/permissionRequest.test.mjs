@@ -512,9 +512,98 @@ describe("harness integration fixture", () => {
     assert.deepEqual(result.optionIds, ["opt-allow", "opt-reject"]);
     assert.equal(result.sessionId, "sess-fixture-001");
     assert.equal(result.turnId, "turn-fixture-xyz");
+    // F2: fixture now carries description from params.subject
+    assert.equal(
+      result.description,
+      "read a file",
+      "fixture description must round-trip from Rust producer",
+    );
   });
 
   it("test_harness_kind9_content_identified_as_sentinel", () => {
     assert.equal(isPermissionRequestSentinel(HARNESS_KIND9_CONTENT), true);
+  });
+});
+
+// ── F2: description field — parser validation ─────────────────────────────────
+
+describe("extractPermissionRequest — description field", () => {
+  it("test_pending_with_description_string_parses_correctly", () => {
+    const payload = { ...PENDING_NORMAL, description: "read /etc/hosts" };
+    const result = extractPermissionRequest(raw(payload));
+    assert.ok(result !== null, "pending with description must parse");
+    assert.equal(result.description, "read /etc/hosts");
+  });
+
+  it("test_pending_with_null_description_parses_correctly", () => {
+    const payload = { ...PENDING_NORMAL, description: null };
+    const result = extractPermissionRequest(raw(payload));
+    assert.ok(result !== null, "pending with null description must parse");
+    assert.equal(result.description, null);
+  });
+
+  it("test_pending_without_description_field_parses_correctly", () => {
+    // No description key at all — field is optional
+    const result = extractPermissionRequest(raw(PENDING_NORMAL));
+    assert.ok(result !== null, "pending without description field must parse");
+    assert.ok(
+      result.description === undefined || result.description === null,
+      "absent description must be undefined or null",
+    );
+  });
+
+  it("test_pending_with_overlong_description_is_rejected", () => {
+    // Parser-side: an over-limit description in the wire payload is rejected
+    // (producer truncates producer-side; a non-compliant producer is untrusted).
+    const overlong = "a".repeat(201); // 201 bytes > MAX_STRING_BYTES=200
+    const payload = { ...PENDING_NORMAL, description: overlong };
+    const result = extractPermissionRequest(raw(payload));
+    assert.equal(
+      result,
+      null,
+      "pending with over-limit description must be rejected by parser",
+    );
+  });
+
+  it("test_pending_with_non_string_description_is_rejected", () => {
+    // Parser-side: a non-null non-string description is invalid
+    const payload = { ...PENDING_NORMAL, description: 42 };
+    const result = extractPermissionRequest(raw(payload));
+    assert.equal(
+      result,
+      null,
+      "pending with numeric description must be rejected",
+    );
+  });
+
+  it("test_pending_with_markup_description_parses_as_text", () => {
+    // Hostile markup in description — parser accepts it as-is; React renders as text
+    const hostile = "<script>alert(1)</script>";
+    const payload = { ...PENDING_NORMAL, description: hostile };
+    const result = extractPermissionRequest(raw(payload));
+    assert.ok(result !== null, "hostile markup description must parse");
+    // The string round-trips unchanged — sanitization is React's job at render time
+    assert.equal(result.description, hostile);
+  });
+
+  it("test_resolved_with_description_parses_correctly", () => {
+    const payload = {
+      ...RESOLVED_APPLIED,
+      description: "read /etc/hosts",
+    };
+    const result = extractPermissionRequest(raw(payload));
+    assert.ok(result !== null, "resolved with description must parse");
+    assert.equal(result.description, "read /etc/hosts");
+  });
+
+  it("test_resolved_with_overlong_description_is_rejected", () => {
+    const overlong = "b".repeat(201);
+    const payload = { ...RESOLVED_APPLIED, description: overlong };
+    const result = extractPermissionRequest(raw(payload));
+    assert.equal(
+      result,
+      null,
+      "resolved with over-limit description must be rejected",
+    );
   });
 });

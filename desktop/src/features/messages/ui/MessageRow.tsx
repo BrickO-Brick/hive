@@ -35,7 +35,7 @@ import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAu
 import { PermissionRequestCardBlock } from "@/features/messages/ui/PermissionRequestCardBlock";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import { isPermissionRequestSentinel } from "@/shared/lib/permissionRequest";
+import { isTrustedPermissionRequestSentinel as isSentinel } from "@/features/messages/ui/permissionRequestAuthPubkey";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
@@ -425,8 +425,8 @@ export const MessageRow = React.memo(
             );
           }
 
-          // Suppress prose for permission-request sentinels — bare JSON the card below renders.
-          if (message.isAgent && isPermissionRequestSentinel(message.body)) {
+          // Suppress prose only when the trusted card will render — forged signer falls back to prose.
+          if (message.isAgent && isSentinel(message, isKnownAgentPubkey)) {
             return null;
           }
 

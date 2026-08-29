@@ -352,7 +352,9 @@ state is buffered and applied as soon as the relay `OK` is received, with no
 additional round trip.
 
 The event content is a compact JSON object that matches the D6 frozen schema
-(`requestNonce`, `optionIds`, `labels`, `expiresAt`, …). `optionIds` is a
+(`requestNonce`, `optionIds`, `labels`, `expiresAt`, `description`, …). `description`
+is sourced from `params.subject` of the `session/request_permission` message and is
+`null` when the adapter did not provide a subject. `optionIds` is a
 **two-action contract**: exactly one `allow_once` and one `reject_once`, in that
 order — the harness selects them via `select_card_actions` and fails closed if
 either is absent or ambiguous, so no other option (e.g. `allow_always`) can ever
@@ -412,16 +414,18 @@ JSON until timeout.
 | each `optionId` | 200 UTF-8 bytes | fail closed (no card) |
 | `chosenOptionId` | 200 UTF-8 bytes | fail closed (no edit) |
 | each label value | 200 UTF-8 bytes | truncated on a char boundary at the producer |
+| `description` | 200 UTF-8 bytes | truncated on a char boundary at the producer |
 | total serialized content | 4096 UTF-8 bytes | fail closed (no card) |
 
 `sessionId` is the load-bearing case: it comes straight from the adapter's
 unbounded `session/new` response, so an oversized adapter session ID aborts
 sentinel construction (synchronous deny, zero card events) rather than publishing
-an unrenderable card. Labels are lossy display strings and are the only field
-truncated rather than rejected; truncation lands on a UTF-8 char boundary so the
-result is always valid UTF-8 within the byte limit the Desktop parser accepts.
+an unrenderable card. Labels and `description` are lossy display strings and are the
+only fields truncated rather than rejected; truncation lands on a UTF-8 char boundary
+so the result is always valid UTF-8 within the byte limit the Desktop parser accepts.
 Label values in the sentinel come directly from the ACP options' `name` fields;
-render them verbatim.
+render them verbatim. `description` comes from `params.subject` in the
+`session/request_permission` message and describes the operation being authorized.
 
 ### Sentinel authenticity
 

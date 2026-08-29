@@ -80,15 +80,27 @@ function buttonClass(deny: boolean): string {
 
 /**
  * Outcome display label — maps the harness outcome string to human copy.
+ *
+ * Verb derivation uses the positional allow contract: `optionIds[0]` is always
+ * the `allow_once` action and `optionIds[1]` is always the `reject_once` action
+ * (fixed order guaranteed by `sentinel_option_fields` in `crates/buzz-acp/src/acp.rs`
+ * and pinned by the cross-language fixture `crates/buzz-acp/tests/fixtures/sentinel_pending.json`).
+ * Deriving the verb from this signed identity — not the mutable display label — ensures
+ * that a reject option named "Allow file access" still renders as "Denied", not "Approved".
  */
 function outcomeLabel(
   outcome: string,
   chosenOptionId: string | null,
   labels: Record<string, string>,
+  allowOptionId: string,
 ): string {
   if (outcome === "applied" && chosenOptionId !== null) {
     const chosen = labels[chosenOptionId];
-    return chosen ? `Approved: ${chosen}` : "Approved";
+    if (chosenOptionId === allowOptionId) {
+      return chosen ? `Approved: ${chosen}` : "Approved";
+    }
+    // chosenOptionId is the reject option
+    return chosen ? `Denied: ${chosen}` : "Denied";
   }
   if (outcome === "timed_out") return "Timed out";
   if (outcome === "cancelled") return "Cancelled";
@@ -236,6 +248,7 @@ export function PermissionRequestCard({
       request.outcome,
       request.chosenOptionId,
       request.labels,
+      request.optionIds[0] ?? "",
     );
     return (
       <Attachment
@@ -253,6 +266,11 @@ export function PermissionRequestCard({
           <AttachmentTitle className="whitespace-normal text-muted-foreground line-clamp-2">
             Permission request resolved
           </AttachmentTitle>
+          {request.description ? (
+            <div className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+              {request.description}
+            </div>
+          ) : null}
           <div className="mt-0.5 text-xs text-muted-foreground">
             {resolvedLabel}
           </div>
@@ -326,6 +344,11 @@ function PendingPermissionRequestCard({
             <ExpiryCountdown expiresAt={request.expiresAt} nowSecs={nowSecs} />
           ) : null}
         </AttachmentTitle>
+        {request.description ? (
+          <div className="mt-0.5 text-xs text-muted-foreground line-clamp-3">
+            {request.description}
+          </div>
+        ) : null}
         {isOwner ? (
           <PermissionButtons
             agentPubkey={agentPubkey}

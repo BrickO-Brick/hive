@@ -48,6 +48,16 @@ export type PermissionRequestPending = {
   optionIds: string[];
   /** Harness-provided display labels keyed by optionId. Each ≤ 200 UTF-8 bytes. */
   labels: Record<string, string>;
+  /**
+   * Human-readable description of the requested operation, sourced from the
+   * `params.subject` field of the ACP `session/request_permission` message.
+   * Truncated producer-side to ≤ 200 UTF-8 bytes. `null` when the adapter
+   * did not provide a subject or provided an empty string.
+   *
+   * Display-only — treated as an untrusted string and rendered as text (HTML-
+   * escaped by React). The sentinel is valid when this field is absent or null.
+   */
+  description?: string | null;
 };
 
 /**
@@ -70,6 +80,12 @@ export type PermissionRequestResolved = {
   outcome: "applied" | "timed_out" | "cancelled" | "rejected";
   /** Non-null only when outcome === "applied". */
   chosenOptionId: string | null;
+  /**
+   * Human-readable description of the requested operation — same value as in
+   * the corresponding pending sentinel. `null` or absent when no subject was
+   * provided. Rendered on the resolved card for context.
+   */
+  description?: string | null;
 };
 
 export type PermissionRequestPayload =
@@ -241,6 +257,16 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
   }
 
   if (p.state === "pending") {
+    // description: optional field — absent/null or a bounded string are all valid.
+    if (
+      "description" in p &&
+      p.description !== null &&
+      p.description !== undefined &&
+      (typeof p.description !== "string" ||
+        byteLength(p.description) > MAX_STRING_BYTES)
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -267,6 +293,16 @@ function isPermissionRequestPayload(v: unknown): v is PermissionRequestPayload {
       }
     } else {
       if (p.chosenOptionId !== null) return false;
+    }
+    // description: optional field — same rules as pending.
+    if (
+      "description" in p &&
+      p.description !== null &&
+      p.description !== undefined &&
+      (typeof p.description !== "string" ||
+        byteLength(p.description) > MAX_STRING_BYTES)
+    ) {
+      return false;
     }
     return true;
   }

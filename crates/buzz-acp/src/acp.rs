@@ -241,6 +241,11 @@ struct PermissionEntry {
     /// `Publishing` state. Applied immediately on `Accepted`; discarded on
     /// any non-accepted outcome (entry is denied instead).
     early_decision: Option<PermissionDecision>,
+    /// Human-readable description of the requested operation, extracted from
+    /// `params.subject` in the ACP `session/request_permission` message.
+    /// Truncated to `SENTINEL_STRING_MAX_BYTES`. `None` when the adapter did
+    /// not provide a subject or provided an empty string.
+    description: Option<String>,
 }
 
 /// ACP client that owns an agent subprocess and communicates over its stdio.
@@ -1569,6 +1574,7 @@ impl AcpClient {
                         e.nonce.clone(),
                         e.expiry_unix_secs,
                         e.deadline,
+                        e.description.clone(),
                     )
                 });
                 // Remove entry — absence of the nonce is the replay guard.
@@ -1596,6 +1602,7 @@ impl AcpClient {
                     entry_nonce,
                     expiry_unix_secs,
                     entry_deadline,
+                    entry_description,
                 )) = sentinel_context
                 {
                     // Clone all relay context upfront to avoid holding &mut self borrows
@@ -1628,6 +1635,7 @@ impl AcpClient {
                             &turn_id,
                             reason,
                             chosen_option_id.as_deref(),
+                            entry_description.as_deref(),
                         ) {
                             if let Some(event) = build_kind40003_sentinel(
                                 &keys,
@@ -3371,6 +3379,11 @@ impl AcpClient {
                 // Build and sign the kind-9 sentinel event ONCE before inserting
                 // the entry — the resolved edit retransmits the same signed event
                 // on retry, matching the spec requirement.
+                let description_owned: Option<String> = msg
+                    .pointer("/params/subject")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| truncate_to_bytes(s, SENTINEL_STRING_MAX_BYTES));
                 let sentinel_event = {
                     let keys_opt = self.agent_relay_keys.clone();
                     let channel_id_opt = self.sentinel_channel_id;
@@ -3387,6 +3400,7 @@ impl AcpClient {
                                 expiry_unix_secs,
                                 session_id_owned.as_deref(),
                                 &turn_id,
+                                description_owned.as_deref(),
                             )?;
                             build_kind9_sentinel(
                                 &keys,
@@ -3420,6 +3434,7 @@ impl AcpClient {
                                 // can reference it even if the ACK arm hasn't fired yet.
                                 sentinel_event_id: Some(sentinel_id),
                                 early_decision: None,
+                                description: description_owned.clone(),
                             },
                         );
                         // Publish deadline: min(fixed publish timeout, entry deadline).
@@ -3865,6 +3880,7 @@ fn build_sentinel_pending_payload(
     expiry_unix_secs: u64,
     session_id: Option<&str>,
     turn_id: &str,
+    description: Option<&str>,
 ) -> Option<String> {
     check_sentinel_field("requestNonce", nonce)?;
     check_sentinel_field("turnId", turn_id)?;
@@ -3872,6 +3888,9 @@ fn build_sentinel_pending_payload(
         check_sentinel_field("sessionId", sid)?;
     }
     let (option_ids, labels) = sentinel_option_fields(actions);
+    // Description is display-only — truncate rather than reject, matching the
+    // labels precedent. A None or empty subject is omitted from the payload.
+    let description_capped = description.map(|d| truncate_to_bytes(d, SENTINEL_STRING_MAX_BYTES));
     let payload = serde_json::json!({
         "v": 1,
         "state": "pending",
@@ -3881,6 +3900,7 @@ fn build_sentinel_pending_payload(
         "expiresAt": expiry_unix_secs,
         "optionIds": option_ids,
         "labels": labels,
+        "description": description_capped,
     });
     serialize_bounded_sentinel(&payload)
 }
@@ -3896,6 +3916,7 @@ fn build_sentinel_resolved_payload(
     turn_id: &str,
     outcome: &str,
     chosen_option_id: Option<&str>,
+    description: Option<&str>,
 ) -> Option<String> {
     check_sentinel_field("requestNonce", nonce)?;
     check_sentinel_field("turnId", turn_id)?;
@@ -3906,6 +3927,7 @@ fn build_sentinel_resolved_payload(
         check_sentinel_field("chosenOptionId", chosen)?;
     }
     let (option_ids, labels) = sentinel_option_fields(actions);
+    let description_capped = description.map(|d| truncate_to_bytes(d, SENTINEL_STRING_MAX_BYTES));
     let payload = serde_json::json!({
         "v": 1,
         "state": "resolved",
@@ -3918,6 +3940,7 @@ fn build_sentinel_resolved_payload(
         "labels": labels,
         "outcome": outcome,
         "chosenOptionId": chosen_option_id,
+        "description": description_capped,
     });
     serialize_bounded_sentinel(&payload)
 }
@@ -7444,6 +7467,7 @@ mod tests {
             1_700_000_300,
             Some(&big_session),
             "turn-xyz",
+            None,
         );
         assert!(
             out.is_none(),
@@ -7461,6 +7485,7 @@ mod tests {
             1_700_000_300,
             Some("sess"),
             "turn-xyz",
+            None,
         );
         assert!(out.is_none(), "an over-limit nonce must fail closed");
     }
@@ -7476,6 +7501,7 @@ mod tests {
             1_700_000_300,
             Some(&session),
             "turn-xyz",
+            None,
         );
         assert!(
             out.is_some(),
@@ -7546,10 +7572,108 @@ mod tests {
             "turn-xyz",
             "applied",
             Some(&big_chosen),
+            None,
         );
         assert!(
             out.is_none(),
             "an over-limit chosenOptionId must fail closed"
+        );
+    }
+
+    // ── F2: description field — truncation and omission ───────────────────────
+
+    #[test]
+    fn build_sentinel_pending_description_present_and_within_limit() {
+        let actions = test_card_actions();
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+            Some("read a file"),
+        )
+        .expect("must succeed with a short description");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["description"], "read a file",
+            "description must round-trip"
+        );
+    }
+
+    #[test]
+    fn build_sentinel_pending_description_none_omits_field() {
+        let actions = test_card_actions();
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+            None,
+        )
+        .expect("must succeed without description");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        // `None` produces `"description": null` in the JSON, not a missing key.
+        assert!(
+            v["description"].is_null(),
+            "description must be null when not provided"
+        );
+    }
+
+    #[test]
+    fn build_sentinel_pending_description_truncated_on_producer_side() {
+        // An over-limit description is truncated at a char boundary and accepted
+        // (display-only — truncate, not reject, matching the labels precedent).
+        let actions = test_card_actions();
+        let over_limit = "a".repeat(SENTINEL_STRING_MAX_BYTES + 50);
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+            Some(&over_limit),
+        )
+        .expect("over-limit description must be truncated and accepted");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let description = v["description"]
+            .as_str()
+            .expect("description must be a string");
+        assert!(
+            description.len() <= SENTINEL_STRING_MAX_BYTES,
+            "truncated description must be within limit: got {} bytes",
+            description.len()
+        );
+    }
+
+    #[test]
+    fn build_sentinel_pending_description_multibyte_truncated_on_char_boundary() {
+        // A multibyte description over the byte limit is truncated on a char
+        // boundary, yielding valid UTF-8 within SENTINEL_STRING_MAX_BYTES.
+        let actions = test_card_actions();
+        let big_desc = "😀".repeat(60); // 240 UTF-8 bytes > 200
+        let out = build_sentinel_pending_payload(
+            "nonce-abc",
+            &actions,
+            1_700_000_300,
+            Some("sess"),
+            "turn-xyz",
+            Some(&big_desc),
+        )
+        .expect("multibyte over-limit description must be truncated and accepted");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let desc = v["description"]
+            .as_str()
+            .expect("description must be a string");
+        assert!(
+            desc.len() <= SENTINEL_STRING_MAX_BYTES,
+            "truncated multibyte description must be within limit"
+        );
+        // Must be valid UTF-8 — verify by checking no decoding errors.
+        assert!(
+            std::str::from_utf8(desc.as_bytes()).is_ok(),
+            "truncated description must be valid UTF-8"
         );
     }
 
@@ -7759,6 +7883,7 @@ mod tests {
                 expiry_unix_secs: 0,
                 sentinel_event_id: None,
                 early_decision: None,
+                description: None,
             },
         );
         let msg = perm_request(1, default_opts());
@@ -7979,6 +8104,7 @@ mod tests {
                     expiry_unix_secs: 0,
                     sentinel_event_id: None,
                     early_decision: None,
+                    description: None,
                 },
             );
         }
@@ -8026,6 +8152,7 @@ mod tests {
                     expiry_unix_secs: 0,
                     sentinel_event_id: None,
                     early_decision: None,
+                    description: None,
                 },
             );
         }
@@ -8041,6 +8168,7 @@ mod tests {
                 expiry_unix_secs: 0,
                 sentinel_event_id: Some("sentinel-pub".to_string()),
                 early_decision: None,
+                description: None,
             },
         );
         let (_ack_tx, ack_rx) = tokio::sync::mpsc::channel(1);
@@ -9226,6 +9354,7 @@ mod tests {
                     expiry_unix_secs: 0,
                     sentinel_event_id: None,
                     early_decision: None,
+                    description: None,
                 },
             );
             // cancel_with_cleanup needs last_prompt_id to be Some.
@@ -9448,6 +9577,7 @@ mod tests {
                         expiry_unix_secs: 0,
                         sentinel_event_id: None,
                         early_decision: None,
+                        description: None,
                     },
                 );
             }
@@ -10313,9 +10443,15 @@ mod tests {
 
         let actions = select_card_actions(&options)
             .expect("select_card_actions must succeed with one allow_once + one reject_once");
-        let content =
-            build_sentinel_pending_payload(nonce, &actions, expiry_unix_secs, session_id, turn_id)
-                .expect("build_sentinel_pending_payload must succeed");
+        let content = build_sentinel_pending_payload(
+            nonce,
+            &actions,
+            expiry_unix_secs,
+            session_id,
+            turn_id,
+            Some("read a file"),
+        )
+        .expect("build_sentinel_pending_payload must succeed");
 
         // Fixture coupling: the producer output MUST be byte-identical to the
         // checked-in fixture the Desktop boundary test parses. A producer-side
@@ -10488,6 +10624,7 @@ mod tests {
                 expiry_unix_secs: 0,
                 sentinel_event_id: None,
                 early_decision: None,
+                description: None,
             },
         );
 

@@ -509,3 +509,126 @@ test("test_failed_delivery_re_enables_buttons_and_successful_retry_reaches_sent"
     "Decision sent persists after acked — terminal state",
   );
 });
+
+// ── F1: reject choice renders "Denied", not "Approved" ────────────────────────
+//
+// Mutation target: the `chosenOptionId === allowOptionId` branch in
+// `outcomeLabel` (permission-request-card.tsx). Collapsing it back to
+// label-blind `Approved:` for all `applied` outcomes → the test below fails.
+
+test("test_allow_choice_renders_approved_label", async () => {
+  // optionIds[0] = "opt-allow" (allow contract). Choosing it → "Approved: Allow once".
+  const resolvedContent = JSON.stringify({
+    v: 1,
+    state: "resolved",
+    requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+    originalEventId: MESSAGE_ID,
+    sessionId: "sess-abc",
+    turnId: "turn-xyz",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    outcome: "applied",
+    chosenOptionId: "opt-allow", // allow option chosen
+  });
+
+  const container = await renderBlock({
+    content: resolvedContent,
+    agentPubkey: AGENT_PUBKEY,
+    signerPubkey: AGENT_PUBKEY,
+    editSignerPubkey: AGENT_PUBKEY,
+    preEditBody: makePendingContent(),
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  assert.ok(
+    container.textContent?.includes("Approved"),
+    "allow choice must render 'Approved'",
+  );
+  assert.ok(
+    !container.textContent?.includes("Denied"),
+    "allow choice must NOT render 'Denied'",
+  );
+});
+
+test("test_reject_choice_renders_denied_not_approved", async () => {
+  // optionIds[1] = "opt-deny" (reject contract). Choosing it → "Denied: Deny".
+  // This is the F1 bug: before the fix, this rendered "Approved: Deny".
+  const resolvedContent = JSON.stringify({
+    v: 1,
+    state: "resolved",
+    requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+    originalEventId: MESSAGE_ID,
+    sessionId: "sess-abc",
+    turnId: "turn-xyz",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    outcome: "applied",
+    chosenOptionId: "opt-deny", // reject option chosen
+  });
+
+  const container = await renderBlock({
+    content: resolvedContent,
+    agentPubkey: AGENT_PUBKEY,
+    signerPubkey: AGENT_PUBKEY,
+    editSignerPubkey: AGENT_PUBKEY,
+    preEditBody: makePendingContent(),
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  assert.ok(
+    container.textContent?.includes("Denied"),
+    "reject choice must render 'Denied'",
+  );
+  assert.ok(
+    !container.textContent?.includes("Approved"),
+    "reject choice must NOT render 'Approved' — F1 regression proof",
+  );
+});
+
+// ── F2: description renders on pending card ────────────────────────────────────
+
+test("test_description_renders_on_pending_card", async () => {
+  const contentWithDesc = JSON.stringify({
+    v: 1,
+    state: "pending",
+    requestNonce: "a9f3b2c1-d4e5-4f6a-b7c8-d9e0f1a2b3c4",
+    sessionId: "sess-abc",
+    turnId: "turn-xyz",
+    expiresAt: FUTURE_EXPIRY,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+    description: "read /etc/hosts",
+  });
+
+  const container = await renderBlock({
+    content: contentWithDesc,
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  assert.ok(
+    container.textContent?.includes("read /etc/hosts"),
+    "description must appear on the pending card",
+  );
+});
+
+test("test_no_description_does_not_break_pending_card", async () => {
+  // No description field — card should still render with buttons
+  const container = await renderBlock({
+    content: makePendingContent(),
+    viewerPubkey: OWNER_PUBKEY,
+    ownerPubkey: OWNER_PUBKEY,
+  });
+
+  const card = container.querySelector("[data-permission-request]");
+  assert.ok(card !== null, "card must render without description");
+
+  const allowBtn = container.querySelector(
+    '[data-testid="permission-decision-opt-allow"]',
+  );
+  assert.ok(allowBtn !== null, "buttons must render without description");
+});
