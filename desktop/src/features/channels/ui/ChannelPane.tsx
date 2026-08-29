@@ -48,6 +48,7 @@ import {
 import { useWelcomeComposerBanner } from "@/features/channels/ui/useWelcomeComposerBanner";
 import {
   mentionsKnownAgent,
+  selectThreadComposerBotTypingPubkeys,
   shouldPrioritizeIdleAuxiliary,
   shouldUseFocusIdleDrawer,
 } from "@/features/channels/ui/ChannelPane.helpers";
@@ -100,7 +101,9 @@ export const ChannelPane = React.memo(function ChannelPane({
   isJoining = false,
   isSinglePanelView = false,
   isSending,
+  isTimelineError = false,
   isTimelineLoading,
+  onRetryTimeline,
   entranceMessageId = null,
   onEntranceMessageComplete,
   welcomeKickoffStage = null,
@@ -336,18 +339,11 @@ export const ChannelPane = React.memo(function ChannelPane({
   const hasCardMintActivity = useCardMintJobs().length > 0;
   const hasComposerBottomActivity =
     hasComposerBotActivity || hasTypingActivity || hasCardMintActivity;
-  const threadComposerBotTypingPubkeys = React.useMemo(() => {
-    if (!openThreadHeadId) return [];
-    return botTypingEntries
-      .filter((entry) => entry.threadHeadId === openThreadHeadId)
-      .map((entry) => entry.pubkey)
-      .filter(
-        (pubkey, index, all) =>
-          all.findIndex(
-            (candidate) => candidate.toLowerCase() === pubkey.toLowerCase(),
-          ) === index,
-      );
-  }, [botTypingEntries, openThreadHeadId]);
+  const threadComposerBotTypingPubkeys = React.useMemo(
+    () =>
+      selectThreadComposerBotTypingPubkeys(botTypingEntries, openThreadHeadId),
+    [botTypingEntries, openThreadHeadId],
+  );
   const hasThreadComposerBotActivity =
     threadComposerBotTypingPubkeys.length > 0;
   const handleWelcomeAddAgent = React.useCallback(() => {
@@ -656,7 +652,9 @@ export const ChannelPane = React.memo(function ChannelPane({
                     : "No messages yet"
                   : "No channel selected"
               }
+              isError={isTimelineError}
               isLoading={isHuddleTranscript ? false : isTimelineLoading}
+              onRetry={onRetryTimeline}
               entranceMessageId={entranceMessageId}
               onEntranceMessageComplete={onEntranceMessageComplete}
               mainEntries={mainTimelineEntries}
