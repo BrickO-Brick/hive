@@ -567,10 +567,7 @@ export function AgentEditMergedDialog({
         (selectedRuntimeId !== "custom" ||
           inheritHarness ||
           agentCommand.trim().length > 0) &&
-        // Block submission when the instance name field is blank — applies to
-        // all instances including pool-named ones. Pooled instances can be
-        // explicitly renamed; the blank guard prevents submitting an empty name
-        // regardless of pool membership.
+        // Block submission when the visible instance name is blank (pool or not).
         instanceName.trim().length > 0
       : true);
 

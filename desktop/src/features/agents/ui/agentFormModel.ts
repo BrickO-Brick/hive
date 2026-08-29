@@ -528,9 +528,6 @@ export function emitAgentFormDiff(
   // I-field diff — only when instance is present
   let agentInput: UpdateManagedAgentInput | null = null;
   if (inst !== null) {
-    // Row 1 contract: stop materializing displayName→name when a name pool exists
-    const hasNamePool = (def?.namePool?.length ?? 0) > 0;
-
     // Row 8 contract: instance env edit goes to instance, NOT wholesale-replace from definition.
     // When a definition is present, instanceEnvVars holds the per-instance overlay.
     const instanceEnvChanged =
