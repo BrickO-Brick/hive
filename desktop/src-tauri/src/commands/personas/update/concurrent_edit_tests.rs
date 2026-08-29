@@ -337,7 +337,7 @@ async fn retain_failure_after_persist_is_returned_not_swallowed() {
     let result = update_persona_with(
         update_request("p1", "Alice retain-fail", Some(R1)),
         app.handle().clone(),
-        |_app, _state, _persona| {
+        |_app, _state, _persona| -> Result<(), String> {
             Err("simulated retain / publish failure after persona persisted".to_string())
         },
     )

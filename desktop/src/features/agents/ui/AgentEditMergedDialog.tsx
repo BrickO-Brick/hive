@@ -558,11 +558,8 @@ export function AgentEditMergedDialog({
     !isAvatarUploadPending &&
     displayName.trim().length > 0 &&
     providerValid &&
-    // D-side credential gate: whenever the definition is editable, its required
-    // credential keys must be satisfied — independent of the instance gate, so a
-    // linked instance pin can't unblock a definition that main would reject.
-    // Team-managed definitions (defReadOnly) never block: the user can't change
-    // their credentials, so their readiness is not this form's concern.
+    // D-side credential gate: required keys must be satisfied when the definition
+    // is editable. Team-managed (defReadOnly) never blocks — user can't change them.
     (!showDef || defReadOnly || !dAdvanced.requiredEnvKeyMissing) &&
     (showInst
       ? !requiredEnvKeyMissing &&
@@ -570,9 +567,8 @@ export function AgentEditMergedDialog({
         (selectedRuntimeId !== "custom" ||
           inheritHarness ||
           agentCommand.trim().length > 0) &&
-        // Instance name must be non-blank when the name field controls submission
-        // (no name pool — pool-named instances get their names from the definition
-        // pool and do not submit the visible name field).
+        // Block submission when the instance name field controls the name and
+        // the user has left it blank (no name pool — pool-named instances skip).
         ((def?.namePool?.length ?? 0) > 0 || instanceName.trim().length > 0)
       : true);
 
