@@ -19,6 +19,7 @@ import {
 } from "./EncryptedBackupCreator";
 import { JoinPolicyNotice } from "./JoinPolicyNotice";
 import { KeySignInPreview } from "./KeySignInPreview";
+import { IdentityKeyHelpPreviewContent } from "./IdentityKeyHelpDialog";
 import { LandingBees } from "./LandingBees";
 import {
   ONBOARDING_LANDING_CTA_CLASS,
@@ -760,12 +761,28 @@ export function OnboardingPreviewApp() {
           direction="forward"
           lockedBackupCreated={backupSession.created}
           onNext={() => setPage("identity-key")}
+          onOpenIdentityKeyHelp={() => setPage("identity-key-help")}
           onOpenPasswordBackup={() => setPage("backup-password")}
           onShowOptions={() => setPage("backup-options")}
           optionsExpanded
           previewMode
           returningFromSecurity={false}
         />
+      </OnboardingPreviewStep>
+    );
+  } else if (page === "identity-key-help") {
+    content = (
+      <OnboardingPreviewStep
+        onBack={() => setPage("backup-options")}
+        testId="onboarding-preview-identity-key-help"
+        total={journey.totalSteps}
+      >
+        <OnboardingSlideTransition
+          className="flex min-h-0 w-full max-w-[560px] flex-col items-stretch justify-start text-left"
+          transitionKey="preview-identity-key-help"
+        >
+          <IdentityKeyHelpPreviewContent />
+        </OnboardingSlideTransition>
       </OnboardingPreviewStep>
     );
   } else if (page === "backup-password") {

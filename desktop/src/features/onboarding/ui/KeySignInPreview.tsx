@@ -82,7 +82,12 @@ export function KeySignInPreview({
             <h1 className="text-title font-normal text-foreground">
               Enter your private key
             </h1>
-            <div className="mt-5 max-w-[440px] text-sm leading-6 text-foreground/80">
+            <div
+              className={cn(
+                "max-w-[440px] text-sm leading-6 text-foreground/80",
+                cardLayout ? "mt-2" : "mt-5",
+              )}
+            >
               <p>
                 Paste your private key to sign in to Buzz. You can also use a{" "}
                 <button

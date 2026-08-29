@@ -36,9 +36,11 @@ function rememberIdentityKeyHelpSeen() {
 
 export function IdentityKeyHelpDialog({
   inline = false,
+  onPreviewOpen,
   previewMode = false,
 }: {
   inline?: boolean;
+  onPreviewOpen?: () => void;
   previewMode?: boolean;
 }) {
   const [isVisible, setIsVisible] = React.useState(
@@ -56,28 +58,37 @@ export function IdentityKeyHelpDialog({
     return () => window.clearTimeout(timeout);
   }, [isVisible, previewMode]);
 
-  const trigger = (
-    <DialogTrigger asChild>
-      <Button
-        className={cn(
-          previewMode
-            ? "text-foreground underline decoration-foreground/45 underline-offset-4 hover:decoration-foreground"
-            : "text-foreground/70 hover:text-foreground",
-          "transition-opacity duration-300 motion-reduce:transition-none",
-          inline && "h-auto justify-start p-0 text-left",
-          isVisible ? "opacity-100" : "pointer-events-none opacity-0",
-        )}
-        data-testid="identity-key-help-trigger"
-        tabIndex={isVisible ? 0 : -1}
-        type="button"
-        variant="link"
-      >
-        {previewMode
-          ? "Learn how identity keys work"
-          : "What’s an identity key?"}
-      </Button>
-    </DialogTrigger>
+  const triggerButton = (
+    <Button
+      className={cn(
+        previewMode
+          ? "text-foreground underline decoration-foreground/45 underline-offset-4 hover:decoration-foreground"
+          : "text-foreground/70 hover:text-foreground",
+        "transition-opacity duration-300 motion-reduce:transition-none",
+        inline && "h-auto justify-start p-0 text-left",
+        isVisible ? "opacity-100" : "pointer-events-none opacity-0",
+      )}
+      data-testid="identity-key-help-trigger"
+      onClick={previewMode ? onPreviewOpen : undefined}
+      tabIndex={isVisible ? 0 : -1}
+      type="button"
+      variant="link"
+    >
+      {previewMode ? "Learn how identity keys work" : "What’s an identity key?"}
+    </Button>
   );
+
+  if (previewMode && onPreviewOpen) {
+    return inline ? (
+      triggerButton
+    ) : (
+      <OnboardingFooter className="max-w-none">
+        {triggerButton}
+      </OnboardingFooter>
+    );
+  }
+
+  const trigger = <DialogTrigger asChild>{triggerButton}</DialogTrigger>;
 
   return (
     <Dialog>
@@ -103,21 +114,43 @@ export function IdentityKeyHelpDialog({
             className="mt-6 space-y-4 text-pretty text-base leading-7 text-[color:var(--buzz-onboarding-backup-ink)]"
           >
             <div>
-              <p>
-                Buzz will create a Nostr identity with two parts: a private key
-                that signs you in and a public key you can safely share. You can
-                find your public identity anytime in Buzz settings.
-              </p>
-              <p>
-                This identity belongs to you, not Buzz, and can move with you to
-                another device or compatible Nostr app. Because only you control
-                the private key, Buzz can’t reset or recover it. Keep a backup
-                somewhere safe, and never share it.
-              </p>
+              <IdentityKeyHelpBody />
             </div>
           </DialogDescription>
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function IdentityKeyHelpBody() {
+  return (
+    <>
+      <p>
+        Buzz will create a Nostr identity with two parts: a private key that
+        signs you in and a public key you can safely share. You can find your
+        public identity anytime in Buzz settings.
+      </p>
+      <p>
+        This identity belongs to you, not Buzz, and can move with you to another
+        device or compatible Nostr app. Because only you control the private
+        key, Buzz can’t reset or recover it. Keep a backup somewhere safe, and
+        never share it.
+      </p>
+    </>
+  );
+}
+
+/** Production identity-key explainer content in the V3 onboarding card treatment. */
+export function IdentityKeyHelpPreviewContent() {
+  return (
+    <>
+      <h1 className="text-title font-normal text-foreground">
+        What’s an identity key?
+      </h1>
+      <div className="mt-2 max-w-[500px] space-y-4 text-pretty text-base leading-7 text-foreground/80">
+        <IdentityKeyHelpBody />
+      </div>
+    </>
   );
 }

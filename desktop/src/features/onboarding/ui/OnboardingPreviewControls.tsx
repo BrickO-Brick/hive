@@ -20,7 +20,8 @@ export function OnboardingPreviewControls({
 }) {
   return (
     <aside
-      className="fixed right-4 top-4 z-[100] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-2xl border border-foreground/15 bg-background/95 px-4 py-3 text-left shadow-lg backdrop-blur"
+      className="buzz-onboarding-neutral-theme fixed right-4 top-4 z-[100] flex w-[320px] max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-2xl border border-foreground/15 bg-background/95 px-4 py-3 text-left shadow-lg backdrop-blur"
+      data-system-color-scheme="light"
       data-testid="onboarding-preview-banner"
     >
       <div className="flex items-center gap-3">
@@ -35,7 +36,7 @@ export function OnboardingPreviewControls({
         </div>
         <Button
           aria-label="Restart onboarding preview"
-          className="h-8 w-8 shrink-0"
+          className="h-8 w-8 shrink-0 text-foreground hover:text-foreground"
           data-testid="onboarding-preview-restart"
           onClick={onRestart}
           size="icon"

@@ -455,7 +455,7 @@ export function AgentCreationPreview({
       className={cn(
         "w-[400px] p-3",
         isOnboarding &&
-          "buzz-onboarding-neutral-theme bg-white text-foreground",
+          "buzz-onboarding-neutral-theme bg-white text-foreground [--buzz-onboarding-cta-label:#fff]",
       )}
       data-system-color-scheme={isOnboarding ? "light" : undefined}
       side="bottom"

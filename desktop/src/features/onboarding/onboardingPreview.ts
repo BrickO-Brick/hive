@@ -15,6 +15,7 @@ export type OnboardingPreviewPage =
   | "sign-in-key"
   | "forgot-password"
   | "backup-options"
+  | "identity-key-help"
   | "backup-password"
   | "setup"
   | "config"

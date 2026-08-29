@@ -66,6 +66,7 @@ type BackupStepProps = {
   direction: OnboardingTransitionDirection;
   identityStorage?: IdentityStorage;
   onNext: () => void;
+  onOpenIdentityKeyHelp?: () => void;
   onOpenPasswordBackup: () => void;
   onShowOptions: () => void;
   optionsExpanded: boolean;
@@ -85,6 +86,7 @@ export function BackupStep({
   direction,
   identityStorage,
   onNext,
+  onOpenIdentityKeyHelp,
   onOpenPasswordBackup,
   onShowOptions,
   optionsExpanded,
@@ -225,13 +227,17 @@ export function BackupStep({
             {previewMode ? "Create a private identity key" : "Backup options"}
           </h1>
           {previewMode ? (
-            <div className="mt-5">
+            <div className={cardLayout ? "mt-2" : "mt-5"}>
               <p className="text-sm leading-6 text-foreground/75">
                 This key will be how you log into Buzz. You can use it across
                 Buzz communities and other platforms.
               </p>
               <div className="mt-2">
-                <IdentityKeyHelpDialog inline previewMode />
+                <IdentityKeyHelpDialog
+                  inline
+                  onPreviewOpen={onOpenIdentityKeyHelp}
+                  previewMode
+                />
               </div>
             </div>
           ) : (

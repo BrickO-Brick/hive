@@ -320,7 +320,12 @@ export function CommunityChoicePreview({
               ? "Join or create a community"
               : "Buzz happens in communities"}
           </h1>
-          <p className="mt-3 text-sm leading-6 text-foreground/80">
+          <p
+            className={cn(
+              "text-sm leading-6 text-foreground/80",
+              cardLayout ? "mt-2" : "mt-3",
+            )}
+          >
             {includeExistingCommunity
               ? "Join with an invite, create your own community, or reconnect one you already have."
               : "Communities are shared spaces where people and agents work together."}
@@ -420,7 +425,12 @@ export function CommunityEntryPreview({
       >
         <div className="w-full max-w-[620px]">
           <h1 className="text-title font-normal">{heading}</h1>
-          <p className="mt-3 text-sm leading-6 text-foreground/80">
+          <p
+            className={cn(
+              "text-sm leading-6 text-foreground/80",
+              cardLayout ? "mt-2" : "mt-3",
+            )}
+          >
             {route === "existing"
               ? "Enter the community URL or an invite link. Your role will be restored when you connect."
               : previewVariant === "v3"
