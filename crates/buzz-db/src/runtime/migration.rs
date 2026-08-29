@@ -3229,9 +3229,10 @@ mod tests {
     }
 
     /// NIP-FI policy-revision monotonicity: each new policy revision for a
-    /// community must strictly exceed the current maximum revision, and its
-    /// effective_at must strictly exceed the current maximum effective_at
-    /// (FI-INV-06 — stable assertion policy).
+    /// community must strictly exceed the current maximum revision
+    /// (FI-INV-06 — stable assertion policy). `effective_at` ordering is
+    /// deliberately not enforced — the downstream constructor stamps every
+    /// immediately-effective revision with Unix epoch.
     ///
     /// Mutation sensitivity is two-sided:
     /// - neutering the guard lets a replayed or backfilled revision through
@@ -3325,9 +3326,10 @@ mod tests {
              guard for backfilled revision 99, got: {backfill_err}"
         );
 
-        // Negative: equal revision (101 <= 101) — different from a PK duplicate
-        // because we use a different policy_digest, so the PK is not violated;
-        // the guard still fires on the <= check.
+        // Negative: equal revision (101 <= 101). The PK is (community_id, policy_revision)
+        // so this is a PK duplicate regardless of policy_digest; either 23505 from the PK
+        // or 23514 from the guard fires first. This case is secondary — the load-bearing
+        // proof is the unused-99 case above, which is not a PK duplicate.
         let replay_err = sqlx::query(
             "INSERT INTO identity_enrollment_policies \
              (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
@@ -3338,8 +3340,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect_err("equal revision must be rejected");
-        // PK (23505) fires before guard on exact duplicates, both prove the insert
-        // cannot commit; accept either code as evidence.
+        // PK (23505) or guard (23514) — either proves the insert cannot commit.
         assert!(
             replay_err
                 .as_database_error()
@@ -3353,23 +3354,38 @@ mod tests {
              got: {replay_err}"
         );
 
-        // Concurrency regression: race two distinct forward revisions (102 and 103)
-        // on separate connections. The per-community advisory lock must serialize
-        // them so that exactly one commits — not zero, not two.
+        // Concurrency regression: prove the advisory lock actually serializes
+        // concurrent writers. Two connections race to insert the SAME next revision
+        // (102) for the same community. The advisory lock must cause one writer to
+        // block, see the other's committed MAX, and then be rejected with 23514 from
+        // the named guard. Without the lock, both could pass the MAX check before
+        // either commits; only a PK collision (23505) would catch the duplicate —
+        // not the guard. Removing pg_advisory_xact_lock from the guard function and
+        // re-running must produce 23505 (PK) rather than 23514 (guard), proving the
+        // test is mutation-sensitive to the lock.
         //
-        // Strategy: begin both transactions before either acquires the lock, then
-        // commit them sequentially.  The guard holds the lock for the duration of
-        // its transaction, so the second commit must succeed (not deadlock) because
-        // the first has already released.
+        // A tokio::sync::Barrier synchronizes both connections so they both have a
+        // live transaction and are ready to INSERT before either proceeds. After the
+        // barrier both race to acquire the advisory lock; one wins, commits, and
+        // releases the lock; the other then sees the committed MAX and is rejected
+        // by the guard with 23514.
         let pool2 = pool.clone();
         let pool3 = pool.clone();
         let community_id2 = community_id;
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let barrier2 = barrier.clone();
 
         let (tx1_result, tx2_result) = tokio::join!(
             tokio::spawn(async move {
                 let mut conn = pool.acquire().await.expect("acquire conn1");
-                sqlx::query("BEGIN").execute(&mut *conn).await.expect("begin1");
-                let r = sqlx::query(
+                sqlx::query("BEGIN")
+                    .execute(&mut *conn)
+                    .await
+                    .expect("begin1");
+                // Wait until both connections have open transactions before
+                // either races to INSERT — eliminates ordering accidents.
+                barrier.wait().await;
+                let insert_r = sqlx::query(
                     "INSERT INTO identity_enrollment_policies \
                      (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
                      VALUES ($1, 102, 1, $2, '2029-01-01T00:00:00Z')",
@@ -3379,38 +3395,62 @@ mod tests {
                 .execute(&mut *conn)
                 .await;
                 let commit_r = sqlx::query("COMMIT").execute(&mut *conn).await;
-                (r, commit_r)
+                (insert_r, commit_r)
             }),
             tokio::spawn(async move {
-                // Small delay so tx1 tends to start first; not required for
-                // correctness — either order is valid under the guard.
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 let mut conn = pool2.acquire().await.expect("acquire conn2");
-                sqlx::query("BEGIN").execute(&mut *conn).await.expect("begin2");
-                let r = sqlx::query(
+                sqlx::query("BEGIN")
+                    .execute(&mut *conn)
+                    .await
+                    .expect("begin2");
+                // Mirror barrier wait so both are in-flight simultaneously.
+                barrier2.wait().await;
+                let insert_r = sqlx::query(
                     "INSERT INTO identity_enrollment_policies \
                      (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
-                     VALUES ($1, 103, 1, $2, '2029-06-01T00:00:00Z')",
+                     VALUES ($1, 102, 1, $2, '2029-01-01T00:00:00Z')",
                 )
                 .bind(community_id2)
                 .bind(vec![0xB2_u8; 32])
                 .execute(&mut *conn)
                 .await;
                 let commit_r = sqlx::query("COMMIT").execute(&mut *conn).await;
-                (r, commit_r)
+                (insert_r, commit_r)
             }),
         );
 
         let (insert1, commit1) = tx1_result.expect("tx1 task completed");
         let (insert2, commit2) = tx2_result.expect("tx2 task completed");
-        insert1.expect("tx1 INSERT must succeed (deferred guard at commit)");
-        insert2.expect("tx2 INSERT must succeed (deferred guard at commit)");
-        // Both distinct forward revisions should commit: the advisory lock
-        // serializes them, so both 102 and 103 are individually valid.
-        commit1.expect("tx1 COMMIT must succeed for distinct forward revision 102");
-        commit2.expect("tx2 COMMIT must succeed for distinct forward revision 103");
 
-        // Confirm exactly 6 policy revisions are now present (1, 2, 100, 101, 102, 103).
+        // The BEFORE INSERT trigger fires at statement time: the winner's INSERT
+        // succeeds (lock acquired, MAX check passes, INSERT completes), the loser's
+        // INSERT blocks waiting for the lock and then fails with 23514 when it sees
+        // the winner's committed MAX. Exactly one INSERT must succeed; exactly one
+        // must fail with 23514 from the named guard.
+        let (i1_ok, i2_ok) = (insert1.is_ok(), insert2.is_ok());
+        assert!(
+            i1_ok ^ i2_ok,
+            "exactly one of the two concurrent revision-102 inserts must succeed at INSERT; \
+             got insert1={i1_ok} insert2={i2_ok}"
+        );
+        let loser_insert = if i1_ok { insert2 } else { insert1 };
+        let loser_err = loser_insert.expect_err("loser INSERT must have failed");
+        assert!(
+            loser_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "loser must fail with check_violation (23514) from \
+             identity_enrollment_policy_revision_monotonic guard, not a PK \
+             collision — this proves the advisory lock serialized the writers; \
+             got: {loser_err}"
+        );
+
+        // The winner's commit must succeed.
+        let winner_commit = if i1_ok { commit1 } else { commit2 };
+        winner_commit.expect("winner COMMIT must succeed");
+
+        // Confirm exactly 5 policy revisions are now present (1, 2, 100, 101, 102).
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM identity_enrollment_policies WHERE community_id = $1",
         )
@@ -3418,7 +3458,10 @@ mod tests {
         .fetch_one(&pool3)
         .await
         .expect("count persisted policy revisions");
-        assert_eq!(count, 6, "all six accepted revisions must persist");
+        assert_eq!(
+            count, 5,
+            "exactly five revisions must persist after concurrency race"
+        );
     }
 
     /// NIP-FI admission-result ↔ kind-11 receipt cardinality: a kind-11
@@ -3725,7 +3768,7 @@ mod tests {
              (community_id, operation_id, correlation_id, semantic_fingerprint, \
               denial_reason, expected_revision, action, reason_code, \
               attempt_id, audit_event_id, audit_event_kind) \
-             VALUES ($1, $2, $3, $4, 1, 1, 1, 1, $5, $6, 9)",
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 2, $5, $6, 9)",
         )
         .bind(community_id)
         .bind(op1)
@@ -3742,15 +3785,16 @@ mod tests {
             "INSERT INTO authorization_events \
              (community_id, event_id, event_kind, outcome_code, reason_code, \
               actor_kind, operation_id, correlation_id, attempt_id, \
-              occurred_at, canonical_envelope, envelope_digest) \
-             VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
-                     '2026-01-01T00:00:00Z', $6, $7)",
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 2, 4, $3, $4, $5, \
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
         )
         .bind(community_id)
         .bind(event1)
         .bind(op1)
         .bind(corr1)
         .bind(attempt1_id)
+        .bind(vec![0xE1_u8; 32]) // semantic_fingerprint matches denial attempt
         .bind(vec![0xE2_u8; 64]) // canonical_envelope (≤16384 bytes)
         .bind(vec![0xE3_u8; 32]) // envelope_digest
         .execute(&mut *conn)
@@ -3779,15 +3823,16 @@ mod tests {
             "INSERT INTO authorization_events \
              (community_id, event_id, event_kind, outcome_code, reason_code, \
               actor_kind, operation_id, correlation_id, attempt_id, \
-              occurred_at, canonical_envelope, envelope_digest) \
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
              VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
-                     '2026-01-01T00:00:00Z', $6, $7)",
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
         )
         .bind(community_id)
         .bind(event2)
         .bind(op2)
         .bind(corr2)
         .bind(attempt2_id)
+        .bind(vec![0xF0_u8; 32]) // semantic_fingerprint (non-zero)
         .bind(vec![0xF1_u8; 64])
         .bind(vec![0xF2_u8; 32])
         .execute(&mut *conn_a)
@@ -3821,22 +3866,26 @@ mod tests {
         let attempt_b1 = uuid::Uuid::new_v4();
 
         let mut conn_b1 = pool.acquire().await.expect("acquire connection B1");
-        sqlx::query("BEGIN").execute(&mut *conn_b1).await.expect("begin B1");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b1)
+            .await
+            .expect("begin B1");
 
         // Insert the event first (deferred FK allows this ordering).
         sqlx::query(
             "INSERT INTO authorization_events \
              (community_id, event_id, event_kind, outcome_code, reason_code, \
               actor_kind, operation_id, correlation_id, attempt_id, \
-              occurred_at, canonical_envelope, envelope_digest) \
-             VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
-                     '2026-01-01T00:00:00Z', $6, $7)",
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 2, 4, $3, $4, $5, \
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
         )
         .bind(community_id)
         .bind(event_b1)
         .bind(op_b1)
         .bind(corr_b1_event)
         .bind(attempt_b1)
+        .bind(vec![0xB3_u8; 32]) // semantic_fingerprint matches denial attempt
         .bind(vec![0xB1_u8; 64])
         .bind(vec![0xB2_u8; 32])
         .execute(&mut *conn_b1)
@@ -3848,7 +3897,7 @@ mod tests {
              (community_id, operation_id, correlation_id, semantic_fingerprint, \
               denial_reason, expected_revision, action, reason_code, \
               attempt_id, audit_event_id, audit_event_kind) \
-             VALUES ($1, $2, $3, $4, 1, 1, 1, 1, $5, $6, 9)",
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 2, $5, $6, 9)",
         )
         .bind(community_id)
         .bind(op_b1)
@@ -3874,29 +3923,36 @@ mod tests {
         );
         drop(conn_b1);
 
-        // B2: reason_code mismatch — attempt carries reason_code 2 while event
-        // carries reason_code 1.
+        // B2: reason_code mismatch — attempt carries denial_reason=1 (MissingCredential,
+        // requires reason_code=2 per canonical mapping), but event carries reason_code=1.
+        // The attempt INSERT passes (denial_reason=1↔reason_code=2 is a valid mapping pair),
+        // then the deferred guard fires at commit because event reason_code=1 ≠ attempt
+        // reason_code=2.
         let op_b2 = uuid::Uuid::new_v4();
         let event_b2 = uuid::Uuid::new_v4();
         let corr_b2 = uuid::Uuid::new_v4();
         let attempt_b2 = uuid::Uuid::new_v4();
 
         let mut conn_b2 = pool.acquire().await.expect("acquire connection B2");
-        sqlx::query("BEGIN").execute(&mut *conn_b2).await.expect("begin B2");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b2)
+            .await
+            .expect("begin B2");
 
         sqlx::query(
             "INSERT INTO authorization_events \
              (community_id, event_id, event_kind, outcome_code, reason_code, \
               actor_kind, operation_id, correlation_id, attempt_id, \
-              occurred_at, canonical_envelope, envelope_digest) \
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
              VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
-                     '2026-01-01T00:00:00Z', $6, $7)",
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
         )
         .bind(community_id)
         .bind(event_b2)
         .bind(op_b2)
         .bind(corr_b2)
         .bind(attempt_b2)
+        .bind(vec![0xC3_u8; 32]) // semantic_fingerprint matches denial attempt
         .bind(vec![0xC1_u8; 64])
         .bind(vec![0xC2_u8; 32])
         .execute(&mut *conn_b2)
@@ -3919,7 +3975,9 @@ mod tests {
         .bind(event_b2)
         .execute(&mut *conn_b2)
         .await
-        .expect("insert denial attempt with wrong reason_code (guard deferred)");
+        .expect(
+            "insert denial attempt with wrong reason_code (deferred guard will fire at commit)",
+        );
 
         let reason_err = sqlx::query("COMMIT")
             .execute(&mut *conn_b2)
@@ -3949,21 +4007,25 @@ mod tests {
         let attempt_b3_wrong = uuid::Uuid::new_v4(); // not registered for this operation
 
         let mut conn_b3 = pool.acquire().await.expect("acquire connection B3");
-        sqlx::query("BEGIN").execute(&mut *conn_b3).await.expect("begin B3");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b3)
+            .await
+            .expect("begin B3");
 
         sqlx::query(
             "INSERT INTO authorization_events \
              (community_id, event_id, event_kind, outcome_code, reason_code, \
               actor_kind, operation_id, correlation_id, attempt_id, \
-              occurred_at, canonical_envelope, envelope_digest) \
-             VALUES ($1, $2, 9, 2, 1, 4, $3, $4, $5, \
-                     '2026-01-01T00:00:00Z', $6, $7)",
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 2, 4, $3, $4, $5, \
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
         )
         .bind(community_id)
         .bind(event_b3)
         .bind(op_b3)
         .bind(corr_b3)
         .bind(attempt_b3_correct)
+        .bind(vec![0xD3_u8; 32]) // semantic_fingerprint (matches denial attempt)
         .bind(vec![0xD1_u8; 64])
         .bind(vec![0xD2_u8; 32])
         .execute(&mut *conn_b3)
@@ -3975,7 +4037,7 @@ mod tests {
              (community_id, operation_id, correlation_id, semantic_fingerprint, \
               denial_reason, expected_revision, action, reason_code, \
               attempt_id, audit_event_id, audit_event_kind) \
-             VALUES ($1, $2, $3, $4, 1, 1, 1, 1, $5, $6, 9)",
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 2, $5, $6, 9)",
         )
         .bind(community_id)
         .bind(op_b3)
@@ -3999,6 +4061,156 @@ mod tests {
                 .unwrap_or(false),
             "expected foreign_key_violation (23503) for attempt_id mismatch \
              (deferred FK on denial attempt), got: {attempt_err}"
+        );
+
+        // B4: denial_reason ↔ reason_code mapping violation — the denial attempt
+        // row carries denial_reason=2 (InvalidCredential) but reason_code=2
+        // (Missing). The canonical mapping requires InvalidCredential(2)↔Invalid(3);
+        // reason_code=2 is only valid for MissingCredential(denial_reason=1).
+        // The immediate CHECK constraint authorization_denial_reason_reason_code_binding
+        // fires at INSERT, not commit. Mutation-sensitive: removing the CHECK lets
+        // this INSERT succeed (the guard does not compare denial_reason; only the
+        // paired event's reason_code is checked at commit).
+        let op_b4 = uuid::Uuid::new_v4();
+        let event_b4 = uuid::Uuid::new_v4();
+        let corr_b4 = uuid::Uuid::new_v4();
+        let attempt_b4 = uuid::Uuid::new_v4();
+
+        let mut conn_b4 = pool.acquire().await.expect("acquire connection B4");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b4)
+            .await
+            .expect("begin B4");
+
+        // Insert the matching kind-9 event first.
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, operation_id, correlation_id, attempt_id, \
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 2, 4, $3, $4, $5, \
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
+        )
+        .bind(community_id)
+        .bind(event_b4)
+        .bind(op_b4)
+        .bind(corr_b4)
+        .bind(attempt_b4)
+        .bind(vec![0xE4_u8; 32]) // semantic_fingerprint
+        .bind(vec![0xE5_u8; 64])
+        .bind(vec![0xE6_u8; 32])
+        .execute(&mut *conn_b4)
+        .await
+        .expect("insert kind-9 event for B4");
+
+        // Insert denial attempt with denial_reason=2 (InvalidCredential) but
+        // reason_code=2 (Missing) — violates the canonical mapping (requires reason_code=3).
+        let denial_reason_err = sqlx::query(
+            "INSERT INTO authorization_authentication_denial_attempts \
+             (community_id, operation_id, correlation_id, semantic_fingerprint, \
+              denial_reason, expected_revision, action, reason_code, \
+              attempt_id, audit_event_id, audit_event_kind) \
+             VALUES ($1, $2, $3, $4, 2, 1, 1, 2, $5, $6, 9)",
+            // denial_reason=2 (InvalidCredential) requires reason_code=3; reason_code=2 is wrong
+        )
+        .bind(community_id)
+        .bind(op_b4)
+        .bind(corr_b4)
+        .bind(vec![0xE4_u8; 32])
+        .bind(attempt_b4)
+        .bind(event_b4)
+        .execute(&mut *conn_b4)
+        .await
+        .expect_err("denial_reason/reason_code mapping violation must be rejected at INSERT");
+
+        assert!(
+            denial_reason_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) from \
+             authorization_denial_reason_reason_code_binding for denial_reason mismatch, \
+             got: {denial_reason_err}"
+        );
+
+        // B5: semantic_fingerprint mismatch — the event carries semantic_fingerprint
+        // 0xB5…B5 while the denial attempt carries 0xB6…B6. correlation_id, reason_code,
+        // and attempt_id all match; only the fingerprint differs. The deferred guard
+        // authorization_denial_attempt_guard_v1 fires at COMMIT on the denial-attempt
+        // side, compares found_semantic_fingerprint (from the event) with
+        // NEW.semantic_fingerprint (from the attempt), and raises 23514 with named
+        // constraint authorization_denial_attempt_semantic_binding.
+        // Mutation-sensitive: removing the semantic_fingerprint comparison block from
+        // the guard function lets this transaction commit.
+        let op_b5 = uuid::Uuid::new_v4();
+        let event_b5 = uuid::Uuid::new_v4();
+        let corr_b5 = uuid::Uuid::new_v4();
+        let attempt_b5 = uuid::Uuid::new_v4();
+        let fp_event_b5 = vec![0xB5_u8; 32]; // event semantic_fingerprint
+        let fp_attempt_b5 = vec![0xB6_u8; 32]; // mismatched attempt semantic_fingerprint
+
+        let mut conn_b5 = pool.acquire().await.expect("acquire connection B5");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b5)
+            .await
+            .expect("begin B5");
+
+        // Insert the kind-9 event with fingerprint 0xB5…B5.
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, operation_id, correlation_id, attempt_id, \
+              semantic_fingerprint, occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 2, 4, $3, $4, $5, \
+                     $6, '2026-01-01T00:00:00Z', $7, $8)",
+        )
+        .bind(community_id)
+        .bind(event_b5)
+        .bind(op_b5)
+        .bind(corr_b5)
+        .bind(attempt_b5)
+        .bind(fp_event_b5)
+        .bind(vec![0xB7_u8; 64]) // canonical_envelope
+        .bind(vec![0xB8_u8; 32]) // envelope_digest
+        .execute(&mut *conn_b5)
+        .await
+        .expect("insert kind-9 event for B5");
+
+        // Insert denial attempt with the WRONG semantic_fingerprint (0xB6…B6).
+        // correlation_id, reason_code=2, denial_reason=1 (MissingCredential↔Missing),
+        // and attempt_id all match the event — only semantic_fingerprint differs.
+        sqlx::query(
+            "INSERT INTO authorization_authentication_denial_attempts \
+             (community_id, operation_id, correlation_id, semantic_fingerprint, \
+              denial_reason, expected_revision, action, reason_code, \
+              attempt_id, audit_event_id, audit_event_kind) \
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 2, $5, $6, 9)",
+        )
+        .bind(community_id)
+        .bind(op_b5)
+        .bind(corr_b5)
+        .bind(fp_attempt_b5) // 0xB6…B6 ≠ event's 0xB5…B5
+        .bind(attempt_b5)
+        .bind(event_b5)
+        .execute(&mut *conn_b5)
+        .await
+        .expect(
+            "insert denial attempt with mismatched fingerprint (deferred guard fires at commit)",
+        );
+
+        let fp_mismatch_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_b5)
+            .await
+            .expect_err("commit with mismatched semantic_fingerprint must be rejected");
+
+        assert!(
+            fp_mismatch_err
+                .as_database_error()
+                .map(|e| e.code().as_deref() == Some("23514"))
+                .unwrap_or(false),
+            "expected check_violation (23514) from \
+             authorization_denial_attempt_semantic_binding for semantic_fingerprint mismatch, \
+             got: {fp_mismatch_err}"
         );
     }
 }

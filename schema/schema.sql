@@ -2977,6 +2977,12 @@ CREATE TABLE authorization_events (
     ),
     correlation_id UUID NOT NULL,
     attempt_id UUID NOT NULL,
+    -- Redaction-safe pre-authentication denial identity. Present and non-zero
+    -- for kind-9 events; NULL for all other event kinds. Binds the event to the
+    -- exact denial attempt's semantic_fingerprint (intent_digest) for exact replay.
+    semantic_fingerprint BYTEA CHECK (
+        semantic_fingerprint IS NULL OR octet_length(semantic_fingerprint) = 32
+    ),
     occurred_at TIMESTAMPTZ NOT NULL,
     accepted_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
     canonical_envelope BYTEA NOT NULL CONSTRAINT authorization_events_envelope_size CHECK (
@@ -3002,6 +3008,13 @@ CREATE TABLE authorization_events (
     CHECK (
         (actor_kind = 4 AND actor_fingerprint IS NULL AND subject_fingerprint IS NULL)
         OR (actor_kind IN (1, 2, 3) AND actor_fingerprint IS NOT NULL)
+    ),
+    -- Kind-9 (pre-auth denial) events must carry a non-zero semantic_fingerprint;
+    -- all other event kinds must not.
+    CHECK (
+        (event_kind = 9 AND semantic_fingerprint IS NOT NULL
+            AND semantic_fingerprint <> decode(repeat('00', 32), 'hex'))
+        OR (event_kind <> 9 AND semantic_fingerprint IS NULL)
     )
 );
 
@@ -3037,6 +3050,13 @@ CREATE TABLE authorization_authentication_denial_attempts (
     FOREIGN KEY (community_id, operation_id, audit_event_kind, attempt_id)
         REFERENCES authorization_events (community_id, operation_id, event_kind, attempt_id)
         DEFERRABLE INITIALLY DEFERRED,
+    -- Canonical denial_reason ↔ reason_code binding: MissingCredential(1)↔Missing(2),
+    -- InvalidCredential(2)↔Invalid(3), Unauthenticated(3)↔Unauthenticated(4).
+    CONSTRAINT authorization_denial_reason_reason_code_binding CHECK (
+        (denial_reason = 1 AND reason_code = 2)
+        OR (denial_reason = 2 AND reason_code = 3)
+        OR (denial_reason = 3 AND reason_code = 4)
+    ),
     CHECK (operation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CHECK (correlation_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     CHECK (attempt_id <> '00000000-0000-0000-0000-000000000000'::uuid)
@@ -3293,14 +3313,18 @@ CREATE TRIGGER authorization_authentication_denial_attempts_no_truncate
 -- Bidirectional deferred guard: a kind-9 (pre-authentication denial) audit
 -- event must commit with exactly one denial attempt; a denial attempt must
 -- commit with its audit event present, kind-9, and matching semantic
--- coordinates (correlation_id and reason_code). Both directions deferred so
--- event and attempt may be inserted in any order inside one transaction.
+-- coordinates (correlation_id, reason_code, and semantic_fingerprint). Both
+-- directions deferred so event and attempt may be inserted in any order inside
+-- one transaction. The static denial_reason↔reason_code mapping is enforced
+-- by an immediate CHECK on the denial attempt table; the guard enforces the
+-- matching semantic coordinates between event and attempt.
 CREATE FUNCTION authorization_denial_attempt_guard_v1()
 RETURNS TRIGGER AS $$
 DECLARE
     found_event_kind SMALLINT;
     found_correlation_id UUID;
     found_reason_code SMALLINT;
+    found_semantic_fingerprint BYTEA;
     attempt_count BIGINT;
 BEGIN
     IF TG_TABLE_NAME = 'authorization_events' THEN
@@ -3323,8 +3347,8 @@ BEGIN
         END IF;
 
         -- Verify semantic coordinates match between event and denial attempt.
-        SELECT correlation_id, reason_code
-        INTO found_correlation_id, found_reason_code
+        SELECT correlation_id, reason_code, semantic_fingerprint
+        INTO found_correlation_id, found_reason_code, found_semantic_fingerprint
         FROM authorization_authentication_denial_attempts
         WHERE community_id = NEW.community_id
           AND audit_event_id = NEW.event_id;
@@ -3344,11 +3368,20 @@ BEGIN
                 USING ERRCODE = 'check_violation',
                       CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
         END IF;
+
+        IF found_semantic_fingerprint IS DISTINCT FROM NEW.semantic_fingerprint THEN
+            RAISE EXCEPTION
+                'denial attempt semantic_fingerprint does not match event semantic_fingerprint for event %',
+                NEW.event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
+        END IF;
     ELSE
         -- Firing from the denial-attempt side: verify the audit event is kind-9
         -- and that exactly one denial attempt references it.
-        SELECT event_kind, correlation_id, reason_code
-        INTO found_event_kind, found_correlation_id, found_reason_code
+        SELECT event_kind, correlation_id, reason_code, semantic_fingerprint
+        INTO found_event_kind, found_correlation_id, found_reason_code,
+             found_semantic_fingerprint
         FROM authorization_events
         WHERE community_id = NEW.community_id
           AND event_id = NEW.audit_event_id;
@@ -3382,6 +3415,14 @@ BEGIN
             RAISE EXCEPTION
                 'denial attempt reason_code % does not match event reason_code % for event %',
                 NEW.reason_code, found_reason_code, NEW.audit_event_id
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
+        END IF;
+
+        IF found_semantic_fingerprint IS DISTINCT FROM NEW.semantic_fingerprint THEN
+            RAISE EXCEPTION
+                'denial attempt semantic_fingerprint does not match event semantic_fingerprint for event %',
+                NEW.audit_event_id
                 USING ERRCODE = 'check_violation',
                       CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
         END IF;
