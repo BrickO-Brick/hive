@@ -452,20 +452,20 @@ export async function runAgentSaveCoordinator(
         retryError = err instanceof Error ? err.message : "unknown error";
       }
       if (publishFailed) {
-        // Retry also failed — terminal state: the relay was not reached in
-        // either attempt. The flush loop holds the enqueued head and will
-        // re-publish on reconnect. Surface an accurate message without
-        // implying the user can fix it by reopening.
+        // Retry also failed — terminal state: the preparation step threw, so
+        // no durable pending row was created and automatic retry is NOT
+        // guaranteed. Report an honest terminal state — the user can reopen
+        // the dialog and save again to force a fresh publication attempt.
         toast.warning(
-          `${personaName} saved locally, but could not be published to the catalog: ${retryError ?? firstError ?? "unknown error"} — it will be retried automatically.`,
+          `${personaName} saved locally, but could not be published to the catalog: ${retryError ?? firstError ?? "unknown error"}. Reopen the editor and save again to retry publishing.`,
         );
         return false;
       }
       // publishFailed is now false — fall through to full success.
     } else {
-      // No retry seam available — terminal state (same as retry failure).
+      // No retry seam available — terminal state: same honest shape.
       toast.warning(
-        `${personaName} saved locally, but could not be published to the catalog: ${firstError ?? "unknown error"} — it will be retried automatically.`,
+        `${personaName} saved locally, but could not be published to the catalog: ${firstError ?? "unknown error"}. Reopen the editor and save again to retry publishing.`,
       );
       return false;
     }

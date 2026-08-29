@@ -59,8 +59,14 @@ pub async fn set_persona_shared(
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))??;
 
+    // Save persona id before `prepared` is consumed by publish_prepared_persona.
+    let persona_id = prepared.persona.id.clone();
     let state = app.state::<AppState>();
-    publish_prepared_persona(&state, prepared).await
+    let result = publish_prepared_persona(&state, prepared).await?;
+    // F2: refresh any shared 30178 heads that include this persona, matching the
+    // contract of `update_persona_and_publish`. Best-effort — failures are logged.
+    crate::commands::refresh_team_catalog_heads_for_persona(&app, &state, &persona_id);
+    Ok(result)
 }
 
 /// Save a persona edit AND publish its catalog head, returning the same

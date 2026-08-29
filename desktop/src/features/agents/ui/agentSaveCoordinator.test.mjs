@@ -1790,16 +1790,23 @@ test("test_publish_retry_failure_shows_terminal_warning_not_reopen", async () =>
     assert.equal(opts._calls.onDone, 0, "onDone must not be called");
     const warnings = cap.captured.filter((c) => c.kind === "warning");
     assert.equal(warnings.length, 1, "exactly one warning toast");
-    // Must say "saved locally" or similar — NOT "reopen to retry".
+    // Must say "saved locally / could not be published" — the honest terminal state.
     assert.match(
       warnings[0].message,
       /saved locally|saved.*not.*published|could not be published/i,
       "warning must indicate saved locally but not published",
     );
+    // Must NOT use the false automatic-retry claim from the old pass-2 copy.
+    assert.doesNotMatch(
+      warnings[0].message,
+      /it will be retried automatically/i,
+      "terminal state must not claim automatic retry — preparation threw, so nothing is durably queued",
+    );
+    // Must NOT use the old false \"reopen to retry\" copy either.
     assert.doesNotMatch(
       warnings[0].message,
       /reopen to retry publishing/i,
-      "terminal state must not tell the user to reopen — that is a lie",
+      "terminal state must not tell the user to reopen without context — the old lie",
     );
   } finally {
     cap.restore();
@@ -1839,6 +1846,12 @@ test("test_no_publish_retry_seam_shows_terminal_warning_not_reopen", async () =>
       warnings[0].message,
       /saved locally|saved.*not.*published|could not be published/i,
       "must indicate saved locally not published",
+    );
+    // Must NOT use the false automatic-retry claim.
+    assert.doesNotMatch(
+      warnings[0].message,
+      /it will be retried automatically/i,
+      "no-seam terminal state must not claim automatic retry — nothing was enqueued",
     );
     assert.doesNotMatch(
       warnings[0].message,

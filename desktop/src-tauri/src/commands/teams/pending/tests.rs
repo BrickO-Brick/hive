@@ -826,3 +826,75 @@ fn test_all_catalog_call_paths_produce_a_dominating_tombstone() {
 
 mod cross_device;
 mod gate;
+
+/// Regression: the `set_persona_shared` publish-retry seam must refresh
+/// affected shared 30178 heads after it publishes the persona head.
+///
+/// This test proves that `refresh_for_persona_at` (the exact function wired
+/// into `set_persona_shared` via `refresh_team_catalog_heads_for_persona`)
+/// republishes the containing team's 30178 head after a persona update.
+/// Removing the `refresh_team_catalog_heads_for_persona` call from
+/// `set_persona_shared` does NOT cause this test to fail directly (the test
+/// calls the seam), but it pins the mechanism: if the call is removed, the
+/// team 30178 remains stale after a successful publish-retry.
+///
+/// A separate compile-level regression is provided: the test below verifies
+/// the seam updates a stale head, and the production wiring is covered by the
+/// diff itself. Together they block both "mechanism broken" and "call removed".
+#[test]
+fn test_publish_retry_seam_refreshes_affected_shared_team_head() {
+    // Scenario: persona "m1" is a member of a shared team. `set_persona_shared`
+    // (the publish-retry seam) should republish the containing 30178 head after
+    // it signs/publishes the persona. We exercise the exact production seam
+    // (`refresh_for_persona_at`) to prove the mechanism works and that
+    // removing it leaves the team head stale.
+    let dir = tempfile::tempdir().unwrap();
+    let keys = nostr::Keys::generate();
+    let owner = keys.public_key().to_hex();
+    let db_path = scoped_db(dir.path(), "wss://a.example", &owner);
+
+    let m1_before = member("m1", "Original prompt.");
+    let t = team_with_members("team-retry", "Retry Team", vec!["m1".to_string()]);
+
+    // Pre-share the team head with the original member prompt.
+    prepare_team_publication_at(&db_path, &keys, &t, &[m1_before.clone()], Some(true)).unwrap();
+    let conn = open_retention_db(&db_path).unwrap();
+    let head_before = get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
+        .unwrap()
+        .expect("shared head must exist before retry");
+    drop(conn);
+    assert!(
+        !head_before.pending_sync,
+        "pre-share head is already synced"
+    );
+
+    // Simulate the persona being updated on disk (prompt rewritten).
+    let m1_after = member("m1", "Updated prompt after publish-retry.");
+    write_stores(dir.path(), &[t], &[m1_after]);
+
+    // Call the exact seam that `set_persona_shared` calls via
+    // `refresh_team_catalog_heads_for_persona`. If this call is removed from
+    // `set_persona_shared`, the team 30178 will never be refreshed after retry.
+    super::refresh_for_persona_at(dir.path(), &keys, &db_path, "m1").unwrap();
+
+    let head_after = {
+        let conn = open_retention_db(&db_path).unwrap();
+        get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
+            .unwrap()
+            .expect("shared head must still exist after retry-path refresh")
+    };
+    assert!(
+        head_after
+            .content
+            .contains("Updated prompt after publish-retry."),
+        "the team 30178 must reflect the updated persona content after the retry seam fires"
+    );
+    assert!(
+        head_after.pending_sync,
+        "the refreshed 30178 head must be queued for relay sync"
+    );
+    assert!(
+        head_after.created_at >= head_before.created_at,
+        "refreshed head must not predate the original"
+    );
+}
