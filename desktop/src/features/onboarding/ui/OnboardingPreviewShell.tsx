@@ -29,7 +29,6 @@ export function useOnboardingPreviewCardLayout() {
 }
 
 export function OnboardingPreviewStep({
-  cardHeight = "standard",
   children,
   current = 2,
   onBack,
@@ -37,7 +36,6 @@ export function OnboardingPreviewStep({
   testId,
   total,
 }: {
-  cardHeight?: "content" | "standard";
   children: React.ReactNode;
   current?: number;
   onBack?: () => void;
@@ -46,7 +44,6 @@ export function OnboardingPreviewStep({
   total?: number;
 }) {
   const cardLayout = useOnboardingPreviewCardLayout();
-  const contentHeightCard = cardLayout && cardHeight === "content";
   const cardRef = React.useRef<HTMLDivElement | null>(null);
   useSmoothCorners(cardRef, { enabled: cardLayout });
   const frame = (
@@ -54,12 +51,7 @@ export function OnboardingPreviewStep({
       className={cn(
         "buzz-onboarding-step-frame relative flex w-full flex-col",
         cardLayout
-          ? cn(
-              "-mx-2 min-h-0 w-[calc(100%+1rem)] max-w-none items-stretch px-2 text-left",
-              contentHeightCard
-                ? "flex-none overflow-visible"
-                : "flex-1 overflow-hidden",
-            )
+          ? "-mx-2 min-h-0 w-[calc(100%+1rem)] max-w-none flex-1 items-stretch overflow-hidden px-2 text-left"
           : "max-w-[1040px] flex-1 items-center text-center",
       )}
     >
@@ -83,10 +75,7 @@ export function OnboardingPreviewStep({
       {cardLayout ? (
         <Card
           className={cn(
-            "flex w-full max-w-140 flex-col overflow-hidden rounded-[2rem] bg-white p-6 shadow-lg [&_.buzz-onboarding-transition-line]:justify-start [&_h1+p]:!mt-2 [&_h1+p]:!text-base [&_h1+p]:!leading-6 [&_h1]:!text-2xl [&_h1]:!leading-8 [&_h1]:!text-foreground",
-            contentHeightCard
-              ? "h-auto max-h-[calc(100dvh-3rem)]"
-              : "h-[min(35rem,calc(100dvh-3rem))] max-h-140",
+            "flex h-[min(41.5rem,calc(100dvh-3rem))] w-full max-w-[47rem] flex-col overflow-hidden rounded-[2rem] bg-white px-6 pb-6 pt-[4.5rem] text-left shadow-lg sm:px-[7.5rem] [&_.buzz-onboarding-transition-content]:!text-left [&_.buzz-onboarding-transition-line]:justify-start [&_h1+p]:!mx-0 [&_h1+p]:!mt-2 [&_h1+p]:!text-left [&_h1+p]:!text-base [&_h1+p]:!leading-6 [&_h1]:!text-left [&_h1]:!text-2xl [&_h1]:!leading-8 [&_h1]:!text-foreground",
           )}
           data-testid="onboarding-preview-content-card"
           ref={cardRef}

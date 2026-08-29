@@ -65,6 +65,7 @@ import { Button } from "@/shared/ui/button";
 import { Spinner } from "@/shared/ui/spinner";
 
 export function AnimatedAvatarCapture({
+  actionButtonClassName,
   dense = false,
   disabled = false,
   testIdPrefix,
@@ -118,8 +119,7 @@ export function AnimatedAvatarCapture({
   const [isPreviewPlaying, setIsPreviewPlaying] = React.useState(false);
   const [isDraggingPerson, setIsDraggingPerson] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
-  // Drag, arrow keys, and the size slider adjust whichever framing section
-  // is open; the color/poster sections leave the person active.
+  // Framing controls adjust the active target; color/poster leave person active.
   const editTarget = activeSection === "shape" ? "shape" : "person";
   const activeOffset = editTarget === "shape" ? shapeOffset : personOffset;
   const setActiveOffset =
@@ -157,7 +157,6 @@ export function AnimatedAvatarCapture({
     setShapeScale(DEFAULT_SHAPE_SCALE);
   }, [initialShapeOffsetY]);
 
-  // Custom backdrop color picker (shared HSV panel).
   const [isCustomPickerOpen, setIsCustomPickerOpen] = React.useState(false);
   const [customHue, setCustomHue] = React.useState(210);
   const [customSaturation, setCustomSaturation] = React.useState(80);
@@ -767,7 +766,7 @@ export function AnimatedAvatarCapture({
 
       {phase === "idle" ? (
         <div className="grid h-full w-full place-items-center rounded-full border-2 border-dashed border-border bg-background text-primary shadow-xs">
-          <Camera className="h-10 w-10" />
+          <Camera className="size-9" />
         </div>
       ) : phase === "starting" ? (
         <div className="absolute inset-0 grid place-items-center rounded-full bg-background/70 text-center shadow-inner">
@@ -920,6 +919,7 @@ export function AnimatedAvatarCapture({
 
       {showCameraControls ? (
         <AnimatedAvatarCameraControls
+          actionButtonClassName={actionButtonClassName}
           activeCameraSource={activeCameraSource}
           compact={compactReview}
           computerDisabled={cameraDevices.length > 0 && !computerCamera}
@@ -949,7 +949,7 @@ export function AnimatedAvatarCapture({
 
       {phase === "review" && showApplyButton ? (
         <Button
-          className="h-12 w-full rounded-xl"
+          className={actionButtonClassName ?? "h-12 w-full rounded-xl"}
           data-testid={`${testIdPrefix}-animated-apply`}
           disabled={disabled || isSaving}
           onClick={() => void apply()}

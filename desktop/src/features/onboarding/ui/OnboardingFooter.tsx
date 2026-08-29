@@ -1,5 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { ChevronLeft } from "lucide-react";
 
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -53,12 +54,13 @@ export function OnboardingFooterProvider({
         value={{ element: target, placement }}
       >
         {children}
-        <div className="mt-8 flex min-h-10 w-full shrink-0 items-center justify-between gap-4 pt-6">
+        <div className="mt-8 flex min-h-10 w-full shrink-0 items-center justify-between gap-4 pt-6 sm:-mx-24 sm:w-[calc(100%+12rem)]">
           <div className="flex min-w-0 flex-1 justify-start">
             {backAction ? (
               <Button
+                aria-label={backAction.label ?? "Back"}
                 className={cn(
-                  "h-9 rounded-full px-6 text-sm",
+                  "size-10 rounded-full p-0 [&_svg]:size-5",
                   ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
                 )}
                 data-testid={backAction.testId ?? "onboarding-back"}
@@ -67,7 +69,7 @@ export function OnboardingFooterProvider({
                 type="button"
                 variant="ghost"
               >
-                {backAction.label ?? "Back"}
+                <ChevronLeft aria-hidden="true" />
               </Button>
             ) : null}
           </div>
@@ -137,7 +139,7 @@ export function OnboardingFooter({
     <div
       className={cn(
         placement === "card"
-          ? "flex w-auto max-w-full flex-row flex-wrap items-center justify-end gap-3"
+          ? "flex w-auto max-w-full flex-row flex-wrap items-center justify-end gap-3 [&_button]:h-10"
           : "flex w-full max-w-[500px] flex-col items-center gap-3",
         // The docked slot is click-through (`pointer-events-none`); re-enable
         // pointer events on the CTA group itself. Inline (no slot) needs no

@@ -442,7 +442,6 @@ function EmailSignup({
 
   return (
     <OnboardingPreviewStep
-      cardHeight="content"
       onBack={onBack}
       testId="onboarding-preview-email"
       total={total}

@@ -470,7 +470,10 @@ export function BackupStep({
           )}
         >
           <div className="w-full">
-            <Card className="px-8 py-6" variant="textured">
+            <Card
+              className={cn("py-6", cardLayout ? "px-0" : "px-8")}
+              variant="textured"
+            >
               <div className="mx-auto flex w-full min-w-0 max-w-[832px] items-center gap-4">
                 <div className="min-w-0 flex-1">
                   {canUseSpoilerParticles ? (

@@ -70,6 +70,15 @@ const EMOJI_MART_SHADOW_CSS = `
     width: 100%;
   }
 
+  :host([data-buzz-theme="light"]) #root {
+    color-scheme: light;
+    --em-rgb-background: var(--buzz-emoji-picker-rgb-background, 245, 245, 245);
+    --em-rgb-color: var(--buzz-emoji-picker-rgb-color, 23, 23, 23);
+    --em-rgb-input: var(--buzz-emoji-picker-rgb-input, 255, 255, 255);
+    --em-color-border: rgba(var(--buzz-emoji-picker-rgb-color, 23, 23, 23), 0.08);
+    --em-color-border-over: rgba(var(--buzz-emoji-picker-rgb-color, 23, 23, 23), 0.14);
+  }
+
   #root {
     --padding: var(--buzz-emoji-picker-padding, 16px);
     --sidebar-width: 0px;
@@ -125,6 +134,23 @@ const EMOJI_MART_SHADOW_CSS = `
 
   .category .sticky {
     display: none;
+  }
+
+  :host([data-buzz-category-labels]) .category .sticky {
+    background-color: rgb(var(--em-rgb-background));
+    display: block;
+  }
+
+  :host([data-buzz-category-labels]) #root > .padding-lr:not(.scroll) {
+    background-color: rgb(var(--em-rgb-background));
+    padding-bottom: 8px;
+    padding-top: 8px;
+    position: relative;
+    z-index: 4;
+  }
+
+  :host([data-buzz-category-labels]) .scroll {
+    padding-top: 0;
   }
 
   /* Match the app's member-search controls: a distinct resting surface and
@@ -610,6 +636,8 @@ export function useEmojiMartStyles(
   containerRef: React.RefObject<HTMLDivElement | null>,
   enabled: boolean,
   onboardingInline = false,
+  themeOverride: "light" | null = null,
+  showCategoryLabels = false,
 ) {
   React.useEffect(() => {
     if (!enabled) {
@@ -631,6 +659,12 @@ export function useEmojiMartStyles(
 
       styledHost = host;
       host.toggleAttribute("data-buzz-onboarding-inline", onboardingInline);
+      host.toggleAttribute("data-buzz-category-labels", showCategoryLabels);
+      if (themeOverride) {
+        host.setAttribute("data-buzz-theme", themeOverride);
+      } else {
+        host.removeAttribute("data-buzz-theme");
+      }
 
       let style = shadowRoot.querySelector<HTMLStyleElement>(
         "#buzz-emoji-mart-style",
@@ -651,8 +685,16 @@ export function useEmojiMartStyles(
       window.cancelAnimationFrame(animationFrame);
       removeWheelScroll?.();
       styledHost?.removeAttribute("data-buzz-onboarding-inline");
+      styledHost?.removeAttribute("data-buzz-category-labels");
+      styledHost?.removeAttribute("data-buzz-theme");
     };
-  }, [containerRef, enabled, onboardingInline]);
+  }, [
+    containerRef,
+    enabled,
+    onboardingInline,
+    showCategoryLabels,
+    themeOverride,
+  ]);
 }
 
 export function useEmojiMartThemeVars() {

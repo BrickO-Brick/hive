@@ -11,6 +11,7 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 
 type AnimatedAvatarCameraControlsProps = {
+  actionButtonClassName?: string;
   activeCameraSource: CameraSource | null;
   compact: boolean;
   computerDisabled: boolean;
@@ -28,6 +29,7 @@ type AnimatedAvatarCameraControlsProps = {
 };
 
 export function AnimatedAvatarCameraControls({
+  actionButtonClassName,
   activeCameraSource,
   compact,
   computerDisabled,
@@ -67,16 +69,20 @@ export function AnimatedAvatarCameraControls({
             "h-14 pt-2",
             compact && "flex justify-center",
             dense && "h-10 pt-1",
+            actionButtonClassName && "h-10 pt-0",
           )}
         >
           {onRetry ? (
             <Button
-              className={cn(
-                "h-12 w-full rounded-xl",
-                dense && "h-9",
-                compact &&
-                  "bg-[rgb(var(--buzz-onboarding-avatar-accent-bg))] text-[rgb(var(--buzz-onboarding-avatar-accent-fg))] hover:bg-[rgb(var(--buzz-onboarding-avatar-accent-bg))]",
-              )}
+              className={
+                actionButtonClassName ??
+                cn(
+                  "h-12 w-full rounded-xl",
+                  dense && "h-9",
+                  compact &&
+                    "bg-[rgb(var(--buzz-onboarding-avatar-accent-bg))] text-[rgb(var(--buzz-onboarding-avatar-accent-fg))] hover:bg-[rgb(var(--buzz-onboarding-avatar-accent-bg))]",
+                )
+              }
               data-testid={`${testIdPrefix}-animated-retry`}
               disabled={disabled}
               onClick={onRetry}
@@ -86,25 +92,28 @@ export function AnimatedAvatarCameraControls({
             </Button>
           ) : isLive ? (
             <Button
-              asChild
-              className={cn(
-                compact
+              className={
+                actionButtonClassName ??
+                (compact
                   ? "h-[2.375rem] rounded-full bg-[rgb(var(--buzz-onboarding-avatar-action-bg))] px-6 text-sm font-medium text-[rgb(var(--buzz-onboarding-avatar-action-fg))] hover:bg-[color:rgb(var(--buzz-onboarding-avatar-action-bg)_/_0.9)]"
-                  : "h-12 w-full rounded-xl",
-              )}
+                  : "h-12 w-full rounded-xl")
+              }
               data-testid={`${testIdPrefix}-animated-record`}
               disabled={disabled}
               onClick={onRecord}
               type="button"
             >
-              <motion.button
+              <motion.span
                 animate={{ opacity: 1 }}
+                className="inline-flex items-center"
                 initial={{ opacity: 0 }}
                 transition={ENTRANCE_TRANSITION}
               >
-                <Video aria-hidden="true" className="mr-2 h-4 w-4" />
+                {actionButtonClassName ? null : (
+                  <Video aria-hidden="true" className="mr-2 h-4 w-4" />
+                )}
                 Capture {RECORD_SECONDS} sec video
-              </motion.button>
+              </motion.span>
             </Button>
           ) : null}
         </div>
