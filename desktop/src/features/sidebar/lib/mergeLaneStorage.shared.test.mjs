@@ -419,7 +419,7 @@ export function runMergeLaneStorageSuite({
         E(true, i + 1, 0),
       ]),
     );
-    channels["toggled"] = E(false, 9999, 1);
+    channels.toggled = E(false, 9999, 1);
     const bounded = boundStore(makeStore(channels));
     const result = mergeStores(
       bounded,
