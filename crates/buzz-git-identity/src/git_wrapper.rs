@@ -2062,39 +2062,30 @@ fn remote_object_ids(real_git: &Path, ctx: &[String], dest: &str) -> Option<Vec<
     if !out.status.success() {
         return None;
     }
-    // Strict UTF-8: lossy decoding silently discards bytes an adversarial
-    // receive-service could use to inject a fake OID string.
-    let text = match std::str::from_utf8(&out.stdout) {
-        Ok(s) => s,
-        Err(_) => return None, // non-UTF-8 ls-remote output is not a valid server
-    };
-    // Truly empty output means the remote has no refs — valid for a brand-new
-    // destination.  A non-empty output that produces zero valid records is
-    // malformed and fails closed.
-    if text.trim().is_empty() {
+    parse_remote_object_ids(&out.stdout)
+}
+
+/// Parse raw `git ls-remote` output as an exact remote inventory. Truly empty
+/// output is the one valid empty inventory; every nonempty record must be
+/// `<full lowercase-hex oid>\t<nonempty refname>` with no extra tab fields.
+fn parse_remote_object_ids(stdout: &[u8]) -> Option<Vec<String>> {
+    let text = std::str::from_utf8(stdout).ok()?;
+    if text.is_empty() {
         return Some(Vec::new());
     }
-    let mut ids: Vec<String> = Vec::new();
+    let mut ids = Vec::new();
     for line in text.lines() {
         if line.is_empty() {
             continue;
         }
-        // git ls-remote output format: `<object-id>\t<refname>`
-        // Validate the OID field: must be exactly 40 (SHA-1) or 64 (SHA-256)
-        // lowercase hex characters, separated from the ref by a tab.
-        let tab = match line.find('\t') {
-            Some(pos) => pos,
-            None => return None, // malformed record — fail closed
-        };
-        let oid = &line[..tab];
+        let (oid, refname) = line.split_once('\t')?;
         let valid_oid = (oid.len() == 40 || oid.len() == 64)
             && oid.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-        if !valid_oid {
-            return None; // non-hex or wrong-length OID — fail closed
+        if !valid_oid || refname.is_empty() || refname.contains('\t') {
+            return None;
         }
         ids.push(oid.to_string());
     }
-    // If we saw non-empty output but extracted no IDs, something is wrong.
     if ids.is_empty() {
         return None;
     }
@@ -2193,6 +2184,98 @@ const BOUNDED_CAPTURE_LIMIT: u64 = 32 << 20; // 32 MiB — headroom above any re
 
 /// Poll interval while waiting for the child to exit in [`capture_raw_bounded`].
 const BOUNDED_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+#[cfg(windows)]
+struct BoundedJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for BoundedJob {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn create_bounded_job(pid: u32) -> Option<BoundedJob> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            return None;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == FALSE
+        {
+            CloseHandle(job);
+            return None;
+        }
+        let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, pid);
+        if process.is_null() {
+            CloseHandle(job);
+            return None;
+        }
+        let assigned = AssignProcessToJobObject(job, process);
+        CloseHandle(process);
+        if assigned == FALSE {
+            CloseHandle(job);
+            return None;
+        }
+        Some(BoundedJob(job))
+    }
+}
+
+#[cfg(windows)]
+fn resume_bounded_process(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = false;
+        let mut has_entry = Thread32First(snapshot, &mut entry);
+        while has_entry != 0 {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed = true;
+                    }
+                    CloseHandle(thread);
+                }
+            }
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            has_entry = Thread32Next(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        resumed
+    }
+}
 
 /// Idle backoff inside the nonblocking Unix drain when no bytes are available.
 #[cfg(unix)]
@@ -2302,12 +2385,28 @@ fn capture_raw_bounded(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NEW_PROCESS_GROUP: new group for group-kill on timeout.
-        cmd.creation_flags(0x0000_0200);
+        // Freeze the root until a kill-on-close Job Object owns it, closing the
+        // spawn-to-assign race in which a fast root could create an unowned
+        // descendant before the parent assigns the job.
+        cmd.creation_flags(CREATE_SUSPENDED);
     }
 
     let mut child = cmd.spawn().ok()?;
     let child_pid = child.id();
+    #[cfg(windows)]
+    let mut job = match create_bounded_job(child_pid) {
+        Some(job) if resume_bounded_process(child_pid) => Some(job),
+        Some(job) => {
+            drop(job);
+            let _ = child.wait();
+            return None;
+        }
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
 
     let stdout_pipe = child.stdout.take()?;
     let stderr_pipe = child.stderr.take()?;
@@ -2317,7 +2416,12 @@ fn capture_raw_bounded(
     #[cfg(unix)]
     {
         if !set_nonblocking_fd(&stdout_pipe) || !set_nonblocking_fd(&stderr_pipe) {
-            kill_bounded_tree(&mut child, child_pid);
+            kill_bounded_tree(
+                &mut child,
+                child_pid,
+                #[cfg(windows)]
+                &mut job,
+            );
             let _ = child.wait();
             return None;
         }
@@ -2345,18 +2449,33 @@ fn capture_raw_bounded(
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    kill_bounded_tree(&mut child, child_pid);
+                    kill_bounded_tree(
+                        &mut child,
+                        child_pid,
+                        #[cfg(windows)]
+                        &mut job,
+                    );
                     break None;
                 }
                 if overflow.load(Ordering::Relaxed) {
-                    kill_bounded_tree(&mut child, child_pid);
+                    kill_bounded_tree(
+                        &mut child,
+                        child_pid,
+                        #[cfg(windows)]
+                        &mut job,
+                    );
                     break None;
                 }
                 std::thread::sleep(BOUNDED_POLL);
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) => {
-                kill_bounded_tree(&mut child, child_pid);
+                kill_bounded_tree(
+                    &mut child,
+                    child_pid,
+                    #[cfg(windows)]
+                    &mut job,
+                );
                 break None;
             }
         }
@@ -2366,7 +2485,12 @@ fn capture_raw_bounded(
     // backgrounded a grandchild that still holds the pipe.  Then raise `stop`
     // so the nonblocking Unix drains end on the next WouldBlock instead of
     // waiting on a group-escaped writer indefinitely.
-    kill_bounded_tree(&mut child, child_pid);
+    kill_bounded_tree(
+        &mut child,
+        child_pid,
+        #[cfg(windows)]
+        &mut job,
+    );
     let _ = child.wait();
     stop.store(true, Ordering::Relaxed);
 
@@ -2387,7 +2511,11 @@ fn capture_raw_bounded(
 /// Kill the entire process group spawned with `process_group(0)` on Unix, or
 /// fall back to killing the direct child on platforms where group kill is
 /// unavailable. Called on timeout, overflow, and success (idempotent).
-fn kill_bounded_tree(_child: &mut std::process::Child, pid: u32) {
+fn kill_bounded_tree(
+    _child: &mut std::process::Child,
+    pid: u32,
+    #[cfg(windows)] job: &mut Option<BoundedJob>,
+) {
     #[cfg(unix)]
     {
         // SAFETY: `pid` equals the child's PGID (set via `process_group(0)`).
@@ -2398,7 +2526,12 @@ fn kill_bounded_tree(_child: &mut std::process::Child, pid: u32) {
         }
         let _ = pid; // suppress unused-variable on non-unix builds
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        drop(job.take());
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         let _ = child.kill();
@@ -2508,14 +2641,8 @@ fn exec_real_git(real_git: &Path, argv: &[String], authority: Option<&Authority>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// Process-global env lock.  Every test that mutates any env variable
-    /// (`GIT_SSH_COMMAND`, `BUZZ_TEST_*`, etc.) must hold this guard for the
-    /// duration of the mutation and any subprocess that reads the mutated env.
-    /// `cargo test` runs test functions concurrently within one process; tests
-    /// that observe each other's attack env fail nondeterministically.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::TestEnv;
 
     fn v(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -3263,33 +3390,23 @@ mod tests {
     fn config_env_shell_alias_is_refused_commit_variant() {
         // `--config-env=alias.x=VAR` sources the alias body from an env var. The
         // probe inherits the process env, so it resolves the alias git would.
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var(
-                "BUZZ_TEST_EVIL_ALIAS",
-                "!git -c user.email=evil@x.com commit",
-            );
-        }
+        let mut env = TestEnv::lock();
+        env.set(
+            "BUZZ_TEST_EVIL_ALIAS",
+            "!git -c user.email=evil@x.com commit",
+        );
         let argv = v(&["--config-env=alias.x=BUZZ_TEST_EVIL_ALIAS", "x"]);
         let err = verify_alias_safety(&real_git(), &argv, &caller_globals(&argv))
             .expect_err("--config-env shell alias must be refused");
-        unsafe {
-            std::env::remove_var("BUZZ_TEST_EVIL_ALIAS");
-        }
         assert!(err.contains("shell (`!`) git alias"), "{err}");
     }
 
     #[test]
     fn config_env_alias_to_push_is_recognized_push_variant() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("BUZZ_TEST_PUSH_ALIAS", "push origin main");
-        }
+        let mut env = TestEnv::lock();
+        env.set("BUZZ_TEST_PUSH_ALIAS", "push origin main");
         let argv = v(&["--config-env=alias.x=BUZZ_TEST_PUSH_ALIAS", "x"]);
         let kind = is_push_command(&real_git(), &argv, &caller_globals(&argv));
-        unsafe {
-            std::env::remove_var("BUZZ_TEST_PUSH_ALIAS");
-        }
         assert!(matches!(kind, PushKind::Push));
     }
 
@@ -4097,94 +4214,48 @@ mod tests {
         );
     }
 
-    /// `remote_object_ids` must fail closed (return None) when `ls-remote`
-    /// output contains non-UTF-8 bytes — an adversarial receive service could
-    /// emit these to bypass strict-UTF-8 checking.
     #[test]
-    fn remote_object_ids_rejects_non_utf8_output() {
-        // Fake ls-remote that emits invalid UTF-8 bytes then exits 0.
-        let bin_dir = tempfile::tempdir().unwrap();
-        let fake_bin = bin_dir.path().join("git");
-        // Output: 0xFF 0xFE (not valid UTF-8) followed by a NUL and \n, then exit 0.
-        std::fs::write(&fake_bin, b"#!/bin/sh\nprintf '\\xff\\xfe'\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let ctx: Vec<String> = vec![];
-        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
-        assert!(
-            result.is_none(),
-            "non-UTF-8 ls-remote output must fail closed (None)"
-        );
-    }
-
-    /// `remote_object_ids` must fail closed when a record lacks a tab separator
-    /// (malformed line that does not follow `<oid>\t<ref>`).
-    #[test]
-    fn remote_object_ids_rejects_no_tab_separator() {
-        let bin_dir = tempfile::tempdir().unwrap();
-        let fake_bin = bin_dir.path().join("git");
-        // Output: valid-looking but space-separated (not tab) — malformed.
+    fn parse_remote_object_ids_accepts_empty_and_exact_records() {
+        assert_eq!(parse_remote_object_ids(b""), Some(Vec::new()));
         let oid = "a".repeat(40);
-        std::fs::write(
-            &fake_bin,
-            format!("#!/bin/sh\nprintf '{oid} refs/heads/main\\n'\nexit 0\n"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let ctx: Vec<String> = vec![];
-        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
-        assert!(
-            result.is_none(),
-            "space-separated (no tab) ls-remote record must fail closed"
+        assert_eq!(
+            parse_remote_object_ids(format!("{oid}\trefs/heads/main\n").as_bytes()),
+            Some(vec![oid])
         );
     }
 
-    /// `remote_object_ids` must fail closed when the OID field is not a valid
-    /// 40- or 64-character lowercase hex string.
     #[test]
-    fn remote_object_ids_rejects_invalid_oid() {
-        let bin_dir = tempfile::tempdir().unwrap();
-        let fake_bin = bin_dir.path().join("git");
-        // 39-character OID (too short) with a tab separator.
-        let short_oid = "a".repeat(39);
-        std::fs::write(
-            &fake_bin,
-            format!("#!/bin/sh\nprintf '{short_oid}\\trefs/heads/main\\n'\nexit 0\n"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fn parse_remote_object_ids_rejects_malformed_nonempty_output() {
+        let oid = "a".repeat(40);
+        for malformed in [
+            vec![0xff],
+            b"not-an-oid\trefs/heads/main\n".to_vec(),
+            b"deadbeef\trefs/heads/main\n".to_vec(),
+            format!("{oid} refs/heads/main\n").into_bytes(),
+            b"   \n  ".to_vec(),
+            format!("{oid}\t\n").into_bytes(),
+            format!("{oid}\trefs/heads/main\textra\n").into_bytes(),
+        ] {
+            assert_eq!(
+                parse_remote_object_ids(&malformed),
+                None,
+                "malformed inventory must fail closed: {malformed:?}"
+            );
         }
-        let ctx: Vec<String> = vec![];
-        let result = remote_object_ids(&fake_bin, &ctx, "/tmp/dummy");
-        assert!(
-            result.is_none(),
-            "short OID in ls-remote output must fail closed"
-        );
     }
 
-    /// A valid empty bare repo (no refs) must return `Some([])`, not `None`.
-    /// An empty inventory is a normal state (brand-new push target) and must not
-    /// be confused with a malformed receive-service response.
     #[test]
     fn remote_object_ids_accepts_empty_bare_repo() {
         let bare = tempfile::tempdir().unwrap();
-        std::process::Command::new("git")
-            .args(["init", "-q", "--bare", bare.path().to_str().unwrap()])
+        let status = std::process::Command::new(real_git())
+            .args(["init", "-q", "--bare"])
+            .current_dir(bare.path())
             .status()
             .unwrap();
+        assert!(status.success());
         let ctx: Vec<String> = vec![];
         let result = remote_object_ids(&real_git(), &ctx, bare.path().to_str().unwrap())
-            .expect("empty bare repo must return Some([])");
+            .expect("empty bare repo ls-remote must succeed");
         assert!(result.is_empty(), "empty repo must return empty ID list");
     }
 
@@ -5578,16 +5649,12 @@ mod tests {
         let ctx = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
         let argv = v(&["-C", repo.to_str().unwrap(), "push", "origin", "main"]);
 
-        // The guard reads std::env at call time; hold ENV_LOCK for the duration
-        // and save/restore the prior value so parallel tests are not affected.
-        let _guard = ENV_LOCK.lock().unwrap();
-        let prior = std::env::var_os("GIT_SSH_COMMAND");
-        unsafe { std::env::set_var("GIT_SSH_COMMAND", "/evil/ssh") };
+        // The guard reads std::env at call time. The crate-wide harness holds
+        // the shared lock through child execution and restores the exact prior
+        // `OsString` even if the test panics.
+        let mut env = TestEnv::lock();
+        env.set("GIT_SSH_COMMAND", "/evil/ssh");
         let result = verify_push(&real_git(), &argv, &argv, &ctx, &managed());
-        match &prior {
-            Some(v) => unsafe { std::env::set_var("GIT_SSH_COMMAND", v) },
-            None => unsafe { std::env::remove_var("GIT_SSH_COMMAND") },
-        }
 
         let err = result.expect_err("GIT_SSH_COMMAND set must be refused");
         assert!(

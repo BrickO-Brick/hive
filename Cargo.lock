@@ -1135,9 +1135,10 @@ dependencies = [
 name = "buzz-git-identity"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nostr 0.44.7",
  "tempfile",
- "wait-timeout",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

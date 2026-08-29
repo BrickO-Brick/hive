@@ -22,6 +22,58 @@ use zeroize::Zeroize;
 
 pub mod git_wrapper;
 
+/// A crate-wide, panic-safe environment harness for tests that must mutate the
+/// process environment. The mutex coordinates sibling test modules; `Drop`
+/// restores each variable's exact prior `OsString` while the lock is still held.
+#[cfg(test)]
+pub(crate) struct TestEnv {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+impl TestEnv {
+    pub(crate) fn lock() -> Self {
+        Self {
+            _lock: ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            prior: Vec::new(),
+        }
+    }
+
+    fn remember(&mut self, key: &'static str) {
+        if !self.prior.iter().any(|(saved, _)| *saved == key) {
+            self.prior.push((key, std::env::var_os(key)));
+        }
+    }
+
+    pub(crate) fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+        self.remember(key);
+        std::env::set_var(key, value);
+    }
+
+    pub(crate) fn remove(&mut self, key: &'static str) {
+        self.remember(key);
+        std::env::remove_var(key);
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.prior.drain(..).rev() {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+}
+
 /// Public identity derived from a nostr secret key.
 pub struct KeyIdentity {
     /// Absolute path to the 0600 keyfile holding the secret.
@@ -474,10 +526,6 @@ pub fn sanitize_git_user_name(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Env-var-touching tests must run serially — env vars are process-global.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     const PUBKEY_HEX: &str = "dcfd242e557282d7a1e2cf2e6877522682f1e5c6156dc92ca7d90eaedd3b0f95";
     const NPUB: &str = "npub1mn7jgtj4w2pd0g0zeuhxsa6jy6p0rewxz4kujt98my82ahfmp72sxjexk7";
@@ -725,11 +773,10 @@ mod tests {
 
     #[test]
     fn identity_uses_display_name_and_leaves_email_on_the_pubkey() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var(DISPLAY_NAME_ENV_VAR, "Duncan");
-        std::env::remove_var("BUZZ_RELAY_URL");
+        let mut env = crate::TestEnv::lock();
+        env.set(DISPLAY_NAME_ENV_VAR, "Duncan");
+        env.remove("BUZZ_RELAY_URL");
         let entries = identity_signing_entries(&identity());
-        std::env::remove_var(DISPLAY_NAME_ENV_VAR);
 
         assert_eq!(entry(&entries, "user.name").as_deref(), Some("Duncan"));
         assert_eq!(
@@ -756,19 +803,19 @@ mod tests {
 
     #[test]
     fn identity_falls_back_to_npub_when_display_name_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var(DISPLAY_NAME_ENV_VAR);
-        std::env::remove_var("BUZZ_RELAY_URL");
+        let mut env = crate::TestEnv::lock();
+        env.remove(DISPLAY_NAME_ENV_VAR);
+        env.remove("BUZZ_RELAY_URL");
         let entries = identity_signing_entries(&identity());
         assert_eq!(entry(&entries, "user.name").as_deref(), Some(NPUB));
     }
 
     #[test]
     fn identity_falls_back_to_npub_when_display_name_is_unusable() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("BUZZ_RELAY_URL");
+        let mut env = crate::TestEnv::lock();
+        env.remove("BUZZ_RELAY_URL");
         for raw in ["<>", "\u{200B}"] {
-            std::env::set_var(DISPLAY_NAME_ENV_VAR, raw);
+            env.set(DISPLAY_NAME_ENV_VAR, raw);
             let entries = identity_signing_entries(&identity());
             assert_eq!(
                 entry(&entries, "user.name").as_deref(),
@@ -776,7 +823,6 @@ mod tests {
                 "unusable display name {raw:?} must reach git as the npub"
             );
         }
-        std::env::remove_var(DISPLAY_NAME_ENV_VAR);
     }
 
     fn entry(entries: &[(String, String)], key: &str) -> Option<String> {
@@ -834,23 +880,22 @@ mod tests {
 
     #[test]
     fn email_uses_relay_host_stripping_scheme_port_and_path() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("BUZZ_RELAY_URL", "wss://relay.example.com:443/path");
+        let mut env = crate::TestEnv::lock();
+        env.set("BUZZ_RELAY_URL", "wss://relay.example.com:443/path");
         assert_eq!(
             derive_git_email(PUBKEY_HEX),
             format!("{PUBKEY_HEX}@relay.example.com")
         );
-        std::env::remove_var("BUZZ_RELAY_URL");
     }
 
     #[test]
     fn email_falls_back_to_buzz_for_loopback_and_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = crate::TestEnv::lock();
         for url in ["http://localhost:3000", "ws://127.0.0.1:8080"] {
-            std::env::set_var("BUZZ_RELAY_URL", url);
+            env.set("BUZZ_RELAY_URL", url);
             assert_eq!(derive_git_email(PUBKEY_HEX), format!("{PUBKEY_HEX}@buzz"));
         }
-        std::env::remove_var("BUZZ_RELAY_URL");
+        env.remove("BUZZ_RELAY_URL");
         assert_eq!(derive_git_email(PUBKEY_HEX), format!("{PUBKEY_HEX}@buzz"));
     }
 
@@ -858,10 +903,9 @@ mod tests {
 
     #[test]
     fn to_git_config_env_composes_over_existing_count() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("GIT_CONFIG_COUNT", "2");
+        let mut env_guard = crate::TestEnv::lock();
+        env_guard.set("GIT_CONFIG_COUNT", "2");
         let env = to_git_config_env(&[("user.name".into(), "Duncan".into())]);
-        std::env::remove_var("GIT_CONFIG_COUNT");
 
         assert_eq!(git_config_count(&env), 3);
         // The new entry lands at index 2 (0 and 1 belong to the caller).
@@ -871,8 +915,8 @@ mod tests {
 
     #[test]
     fn to_git_config_env_base_zero_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("GIT_CONFIG_COUNT");
+        let mut env_guard = crate::TestEnv::lock();
+        env_guard.remove("GIT_CONFIG_COUNT");
         let env = to_git_config_env(&[
             ("user.name".into(), "Duncan".into()),
             ("user.email".into(), "x@y".into()),
@@ -919,10 +963,10 @@ mod tests {
 
     #[test]
     fn take_key_and_write_removes_var_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = crate::TestEnv::lock();
         let dir = tempfile::tempdir().unwrap();
         let nsec = nostr::Keys::generate().secret_key().to_bech32().unwrap();
-        std::env::set_var("NOSTR_PRIVATE_KEY", &nsec);
+        env.set("NOSTR_PRIVATE_KEY", &nsec);
         let id = take_key_and_write(dir.path());
         assert!(id.is_some());
         assert!(
