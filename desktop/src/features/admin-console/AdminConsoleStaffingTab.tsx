@@ -12,6 +12,16 @@ import { Button } from "@/shared/ui/button";
 import { Badge } from "@/shared/ui/badge";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/shared/ui/alert-dialog";
+import {
   deleteAdminOperator,
   listAdminOperators,
   putAdminOperator,
@@ -73,6 +83,10 @@ export function StaffingTab({
   const [addError, setAddError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [workingPubkey, setWorkingPubkey] = useState<string | null>(null);
+  /** Operator pending removal confirmation; null when dialog is closed. */
+  const [pendingRemove, setPendingRemove] = useState<AdminOperatorDto | null>(
+    null,
+  );
 
   const listState: AsyncState<AdminOperatorDto[]> = useAsyncLoad(
     () => listAdminOperators(origin),
@@ -102,17 +116,20 @@ export function StaffingTab({
     }
   };
 
-  const handleRemove = async (opPubkey: string) => {
+  const handleConfirmRemove = async () => {
+    const op = pendingRemove;
+    if (!op) return;
+    setPendingRemove(null);
     setActionError(null);
-    setWorkingPubkey(opPubkey);
+    setWorkingPubkey(op.pubkey);
     try {
-      await deleteAdminOperator(origin, opPubkey);
+      await deleteAdminOperator(origin, op.pubkey);
       setListGen((g) => g + 1);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setActionError(
         msg.includes("409")
-          ? `Cannot remove ${truncatePubkey(opPubkey)}: config-backed key.`
+          ? `Cannot remove ${truncatePubkey(op.pubkey)}: config-backed key.`
           : msg,
       );
     } finally {
@@ -120,8 +137,57 @@ export function StaffingTab({
     }
   };
 
+  const isSelf = pendingRemove?.pubkey === pubkey;
+
   return (
     <div className="space-y-4" data-testid="staffing-tab">
+      {/* Remove confirmation dialog */}
+      <AlertDialog
+        open={pendingRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRemove(null);
+        }}
+      >
+        <AlertDialogContent data-testid="staffing-remove-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove operator?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  This will remove{" "}
+                  <span className="font-mono">
+                    {pendingRemove ? truncatePubkey(pendingRemove.pubkey) : ""}
+                  </span>{" "}
+                  ({pendingRemove?.effectiveRole}) from the operator list.
+                </p>
+                {isSelf && (
+                  <p
+                    className="text-destructive"
+                    data-testid="staffing-remove-self-warning"
+                  >
+                    You are removing your own operator access. Once removed, you
+                    may lose the ability to undo this action.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="staffing-remove-cancel">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction asChild data-testid="staffing-remove-confirm">
+              <Button
+                onClick={() => void handleConfirmRemove()}
+                variant="destructive"
+              >
+                Remove
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Add operator form — hidden in read-only (disabled-auth) mode */}
       {canMutate && (
         <div className="rounded-md border border-border/60 px-3 py-2.5 space-y-2">
@@ -206,7 +272,7 @@ export function StaffingTab({
                     aria-label={`Remove ${op.pubkey}`}
                     data-testid={`staffing-remove-btn-${op.pubkey}`}
                     disabled={isConfigBacked || workingPubkey === op.pubkey}
-                    onClick={() => void handleRemove(op.pubkey)}
+                    onClick={() => setPendingRemove(op)}
                     size="icon-xs"
                     title={
                       isConfigBacked

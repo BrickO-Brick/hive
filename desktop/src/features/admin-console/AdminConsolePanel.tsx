@@ -842,6 +842,22 @@ export function AdminConsolePanel({
     setGeneration(generationRef.current);
   }, [pubkey, origin]);
 
+  // Reset activeTab to the default when the current tab is no longer visible
+  // for the current role (e.g. operator→moderator while Staffing is selected).
+  // Guard is written against tab-visibility (the set TabBar would render for
+  // this role) rather than a hard-coded role string so it generalises to
+  // future tabs without requiring a companion role check here.
+  useEffect(() => {
+    const visibleTabs = new Set<Tab>([
+      "reports",
+      "feedback",
+      ...(isOperator ? (["staffing"] as Tab[]) : []),
+    ]);
+    if (!visibleTabs.has(activeTab)) {
+      setActiveTab("reports");
+    }
+  }, [isOperator, activeTab]);
+
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
@@ -862,12 +878,14 @@ export function AdminConsolePanel({
         showStaffing={isOperator}
       />
       {activeTab === "reports" && (
-        <ReportsTab
-          canMutate={canMutate}
-          origin={origin}
-          pubkey={pubkey}
-          generation={generation}
-        />
+        <div data-testid="reports-tab">
+          <ReportsTab
+            canMutate={canMutate}
+            origin={origin}
+            pubkey={pubkey}
+            generation={generation}
+          />
+        </div>
       )}
       {activeTab === "feedback" && (
         <FeedbackTab

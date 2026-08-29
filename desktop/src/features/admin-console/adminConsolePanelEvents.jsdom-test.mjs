@@ -4347,3 +4347,367 @@ test("canMutate-true: all five mutation affordances are present in authorized mo
     }
   }
 });
+
+// ── P1: Staffing remove confirmation dialog ───────────────────────────────────
+//
+// The trash button must open a confirmation dialog; the delete IPC must not fire
+// until the user clicks Confirm. Self-removal shows a distinct warning.
+//
+// Mutation evidence:
+//   - Bypass the dialog (call deleteAdminOperator directly from the button) →
+//     the cancel test goes RED (deleteAdminOperator called on trash click).
+//   - Remove the AlertDialog open condition → confirm test goes RED (dialog
+//     never opens, Confirm button absent).
+//
+// jsdom compatibility: Radix UI's react-dismissable-layer and react-focus-scope
+// call document.dispatchEvent / element.dispatchEvent with CustomEvent instances
+// created from a different window context. jsdom 27 rejects these with a
+// type-check error. Patch both to silently ignore cross-context non-Event
+// arguments — this is a test-environment shim, not production code.
+//
+// The patch is applied once at module scope and is additive (the original
+// implementation handles real Event instances normally).
+{
+  const patchDispatch = (target, prop) => {
+    const original = target[prop].bind(target);
+    target[prop] = function patchedDispatch(event, ...rest) {
+      try {
+        return original(event, ...rest);
+      } catch (e) {
+        if (
+          e instanceof TypeError &&
+          e.message.includes("parameter 1 is not of type 'Event'")
+        ) {
+          // Cross-context CustomEvent from Radix internals — silently ignore.
+          return false;
+        }
+        throw e;
+      }
+    };
+  };
+  patchDispatch(document, "dispatchEvent");
+  const originalElementDispatch = HTMLElement.prototype.dispatchEvent;
+  HTMLElement.prototype.dispatchEvent = function patchedElementDispatch(
+    event,
+    ...rest
+  ) {
+    try {
+      return originalElementDispatch.call(this, event, ...rest);
+    } catch (e) {
+      if (
+        e instanceof TypeError &&
+        e.message.includes("parameter 1 is not of type 'Event'")
+      ) {
+        return false;
+      }
+      throw e;
+    }
+  };
+}
+
+test("staffing-remove-cancel: trash click opens dialog; cancel does not invoke deleteAdminOperator", async () => {
+  const origin = "https://admin-staffing.example.com";
+  const pubkey = "aa".repeat(32);
+  const opPubkey = "bb".repeat(32);
+
+  const deleteCalls = [];
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_operators", () =>
+    Promise.resolve([
+      { pubkey: opPubkey, effectiveRole: "moderator", sources: ["db"] },
+    ]),
+  );
+  setIpcHandler("admin_delete_operator", (args) => {
+    deleteCalls.push(args?.pubkey ?? "?");
+    return Promise.resolve();
+  });
+
+  const { container, doRender, unmount } = mountPanel({
+    origin,
+    pubkey,
+    canMutate: true,
+    role: "operator",
+    initialTab: "staffing",
+  });
+  await doRender();
+  await settle(30);
+
+  try {
+    // Trash click → dialog opens (no delete yet)
+    const removeBtn = container.querySelector(
+      `[data-testid='staffing-remove-btn-${opPubkey}']`,
+    );
+    assert.ok(
+      removeBtn !== null,
+      "remove button must be present before dialog",
+    );
+    await act(async () => {
+      fireEvent.click(removeBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // Dialog should be open — content renders in document.body portal
+    const dialog = document.body.querySelector(
+      "[data-testid='staffing-remove-dialog']",
+    );
+    assert.ok(
+      dialog !== null,
+      "confirmation dialog must open after trash click",
+    );
+    assert.equal(
+      deleteCalls.length,
+      0,
+      "deleteAdminOperator must not fire before confirmation",
+    );
+
+    // Click Cancel
+    const cancelBtn = document.body.querySelector(
+      "[data-testid='staffing-remove-cancel']",
+    );
+    assert.ok(cancelBtn !== null, "cancel button must be present in dialog");
+    await act(async () => {
+      fireEvent.click(cancelBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    // Dialog closed, row still present, delete still not called
+    const dialogAfter = document.body.querySelector(
+      "[data-testid='staffing-remove-dialog']",
+    );
+    assert.equal(dialogAfter, null, "dialog must close after cancel");
+    assert.equal(
+      deleteCalls.length,
+      0,
+      "deleteAdminOperator must not be invoked after cancel",
+    );
+    const rowAfter = container.querySelector(
+      `[data-testid='staffing-row-${opPubkey}']`,
+    );
+    assert.ok(
+      rowAfter !== null,
+      "operator row must still be present after cancel",
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("staffing-remove-confirm: confirming dialog invokes deleteAdminOperator exactly once with the right pubkey", async () => {
+  const origin = "https://admin-staffing.example.com";
+  const pubkey = "cc".repeat(32);
+  const opPubkey = "dd".repeat(32);
+
+  const deleteCalls = [];
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_operators", () =>
+    Promise.resolve([
+      { pubkey: opPubkey, effectiveRole: "moderator", sources: ["db"] },
+    ]),
+  );
+  setIpcHandler("admin_delete_operator", (args) => {
+    deleteCalls.push(args?.pubkey ?? "?");
+    return Promise.resolve();
+  });
+
+  const { container, doRender, unmount } = mountPanel({
+    origin,
+    pubkey,
+    canMutate: true,
+    role: "operator",
+    initialTab: "staffing",
+  });
+  await doRender();
+  await settle(30);
+
+  try {
+    // Open dialog
+    const removeBtn = container.querySelector(
+      `[data-testid='staffing-remove-btn-${opPubkey}']`,
+    );
+    assert.ok(removeBtn !== null, "remove button must be present");
+    await act(async () => {
+      fireEvent.click(removeBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const dialog = document.body.querySelector(
+      "[data-testid='staffing-remove-dialog']",
+    );
+    assert.ok(dialog !== null, "confirmation dialog must be open");
+
+    // Click Confirm
+    const confirmBtn = document.body.querySelector(
+      "[data-testid='staffing-remove-confirm']",
+    );
+    assert.ok(confirmBtn !== null, "confirm button must be present in dialog");
+    await act(async () => {
+      fireEvent.click(confirmBtn);
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    // deleteAdminOperator must have been called exactly once with the right pubkey
+    assert.equal(
+      deleteCalls.length,
+      1,
+      `deleteAdminOperator must be invoked exactly once; calls: ${JSON.stringify(deleteCalls)}`,
+    );
+    assert.equal(
+      deleteCalls[0],
+      opPubkey,
+      `deleteAdminOperator must receive the target pubkey; got: ${deleteCalls[0]}`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("staffing-remove-self-warning: self-removal dialog shows the distinct self-removal warning", async () => {
+  const origin = "https://admin-staffing.example.com";
+  // acting pubkey == op pubkey → self-removal
+  const pubkey = "ee".repeat(32);
+
+  const deleteCalls = [];
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_operators", () =>
+    Promise.resolve([
+      { pubkey: pubkey, effectiveRole: "operator", sources: ["db"] },
+    ]),
+  );
+  setIpcHandler("admin_delete_operator", (args) => {
+    deleteCalls.push(args?.pubkey ?? "?");
+    return Promise.resolve();
+  });
+
+  const { container, doRender, unmount } = mountPanel({
+    origin,
+    pubkey,
+    canMutate: true,
+    role: "operator",
+    initialTab: "staffing",
+  });
+  await doRender();
+  await settle(30);
+
+  try {
+    // Open dialog for the acting user's own row
+    const removeBtn = container.querySelector(
+      `[data-testid='staffing-remove-btn-${pubkey}']`,
+    );
+    assert.ok(removeBtn !== null, "own remove button must be present");
+    await act(async () => {
+      fireEvent.click(removeBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const warning = document.body.querySelector(
+      "[data-testid='staffing-remove-self-warning']",
+    );
+    assert.ok(
+      warning !== null,
+      "self-removal warning must appear when removing own operator access",
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+// ── P2: activeTab resets when role transitions out of staffing ────────────────
+//
+// If a mounted panel transitions from operator → moderator/unknown while
+// Staffing is selected, the panel must reset to reports rather than leaving
+// an empty/invisible state.
+//
+// Mutation evidence: removing the reset useEffect → this test goes RED
+// (no tab content renders after the role downgrade).
+
+test("staffing-tab-reset-on-role-downgrade: panel shows reports content after operator→moderator transition", async () => {
+  const origin = "https://admin-rw.example.com";
+  const pubkey = "ff".repeat(32);
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([]));
+  setIpcHandler("admin_list_operators", () => Promise.resolve([]));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  // Mount with operator role + staffing tab active
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+
+  const renderWith = async (role) => {
+    await act(async () => {
+      root.render(
+        React.createElement(AdminConsolePanel, {
+          canMutate: true,
+          origin,
+          pubkey,
+          role,
+          initialTab: "staffing",
+        }),
+      );
+    });
+  };
+  const unmount = async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    document.body.removeChild(container);
+  };
+
+  try {
+    await renderWith("operator");
+    await settle(30);
+
+    // Staffing tab content is visible
+    const staffingContent = container.querySelector(
+      "[data-testid='staffing-tab']",
+    );
+    assert.ok(
+      staffingContent !== null,
+      "staffing tab content must be visible when role=operator",
+    );
+
+    // Transition to moderator — staffing tab is now unauthorized
+    await renderWith("moderator");
+    await settle(20);
+
+    // Staffing content must be gone; reports content must be present
+    const staffingAfter = container.querySelector(
+      "[data-testid='staffing-tab']",
+    );
+    assert.equal(
+      staffingAfter,
+      null,
+      "staffing tab content must be absent after role downgrade to moderator",
+    );
+
+    // The reset effect must have switched activeTab → reports, so the reports
+    // tab wrapper must be in the DOM. Without the reset, activeTab stays on
+    // staffing and neither staffing (gated by isOperator) nor reports renders.
+    const reportsTabContent = container.querySelector(
+      "[data-testid='reports-tab']",
+    );
+    assert.ok(
+      reportsTabContent !== null,
+      "reports-tab content must render after reset (without reset, panel is empty)",
+    );
+
+    // The reports tab button must exist and not the staffing tab button
+    const reportsTabBtn = container.querySelector(
+      "[data-testid='admin-tab-reports']",
+    );
+    assert.ok(
+      reportsTabBtn !== null,
+      "reports tab button must be visible after reset",
+    );
+    const staffingTabBtn = container.querySelector(
+      "[data-testid='admin-tab-staffing']",
+    );
+    assert.equal(
+      staffingTabBtn,
+      null,
+      "staffing tab button must be absent after role downgrade to moderator",
+    );
+  } finally {
+    await unmount();
+  }
+});
