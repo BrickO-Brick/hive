@@ -527,10 +527,10 @@ export function AgentInstanceEditDialog({
     // Mark that the user has made an explicit runtime choice. The catalog-arrival
     // effect will no longer overwrite selectedRuntimeId after this point.
     runtimeTouched.current = true;
-
     const resolvedRuntimeId = nextRuntimeId || "custom";
     setSelectedRuntimeId(resolvedRuntimeId);
-
+    effortTouched.current = false;
+    setEffortLevel(null);
     const isCustomCommand = resolvedRuntimeId === "custom";
 
     // Only pin the harness when the selection can actually supply a command:
@@ -1107,7 +1107,9 @@ export function AgentInstanceEditDialog({
 
             <EffortPickerField
               agent={agent}
-              config={configSurfaceQuery.data}
+              config={
+                runtimeTouched.current ? undefined : configSurfaceQuery.data
+              }
               disabled={isSaving}
               value={
                 effortTouched.current

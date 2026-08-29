@@ -881,6 +881,57 @@ test("effort setter rejection renders a retryable error with dialog still open",
   );
 });
 
+test("runtime switch clears touched effort — no persist_agent_effort_level dispatched after switching runtimes", async () => {
+  // Repro for Carl r10: effort selected for the running runtime → runtime
+  // switched → Save → stale effort value committed to the new runtime's store,
+  // which rejects vocab it never advertised.
+  installEffortIpc();
+  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
+  set("update_managed_agent", (args) => {
+    ipcCalls.push({ cmd: "update_managed_agent", args });
+    return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
+  });
+  await act(async () => {
+    renderDialog(() => {});
+  });
+
+  // Select an effort level while the effort picker is visible (goose session).
+  await selectEffort("High");
+
+  // Switch the runtime to a different entry. The config surface is only valid
+  // for the running session; switching must clear effortTouched so Save does
+  // not write a stale vocab value to the new runtime.
+  const runtimeTrigger =
+    dom.window.document.getElementById("edit-agent-runtime");
+  assert.ok(runtimeTrigger, "runtime dropdown trigger must be present");
+  await act(async () => {
+    fireEvent.pointerDown(
+      runtimeTrigger,
+      new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    fireEvent.click(runtimeTrigger);
+  });
+  const claudeItem = [
+    ...dom.window.document.querySelectorAll('[role="menuitemradio"]'),
+  ].find((node) => node.textContent?.trim() === "claude");
+  assert.ok(claudeItem, "claude runtime option must appear in the dropdown");
+  await act(async () => {
+    fireEvent.click(claudeItem);
+  });
+
+  // Save — the runtime changed, so effortTouched must have been cleared.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+
+  assert.equal(
+    ipcCalls.filter((c) => c.cmd === "persist_agent_effort_level").length,
+    0,
+    "no persist_agent_effort_level must fire after a runtime switch — the config surface vocab belongs to the running session, not the prospective one",
+  );
+});
+
 // ── Dismissal paths are blocked while isSaving (Escape, close-X, checkboxes) ────
 
 // Sets up a deferred effort setter and clicks Save, then suspends with the effort
