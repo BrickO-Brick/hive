@@ -5992,7 +5992,7 @@ mod tests {
     //      job before teardown).
     //   3. Asserts the descendant is dead after the helper returns.
     //
-    // The `#[ignore]` tag is paired with an explicit `--run-ignored` step in the
+    // The `#[ignore]` tag is paired with an explicit `--ignored` step in the
     // Windows CI job so these tests actually execute; they are not dead-letter.
     //
     // Mutation: removing `BoundedJob` / making `kill_bounded_tree` a no-op on
@@ -6046,7 +6046,7 @@ mod tests {
     /// not the descendant, which remains alive and the assert fails.
     #[cfg(windows)]
     #[test]
-    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --run-ignored"]
+    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --ignored"]
     fn capture_raw_bounded_reaps_descendant_on_success_windows() {
         let dir = tempfile::tempdir().expect("temp dir");
         let pid_path = dir.path().join("descendant.pid");
@@ -6105,7 +6105,7 @@ mod tests {
     /// descendant survives the direct-child kill and the assert fails.
     #[cfg(windows)]
     #[test]
-    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --run-ignored"]
+    #[ignore = "requires a Windows host; executed by the 'Test (buzz-git-identity)' CI step with --ignored"]
     fn capture_raw_bounded_reaps_descendant_on_timeout_windows() {
         let dir = tempfile::tempdir().expect("temp dir");
         let pid_path = dir.path().join("descendant.pid");

@@ -1147,8 +1147,8 @@ jobs:
         # backgrounds a descendant (records its PID), exits or times out, and the
         # Job Object kill-on-close must reap the descendant before this returns.
         # The two tree-ownership regressions are #[ignore]-tagged because they
-        # require real PowerShell; --run-ignored executes them here.
-        run: cargo test -p buzz-git-identity --target $env:TARGET -- --run-ignored --test-threads=1
+        # require real PowerShell; --ignored executes them here.
+        run: cargo test -p buzz-git-identity --target $env:TARGET -- --ignored --test-threads=1
       # Smoke-test the new host-prereq contract: Git for Windows (which provides
       # bash) is available on the runner, a shell command round-trips, and bash
       # does NOT resolve from System32 (so WSL's launcher is never picked up).
