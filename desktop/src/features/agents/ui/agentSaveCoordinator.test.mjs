@@ -1790,23 +1790,23 @@ test("test_publish_retry_failure_shows_terminal_warning_not_reopen", async () =>
     assert.equal(opts._calls.onDone, 0, "onDone must not be called");
     const warnings = cap.captured.filter((c) => c.kind === "warning");
     assert.equal(warnings.length, 1, "exactly one warning toast");
-    // Must say "saved locally / could not be published" — the honest terminal state.
+    // Positive match: must end with the honest terminal copy — saved locally,
+    // could not be published, no recovery instruction of any kind.
     assert.match(
       warnings[0].message,
-      /saved locally|saved.*not.*published|could not be published/i,
-      "warning must indicate saved locally but not published",
+      /saved locally, but could not be published to the catalog:/i,
+      "terminal retry-failure copy must state saved locally but not published",
     );
-    // Must NOT use the false automatic-retry claim from the old pass-2 copy.
+    // Robust ban on any recovery instruction — fragment-level to survive rewording.
     assert.doesNotMatch(
       warnings[0].message,
-      /it will be retried automatically/i,
-      "terminal state must not claim automatic retry — preparation threw, so nothing is durably queued",
+      /reopen/i,
+      "terminal state must not instruct the user to reopen — a fresh open seeds persisted values and publishes nothing",
     );
-    // Must NOT use the old false \"reopen to retry\" copy either.
     assert.doesNotMatch(
       warnings[0].message,
-      /reopen to retry publishing/i,
-      "terminal state must not tell the user to reopen without context — the old lie",
+      /retried automatically/i,
+      "terminal state must not claim automatic retry — preparation threw, nothing is durably queued",
     );
   } finally {
     cap.restore();
@@ -1814,7 +1814,8 @@ test("test_publish_retry_failure_shows_terminal_warning_not_reopen", async () =>
 });
 
 test("test_no_publish_retry_seam_shows_terminal_warning_not_reopen", async () => {
-  // No publishRetry provided — coordinator must still not say "reopen to retry".
+  // No publishRetry provided — coordinator must still report only the honest
+  // terminal state: saved locally, not published, no recovery instruction.
   const cap = captureToasts();
   try {
     const persisted = makeDefinition({ displayName: "Alice" });
@@ -1842,21 +1843,22 @@ test("test_no_publish_retry_seam_shows_terminal_warning_not_reopen", async () =>
     assert.equal(opts._calls.onDone, 0, "onDone must not be called");
     const warnings = cap.captured.filter((c) => c.kind === "warning");
     assert.equal(warnings.length, 1, "exactly one warning toast");
+    // Positive match: same honest terminal copy shape.
     assert.match(
       warnings[0].message,
-      /saved locally|saved.*not.*published|could not be published/i,
-      "must indicate saved locally not published",
+      /saved locally, but could not be published to the catalog:/i,
+      "no-seam terminal copy must state saved locally but not published",
     );
-    // Must NOT use the false automatic-retry claim.
+    // Robust ban on any recovery instruction — fragment-level.
     assert.doesNotMatch(
       warnings[0].message,
-      /it will be retried automatically/i,
+      /reopen/i,
+      "no-seam terminal state must not instruct the user to reopen",
+    );
+    assert.doesNotMatch(
+      warnings[0].message,
+      /retried automatically/i,
       "no-seam terminal state must not claim automatic retry — nothing was enqueued",
-    );
-    assert.doesNotMatch(
-      warnings[0].message,
-      /reopen to retry publishing/i,
-      "no-seam terminal state must not say reopen to retry",
     );
   } finally {
     cap.restore();

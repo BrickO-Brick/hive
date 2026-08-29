@@ -10,7 +10,7 @@ use crate::managed_agents::{
     AgentDefinition,
 };
 
-pub(super) struct PreparedPersonaPublication {
+pub(crate) struct PreparedPersonaPublication {
     pub scope: RetentionScope,
     pub event: nostr::Event,
     pub retained: RetainedEvent,
@@ -156,7 +156,7 @@ fn project_persona_sharing_at(
     Ok(())
 }
 
-pub(super) fn prepare_persona_publication_at(
+pub(crate) fn prepare_persona_publication_at(
     db_path: &std::path::Path,
     keys: &nostr::Keys,
     persona: &AgentDefinition,

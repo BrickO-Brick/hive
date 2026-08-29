@@ -5,6 +5,7 @@ use crate::{
     managed_agents::{
         load_personas,
         retention::{mark_synced, open_retention_db},
+        storage::managed_agents_base_dir,
         AgentDefinition,
     },
 };
@@ -61,12 +62,11 @@ pub async fn set_persona_shared(
 
     // Save persona id before `prepared` is consumed by publish_prepared_persona.
     let persona_id = prepared.persona.id.clone();
+    let base_dir = managed_agents_base_dir(&app)?;
+    let keys = prepared.scope.owner_keys.clone();
+    let db_path = prepared.scope.db_path.clone();
     let state = app.state::<AppState>();
-    let result = publish_prepared_persona(&state, prepared).await?;
-    // F2: refresh any shared 30178 heads that include this persona, matching the
-    // contract of `update_persona_and_publish`. Best-effort — failures are logged.
-    crate::commands::refresh_team_catalog_heads_for_persona(&app, &state, &persona_id);
-    Ok(result)
+    publish_and_refresh_teams_at(&state, prepared, &base_dir, &keys, &db_path, &persona_id).await
 }
 
 /// Save a persona edit AND publish its catalog head, returning the same
@@ -97,6 +97,29 @@ pub async fn update_persona_and_publish(
 
     let state = app.state::<AppState>();
     publish_prepared_persona(&state, prepared).await
+}
+
+/// Publish a prepared persona head and refresh any shared 30178 team heads that
+/// include this persona — the combined contract shared by the share toggle and
+/// the publish-retry seam.
+///
+/// Extracted from [`set_persona_shared`] so this two-step sequence can be
+/// tested directly through `publish_and_refresh_teams_at` without a
+/// `tauri::AppHandle`. Deleting the [`refresh_for_persona_at`] call from this
+/// function must cause the command-path regression to fail.
+pub(crate) async fn publish_and_refresh_teams_at(
+    state: &AppState,
+    prepared: PreparedPersonaPublication,
+    base_dir: &std::path::Path,
+    keys: &nostr::Keys,
+    db_path: &std::path::Path,
+    persona_id: &str,
+) -> Result<SetPersonaSharedResult, String> {
+    let result = publish_prepared_persona(state, prepared).await?;
+    // F2: refresh any shared 30178 heads that include this persona, matching the
+    // contract of `update_persona_and_publish`. Best-effort — failures are logged.
+    let _ = crate::commands::teams::refresh_for_persona_at(base_dir, keys, db_path, persona_id);
+    Ok(result)
 }
 
 async fn publish_prepared_persona(

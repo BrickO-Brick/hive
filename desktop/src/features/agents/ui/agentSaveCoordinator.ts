@@ -453,11 +453,10 @@ export async function runAgentSaveCoordinator(
       }
       if (publishFailed) {
         // Retry also failed — terminal state: the preparation step threw, so
-        // no durable pending row was created and automatic retry is NOT
-        // guaranteed. Report an honest terminal state — the user can reopen
-        // the dialog and save again to force a fresh publication attempt.
+        // no durable pending row was created. Report only what is true: the
+        // persona is saved locally but the catalog was not reached.
         toast.warning(
-          `${personaName} saved locally, but could not be published to the catalog: ${retryError ?? firstError ?? "unknown error"}. Reopen the editor and save again to retry publishing.`,
+          `${personaName} saved locally, but could not be published to the catalog: ${retryError ?? firstError ?? "unknown error"}.`,
         );
         return false;
       }
@@ -465,7 +464,7 @@ export async function runAgentSaveCoordinator(
     } else {
       // No retry seam available — terminal state: same honest shape.
       toast.warning(
-        `${personaName} saved locally, but could not be published to the catalog: ${firstError ?? "unknown error"}. Reopen the editor and save again to retry publishing.`,
+        `${personaName} saved locally, but could not be published to the catalog: ${firstError ?? "unknown error"}.`,
       );
       return false;
     }

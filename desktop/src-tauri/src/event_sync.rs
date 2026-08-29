@@ -752,8 +752,7 @@ fn read_json_store<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>
 }
 
 /// Test-accessible alias for `read_json_store`, used by the `pending` module's
-/// `refresh_for_persona_at` testable seam without re-exporting the private fn.
-#[cfg(test)]
+/// `refresh_for_persona_at` seam without re-exporting the private fn.
 pub(crate) fn read_json_store_pub<T: serde::de::DeserializeOwned>(
     path: &Path,
 ) -> Result<Vec<T>, String> {

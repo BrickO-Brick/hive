@@ -437,14 +437,14 @@ pub(super) fn refresh_shared_team_catalog_heads_for_persona<R: tauri::Runtime>(
     }
 }
 
-/// Testable seam for [`refresh_shared_team_catalog_heads_for_persona`].
+/// File-system seam for [`refresh_shared_team_catalog_heads_for_persona`].
 ///
 /// Reads teams and personas from flat JSON files in `base_dir` rather than
 /// through the Tauri store. Calls the SAME `resolve_and_refresh_or_retract_at`
 /// that production uses — the seam is a thin file-loading shim with no
-/// independent logic. Tests therefore exercise the exact production code path.
-#[cfg(test)]
-pub(super) fn refresh_for_persona_at(
+/// independent logic. Tests therefore exercise the exact production code path,
+/// and production can call this seam directly when the base directory is known.
+pub(crate) fn refresh_for_persona_at(
     base_dir: &std::path::Path,
     keys: &nostr::Keys,
     db_path: &std::path::Path,
