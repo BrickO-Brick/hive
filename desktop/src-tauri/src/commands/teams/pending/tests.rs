@@ -871,8 +871,8 @@ fn test_publish_retry_seam_refreshes_affected_shared_team_head() {
         .expect("shared head must exist before retry");
     drop(conn);
     assert!(
-        !head_before.pending_sync,
-        "pre-share head is already synced"
+        head_before.content.contains("Original prompt."),
+        "pre-retry head must reflect the original persona prompt"
     );
 
     // Simulate the persona being updated on disk (prompt rewritten).
