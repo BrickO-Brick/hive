@@ -4164,7 +4164,7 @@ mod tests {
         // the underlying push mechanism really does populate B.
         let b_before: Vec<String> = {
             let out = std::process::Command::new("git")
-                .args(&["ls-remote", b.path().to_str().unwrap()])
+                .args(["ls-remote", b.path().to_str().unwrap()])
                 .output()
                 .unwrap();
             String::from_utf8_lossy(&out.stdout)
@@ -4197,7 +4197,7 @@ mod tests {
         );
         let b_after: Vec<String> = {
             let out = std::process::Command::new("git")
-                .args(&["ls-remote", b.path().to_str().unwrap()])
+                .args(["ls-remote", b.path().to_str().unwrap()])
                 .output()
                 .unwrap();
             String::from_utf8_lossy(&out.stdout)
@@ -5372,7 +5372,7 @@ mod tests {
         );
         // actual must remain empty — the guard fired before any write.
         let ls_actual = std::process::Command::new("git")
-            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .args(["ls-remote", actual_path.to_str().unwrap()])
             .output()
             .unwrap();
         assert!(
@@ -5431,7 +5431,7 @@ mod tests {
         );
         let decoy_refs: Vec<String> = {
             let out = std::process::Command::new("git")
-                .args(&["ls-remote", decoy_path.to_str().unwrap()])
+                .args(["ls-remote", decoy_path.to_str().unwrap()])
                 .output()
                 .unwrap();
             String::from_utf8_lossy(&out.stdout)
@@ -5452,7 +5452,7 @@ mod tests {
         );
         // actual itself is still empty — the commit landed at decoy, not actual.
         let ls_actual2 = std::process::Command::new("git")
-            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .args(["ls-remote", actual_path.to_str().unwrap()])
             .output()
             .unwrap();
         assert!(
@@ -5534,7 +5534,7 @@ mod tests {
         );
         // actual must remain empty — the guard fired before any write.
         let ls_actual = std::process::Command::new("git")
-            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .args(["ls-remote", actual_path.to_str().unwrap()])
             .output()
             .unwrap();
         assert!(
@@ -5591,7 +5591,7 @@ mod tests {
         );
         let decoy_refs: Vec<String> = {
             let out = std::process::Command::new("git")
-                .args(&["ls-remote", decoy_path.to_str().unwrap()])
+                .args(["ls-remote", decoy_path.to_str().unwrap()])
                 .output()
                 .unwrap();
             String::from_utf8_lossy(&out.stdout)
@@ -5612,7 +5612,7 @@ mod tests {
         );
         // actual remains empty — the commit landed at decoy, not actual.
         let ls_actual2 = std::process::Command::new("git")
-            .args(&["ls-remote", actual_path.to_str().unwrap()])
+            .args(["ls-remote", actual_path.to_str().unwrap()])
             .output()
             .unwrap();
         assert!(
@@ -5867,7 +5867,7 @@ mod tests {
              caps_keys={caps_keys:?}"
         );
         assert!(
-            caps_keys.iter().any(|k| *k == "core.sshcommand"),
+            caps_keys.contains(&"core.sshcommand"),
             "case-varied [Core] section must produce core.sshcommand key; \
              caps_keys={caps_keys:?}"
         );
