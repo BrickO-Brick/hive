@@ -723,12 +723,16 @@ export function runWholeBlobSyncSuite({
       publishCalls++;
       if (publishCalls === 1) {
         // Edit-1 ACK resolves; relay retained the peer's same-second blob.
-        // Minted through the echo seam so it decrypts. No explicit id so the
-        // auto-generated peer-N id is lexicographically greater than our
-        // attempted evt-N — remoteAdvancedSince returns false for edit-2's
-        // baseline check (peer-N > evt-N), so edit-2 publishes without folding.
+        // Minted through the echo seam so it decrypts. Explicit id "0-peer-winner"
+        // is lexicographically lower than our attempted evt-N, so
+        // remoteAdvancedSince returns true for edit-2's baseline check and the
+        // foldSupersedingAttemptWinner repair path is exercised.
         storedHead = [
-          tauri.mintHead(makeCollisionWinnerStore(), event.created_at),
+          tauri.mintHead(
+            makeCollisionWinnerStore(),
+            event.created_at,
+            "0-peer-winner",
+          ),
         ];
         return Promise.resolve();
       }
@@ -756,6 +760,9 @@ export function runWholeBlobSyncSuite({
 
       // Release confirmation with the peer winner. adoptRemote fires stale-gen
       // (gen=1 vs pendingGeneration=2) and returns early without clearing pending.
+      // foldSupersedingAttemptWinner repairs edit-2's poisoned baseline so its
+      // pre-publish fetch publishes above the true retained head rather than
+      // adopting it away.
       releaseConfirmation();
       for (let i = 0; i < 100; i++) await Promise.resolve();
 
@@ -771,10 +778,11 @@ export function runWholeBlobSyncSuite({
         "edit-2 must still be pending after the stale-gen adopt",
       );
 
-      // Fire edit-2's debounce. Its pre-publish fetch sees the peer winner; the
-      // baseline fold (publishBaseline ← winner, since peer-N < our evt-N is
-      // false so remoteAdvancedSince is false) means it publishes above the
-      // winner rather than adopting it.
+      // Fire edit-2's debounce. Its pre-publish fetch sees the peer winner;
+      // remoteAdvancedSince returns true (0-peer-winner < evt-N) but
+      // foldSupersedingAttemptWinner already advanced publishBaseline to the
+      // winner during the stale-gen adopt, so the repair fold is applied and
+      // edit-2 publishes above the winner rather than adopting it.
       await fireDelay(2000);
       for (let i = 0; i < 100; i++) await Promise.resolve();
 
