@@ -3345,113 +3345,130 @@ mod tests {
              got: {replay_err}"
         );
 
-        // Concurrency regression: prove the advisory lock actually serializes
-        // concurrent writers. Two connections race to insert the SAME next revision
-        // (102) for the same community. The advisory lock must cause one writer to
-        // block, see the other's committed MAX, and then be rejected with 23514 from
-        // the named guard. Without the lock, both could pass the MAX check before
-        // either commits; only a PK collision (23505) would catch the duplicate —
-        // not the guard. Removing pg_advisory_xact_lock from the guard function and
-        // re-running must produce 23505 (PK) rather than 23514 (guard), proving the
-        // test is mutation-sensitive to the lock.
+        // Concurrency regression: prove the advisory lock is load-bearing. The
+        // test uses a controlled two-connection schedule:
         //
-        // A tokio::sync::Barrier synchronizes both connections so they both have a
-        // live transaction and are ready to INSERT before either proceeds. After the
-        // barrier both race to acquire the advisory lock; one wins, commits, and
-        // releases the lock; the other then sees the committed MAX and is rejected
-        // by the guard with 23514.
+        //   1. tx1 opens a transaction and inserts revision 102. The BEFORE INSERT
+        //      trigger acquires `pg_advisory_xact_lock(lock_key)` and completes the
+        //      INSERT — tx1 now holds the advisory lock until it commits.
+        //   2. tx2 opens a transaction on a second backend and issues INSERT for
+        //      revision 103. The trigger fires and blocks inside
+        //      `pg_advisory_xact_lock(lock_key)` waiting for tx1 to release.
+        //   3. We observe tx2's backend entering a Lock-wait state via
+        //      pg_stat_activity (wait_event_type='Lock', wait_event='advisory'),
+        //      with a bounded timeout — not a sleep. If the advisory-lock call is
+        //      removed from the guard, the trigger returns immediately; tx2 never
+        //      enters the advisory wait, and the poll times out, failing the test.
+        //      This is the mutation-sensitivity guarantee.
+        //   4. tx1 commits, releasing the advisory lock. tx2 unblocks, its trigger
+        //      reads the fresh MAX=102, and the INSERT succeeds (103 > 102).
+        //   5. tx2 commits. Both revisions 102 and 103 are present.
+        use std::time::Instant;
+
+        // tx1: open a transaction and insert revision 102. The INSERT returns after
+        // the trigger acquires the lock and succeeds; the advisory lock stays held
+        // until the transaction commits.
+        let mut conn1 = pool.acquire().await.expect("acquire conn1");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn1)
+            .await
+            .expect("begin tx1");
+        sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, 102, 1, $2, '2029-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(vec![0xB1_u8; 32])
+        .execute(&mut *conn1)
+        .await
+        .expect("tx1 INSERT revision 102 must succeed");
+        // tx1 holds the advisory lock. Do NOT commit yet.
+
+        // tx2: acquire a separate backend, record its PID, then issue the INSERT.
+        // The trigger will block on the advisory lock held by tx1.
         let pool2 = pool.clone();
         let pool3 = pool.clone();
-        let community_id2 = community_id;
-        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
-        let barrier2 = barrier.clone();
+        let (pid_tx, pid_rx) = tokio::sync::oneshot::channel::<i32>();
+        let tx2_task = tokio::spawn(async move {
+            let mut conn2 = pool2.acquire().await.expect("acquire conn2");
+            // Report this backend's PID so the observer can poll pg_stat_activity.
+            let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *conn2)
+                .await
+                .expect("get conn2 backend pid");
+            let _ = pid_tx.send(backend_pid);
+            sqlx::query("BEGIN")
+                .execute(&mut *conn2)
+                .await
+                .expect("begin tx2");
+            // This INSERT will block inside the trigger waiting for tx1's advisory lock.
+            let insert_r = sqlx::query(
+                "INSERT INTO identity_enrollment_policies \
+                 (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+                 VALUES ($1, 103, 1, $2, '2029-06-01T00:00:00Z')",
+            )
+            .bind(community_id)
+            .bind(vec![0xB2_u8; 32])
+            .execute(&mut *conn2)
+            .await;
+            let commit_r = sqlx::query("COMMIT").execute(&mut *conn2).await;
+            (insert_r, commit_r)
+        });
 
-        let (tx1_result, tx2_result) = tokio::join!(
-            tokio::spawn(async move {
-                let mut conn = pool.acquire().await.expect("acquire conn1");
-                sqlx::query("BEGIN")
-                    .execute(&mut *conn)
-                    .await
-                    .expect("begin1");
-                // Wait until both connections have open transactions before
-                // either races to INSERT — eliminates ordering accidents.
-                barrier.wait().await;
-                let insert_r = sqlx::query(
-                    "INSERT INTO identity_enrollment_policies \
-                     (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
-                     VALUES ($1, 102, 1, $2, '2029-01-01T00:00:00Z')",
-                )
-                .bind(community_id)
-                .bind(vec![0xB1_u8; 32])
-                .execute(&mut *conn)
-                .await;
-                let commit_r = sqlx::query("COMMIT").execute(&mut *conn).await;
-                (insert_r, commit_r)
-            }),
-            tokio::spawn(async move {
-                let mut conn = pool2.acquire().await.expect("acquire conn2");
-                sqlx::query("BEGIN")
-                    .execute(&mut *conn)
-                    .await
-                    .expect("begin2");
-                // Mirror barrier wait so both are in-flight simultaneously.
-                barrier2.wait().await;
-                let insert_r = sqlx::query(
-                    "INSERT INTO identity_enrollment_policies \
-                     (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
-                     VALUES ($1, 102, 1, $2, '2029-01-01T00:00:00Z')",
-                )
-                .bind(community_id2)
-                .bind(vec![0xB2_u8; 32])
-                .execute(&mut *conn)
-                .await;
-                let commit_r = sqlx::query("COMMIT").execute(&mut *conn).await;
-                (insert_r, commit_r)
-            }),
-        );
+        // Receive tx2's backend PID and wait until it enters an advisory-lock wait.
+        // Mutation proof: without pg_advisory_xact_lock in the guard, the trigger
+        // returns immediately; tx2 never parks on an advisory lock; the poll below
+        // times out and panics, making this test deterministically red.
+        let tx2_pid = pid_rx.await.expect("tx2 reports its backend pid");
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (\
+                     SELECT 1 FROM pg_stat_activity \
+                     WHERE pid = $1 \
+                       AND wait_event_type = 'Lock' \
+                       AND wait_event = 'advisory'\
+                 )",
+            )
+            .bind(tx2_pid)
+            .fetch_one(&pool3)
+            .await
+            .expect("poll tx2 advisory-lock wait");
+            if waiting {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "tx2 never entered advisory-lock wait — pg_advisory_xact_lock \
+                 must be present in the guard for the lock to serialize writers"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
 
-        let (insert1, commit1) = tx1_result.expect("tx1 task completed");
-        let (insert2, commit2) = tx2_result.expect("tx2 task completed");
+        // tx2 is observably blocked. Commit tx1, releasing the advisory lock.
+        sqlx::query("COMMIT")
+            .execute(&mut *conn1)
+            .await
+            .expect("tx1 COMMIT must succeed");
 
-        // The BEFORE INSERT trigger fires at statement time: the winner's INSERT
-        // succeeds (lock acquired, MAX check passes, INSERT completes), the loser's
-        // INSERT blocks waiting for the lock and then fails with 23514 when it sees
-        // the winner's committed MAX. Exactly one INSERT must succeed; exactly one
-        // must fail with 23514 from the named guard.
-        let (i1_ok, i2_ok) = (insert1.is_ok(), insert2.is_ok());
-        assert!(
-            i1_ok ^ i2_ok,
-            "exactly one of the two concurrent revision-102 inserts must succeed at INSERT; \
-             got insert1={i1_ok} insert2={i2_ok}"
-        );
-        let loser_insert = if i1_ok { insert2 } else { insert1 };
-        let loser_err = loser_insert.expect_err("loser INSERT must have failed");
-        assert!(
-            loser_err
-                .as_database_error()
-                .map(|e| e.code().as_deref() == Some("23514"))
-                .unwrap_or(false),
-            "loser must fail with check_violation (23514) from \
-             identity_enrollment_policy_revision_monotonic guard, not a PK \
-             collision — this proves the advisory lock serialized the writers; \
-             got: {loser_err}"
-        );
+        // tx2 unblocks: the trigger re-runs its SELECT MAX, sees committed 102,
+        // and INSERT 103 succeeds. Both the INSERT and COMMIT must complete.
+        let (insert2, commit2) = tx2_task.await.expect("tx2 task completed");
+        insert2.expect("tx2 INSERT revision 103 must succeed after tx1 commits");
+        commit2.expect("tx2 COMMIT must succeed");
 
-        // The winner's commit must succeed.
-        let winner_commit = if i1_ok { commit1 } else { commit2 };
-        winner_commit.expect("winner COMMIT must succeed");
-
-        // Confirm exactly 5 policy revisions are now present (1, 2, 100, 101, 102).
+        // Both revisions 102 and 103 must be present (total: 1, 2, 100, 101, 102, 103).
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM identity_enrollment_policies WHERE community_id = $1",
         )
         .bind(community_id)
-        .fetch_one(&pool3)
+        .fetch_one(&pool)
         .await
         .expect("count persisted policy revisions");
         assert_eq!(
-            count, 5,
-            "exactly five revisions must persist after concurrency race"
+            count, 6,
+            "exactly six revisions must persist after the controlled concurrency sequence"
         );
     }
 
