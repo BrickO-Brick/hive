@@ -857,7 +857,14 @@ fn test_publish_retry_seam_refreshes_affected_shared_team_head() {
     let t = team_with_members("team-retry", "Retry Team", vec!["m1".to_string()]);
 
     // Pre-share the team head with the original member prompt.
-    prepare_team_publication_at(&db_path, &keys, &t, &[m1_before.clone()], Some(true)).unwrap();
+    prepare_team_publication_at(
+        &db_path,
+        &keys,
+        &t,
+        std::slice::from_ref(&m1_before),
+        Some(true),
+    )
+    .unwrap();
     let conn = open_retention_db(&db_path).unwrap();
     let head_before = get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
         .unwrap()
