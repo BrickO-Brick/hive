@@ -15,7 +15,6 @@
 //     falseLabel:      "unstar",
 //     boundStore:      boundStarStore,
 //     mergeStores,
-//     isSubsumedBy:    isStarsStoreSubsumedBy,
 //     idsFromStore:    starredChannelIdsFromStore,
 //     readStore:       readChannelStarsStore,
 //     writeStore:      writeChannelStarsStore,
@@ -53,6 +52,8 @@ if (typeof globalThis.window === "undefined") {
  * @param {string}   cfg.falseLabel       - Action name when value=false (e.g. "unstar").
  * @param {Function} cfg.boundStore       - bound{Star|Mute}Store(store, preservedKey?).
  * @param {Function} cfg.mergeStores      - mergeStores(a, b, preservedKey?).
+ * @param {Function} cfg.isSubsumedBy     - is{Stars|Mutes}StoreSubsumedBy(a, b).
+ * @param {Function} cfg.idsFromStore     - {starred|muted}ChannelIdsFromStore(store).
  * @param {Function} cfg.readStore        - readChannel{Stars|Mutes}Store(pubkey, relay?).
  * @param {Function} cfg.writeStore       - writeChannel{Stars|Mutes}Store(pubkey, store, relay?).
  * @param {Function} cfg.storageKey       - storageKey(pubkey, relay?).
@@ -69,6 +70,7 @@ export function runMergeLaneStorageSuite({
   falseLabel,
   boundStore,
   mergeStores,
+  idsFromStore,
   readStore,
   writeStore,
   storageKey,
@@ -488,6 +490,31 @@ export function runMergeLaneStorageSuite({
       mergeStores(remote, click).channels[TARGET],
       E(false, NOW, 100),
     );
+  });
+
+  // ── idsFromStore ─────────────────────────────────────────────────────────
+
+  test(`${label}: idsFromStore: returns set of IDs where ${entryValueField}=true`, () => {
+    const result = idsFromStore({
+      version: 1,
+      channels: {
+        a: E(true, 100, 0),
+        b: E(true, 200, 0),
+        c: E(false, 300, 0),
+      },
+    });
+    assert.deepEqual([...result].sort(), ["a", "b"]);
+  });
+
+  test(`${label}: idsFromStore: all-false / empty returns empty set`, () => {
+    assert.equal(
+      idsFromStore({
+        version: 1,
+        channels: { x: E(false, 1, 0) },
+      }).size,
+      0,
+    );
+    assert.equal(idsFromStore({ version: 1, channels: {} }).size, 0);
   });
 
   // ── storageKey + readStore/writeStore ─────────────────────────────────────

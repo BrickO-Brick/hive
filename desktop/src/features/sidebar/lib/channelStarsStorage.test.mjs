@@ -5,6 +5,7 @@ import {
   mergeStores,
   parseStarPayload,
   readChannelStarsStore,
+  starredChannelIdsFromStore,
   storageKey,
   writeChannelStarsStore,
 } from "./channelStarsStorage.ts";
@@ -23,6 +24,7 @@ runMergeLaneStorageSuite({
   falseLabel: "unstar",
   boundStore: boundStarStore,
   mergeStores,
+  idsFromStore: starredChannelIdsFromStore,
   readStore: readChannelStarsStore,
   writeStore: writeChannelStarsStore,
   storageKey,
