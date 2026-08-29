@@ -13,9 +13,6 @@ pub(crate) use discovery::{
 };
 use discovery::{device_name_from_status, endpoint_id_from_status, enrich_status_payload_identity};
 
-mod snapshot;
-pub use snapshot::{snapshot_from_events, MeshSnapshot};
-
 mod catalog;
 pub(crate) use catalog::canonical_curated_model_id;
 pub use catalog::{model_catalog, MeshModelCatalog};

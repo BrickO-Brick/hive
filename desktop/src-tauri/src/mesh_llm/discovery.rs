@@ -12,7 +12,7 @@ use super::{dedupe_models, MeshAvailability, MeshModelOption, MeshServeTarget, M
 pub(super) const STATUS_FRESHNESS_SECS: u64 = 120;
 pub(crate) const MESH_STATUS_PAGE_SIZE: usize = 100;
 
-pub(super) fn status_is_fresh(event: &nostr::Event, now: u64) -> bool {
+fn status_is_fresh(event: &nostr::Event, now: u64) -> bool {
     event
         .created_at
         .as_secs()
@@ -63,7 +63,7 @@ pub fn owner_ids_from_events(events: &[nostr::Event]) -> Vec<String> {
     ids
 }
 
-pub(super) fn latest_membership_list(events: &[nostr::Event]) -> Option<BTreeSet<String>> {
+fn latest_membership_list(events: &[nostr::Event]) -> Option<BTreeSet<String>> {
     events
         .iter()
         .filter(|event| event.kind.as_u16() == 13_534)
@@ -108,7 +108,7 @@ pub(crate) fn has_membership_snapshot(events: &[nostr::Event]) -> bool {
     events.iter().any(|event| event.kind.as_u16() == 13_534)
 }
 
-pub(super) fn owner_id_from_status_event(event: &nostr::Event) -> Option<String> {
+fn owner_id_from_status_event(event: &nostr::Event) -> Option<String> {
     let content = serde_json::from_str::<serde_json::Value>(&event.content).ok()?;
     let owner_id = content
         .get("ownerId")
@@ -136,7 +136,7 @@ pub(super) fn owner_id_from_status_event(event: &nostr::Event) -> Option<String>
     Some(owner_id.to_string())
 }
 
-pub(super) fn endpoint_binding_is_valid(event: &nostr::Event, content: &serde_json::Value) -> bool {
+fn endpoint_binding_is_valid(event: &nostr::Event, content: &serde_json::Value) -> bool {
     let Some(endpoint_tokens) = super::identity::advertised_endpoint_tokens(content) else {
         return false;
     };
