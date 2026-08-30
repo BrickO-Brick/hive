@@ -827,19 +827,84 @@ fn test_all_catalog_call_paths_produce_a_dominating_tombstone() {
 mod cross_device;
 mod gate;
 
-/// Command-path regression: `set_persona_shared` (the publish-retry seam) must
-/// refresh affected shared 30178 heads after it publishes the persona head.
-///
-/// This test calls `publish_and_refresh_teams_at` — the extracted command core
-/// that production `set_persona_shared` delegates to. Deleting the
-/// `refresh_for_persona_at` call from that function turns this test RED;
-/// restoring it returns GREEN. The previous stand-in called `refresh_for_persona_at`
-/// independently, so it passed even when the production wiring was removed.
+// ── Command-path regression: publish-retry team-refresh ───────────────────────
+//
+// Both variants call `publish_and_refresh_teams_at` — the extracted command
+// core that production `set_persona_shared` delegates to. They cover:
+// - Pre-fold: persona definitions in `personas.json` (legacy path).
+// - Post-fold: definitions as keyless records in `managed-agents.json`; no
+//   `personas.json` present (the normal state after Phase 1A.2 fold).
+//
+// Deletion mutation for both: removing the `refresh_for_persona_at` call from
+// `publish_and_refresh_teams_at` turns both tests RED; restoring returns GREEN.
+// Additionally, reverting the loader to the single-store path (hard-coding
+// `personas.json`) turns only the post-fold test RED, proving the dual-store
+// fix is load-bearing.
+
+fn post_fold_write_stores(
+    base_dir: &std::path::Path,
+    teams: &[TeamRecord],
+    personas: &[AgentDefinition],
+) {
+    std::fs::write(
+        base_dir.join("teams.json"),
+        serde_json::to_string(teams).unwrap(),
+    )
+    .unwrap();
+    // Post-fold: definitions live as keyless records in managed-agents.json.
+    // personas.json is absent (retired by the fold migration).
+    let records: Vec<crate::managed_agents::ManagedAgentRecord> = personas
+        .iter()
+        .cloned()
+        .map(|p| p.into_agent_record())
+        .collect();
+    std::fs::write(
+        base_dir.join("managed-agents.json"),
+        serde_json::to_string(&records).unwrap(),
+    )
+    .unwrap();
+    // Assert personas.json absent so the test correctly models the post-fold state.
+    assert!(
+        !base_dir.join("personas.json").exists(),
+        "post-fold fixture must not have personas.json"
+    );
+}
+
+async fn run_publish_and_refresh_for_team(
+    dir: &std::path::Path,
+    db_path: &std::path::Path,
+    keys: &nostr::Keys,
+    persona_def: &AgentDefinition,
+    team_id: &str,
+) {
+    let (event, retained, persona) = crate::commands::personas::prepare_persona_publication_at(
+        db_path,
+        keys,
+        persona_def,
+        Some(true),
+    )
+    .unwrap();
+    let prepared = crate::commands::personas::PreparedPersonaPublication {
+        scope: crate::managed_agents::retention::RetentionScope {
+            db_path: db_path.to_path_buf(),
+            relay_url: "http://127.0.0.1:1".to_string(), // unreachable → queued, not error
+            owner_keys: keys.clone(),
+        },
+        event,
+        retained,
+        persona,
+    };
+    let state = crate::app_state::build_app_state();
+    crate::commands::personas::publish_and_refresh_teams_at(
+        &state, prepared, dir, keys, db_path, team_id,
+    )
+    .await
+    .unwrap();
+}
+
+/// Pre-fold variant: definitions in `personas.json`.
 #[tokio::test]
-async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head() {
-    // Scenario: persona "m1" belongs to a shared team. After a publish-retry
-    // (persona updated on disk, catalog not yet refreshed), calling the command
-    // core must update the 30178 team head to reflect the new persona content.
+async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head_pre_fold() {
     let dir = tempfile::tempdir().unwrap();
     let keys = nostr::Keys::generate();
     let owner = keys.public_key().to_hex();
@@ -848,8 +913,6 @@ async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head() {
     let m1_before = member("m1", "Original prompt.");
     let t = team_with_members("team-retry", "Retry Team", vec!["m1".to_string()]);
 
-    // Pre-share the team head with the original member prompt so the refresh
-    // has a stale head to replace.
     prepare_team_publication_at(
         &db_path,
         &keys,
@@ -869,48 +932,23 @@ async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head() {
         "pre-retry head must reflect the original persona prompt"
     );
 
-    // Simulate the persona being updated on disk (prompt rewritten) — this is
-    // the state `set_persona_shared` sees after the persona save lands.
+    // Pre-fold store: definitions in personas.json.
     let m1_after = member("m1", "Updated prompt after publish-retry.");
-    write_stores(dir.path(), std::slice::from_ref(&t), &[m1_after]);
+    write_stores(
+        dir.path(),
+        std::slice::from_ref(&t),
+        std::slice::from_ref(&m1_after),
+    );
 
-    // Build a PreparedPersonaPublication for m1 at the updated-prompt state.
-    // This mirrors what `set_persona_shared` does before calling
-    // `publish_and_refresh_teams_at`.
-    let persona_def = member("m1", "Updated prompt after publish-retry.");
-    let (event, retained, persona) = crate::commands::personas::prepare_persona_publication_at(
+    run_publish_and_refresh_for_team(
+        dir.path(),
         &db_path,
         &keys,
-        &persona_def,
-        Some(true),
-    )
-    .unwrap();
-    let prepared = crate::commands::personas::PreparedPersonaPublication {
-        scope: crate::managed_agents::retention::RetentionScope {
-            db_path: db_path.clone(),
-            relay_url: "http://127.0.0.1:1".to_string(), // unreachable → queued, not error
-            owner_keys: keys.clone(),
-        },
-        event,
-        retained,
-        persona,
-    };
-
-    // Call the extracted command core — the function `set_persona_shared` delegates to.
-    // An unreachable relay returns Ok(Queued), so the call succeeds.
-    let state = crate::app_state::build_app_state();
-    crate::commands::personas::publish_and_refresh_teams_at(
-        &state,
-        prepared,
-        dir.path(), // base_dir: teams.json + personas.json live here
-        &keys,
-        &db_path,
+        &member("m1", "Updated prompt after publish-retry."),
         "m1",
     )
-    .await
-    .unwrap();
+    .await;
 
-    // The 30178 team head must now reflect the updated persona content.
     let head_after = {
         let conn = open_retention_db(&db_path).unwrap();
         get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
@@ -921,12 +959,83 @@ async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head() {
         head_after
             .content
             .contains("Updated prompt after publish-retry."),
-        "the team 30178 must reflect the updated persona content after the command core fires"
+        "the team 30178 must reflect the updated persona content (pre-fold)"
     );
+    assert!(head_after.pending_sync, "refreshed head must be queued");
     assert!(
-        head_after.pending_sync,
-        "the refreshed 30178 head must be queued for relay sync"
+        head_after.created_at >= head_before.created_at,
+        "refreshed head must not predate the original"
     );
+}
+
+/// Post-fold variant: definitions as keyless records in `managed-agents.json`;
+/// `personas.json` absent. This is the normal state after the Phase 1A.2 fold.
+/// Reverting `refresh_for_persona_at` to read only `personas.json` turns this
+/// test RED (zero definitions → retraction instead of refresh).
+#[tokio::test]
+async fn test_set_persona_shared_publish_retry_refreshes_shared_team_head_post_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = nostr::Keys::generate();
+    let owner = keys.public_key().to_hex();
+    let db_path = scoped_db(dir.path(), "wss://a.example", &owner);
+
+    let m1_before = member("m1", "Original prompt.");
+    let t = team_with_members("team-retry", "Retry Team", vec!["m1".to_string()]);
+
+    // Pre-share the team head using the pre-fold writer (personas.json exists here).
+    prepare_team_publication_at(
+        &db_path,
+        &keys,
+        &t,
+        std::slice::from_ref(&m1_before),
+        Some(true),
+    )
+    .unwrap();
+    let head_before = {
+        let conn = open_retention_db(&db_path).unwrap();
+        get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
+            .unwrap()
+            .expect("shared head must exist before retry")
+    };
+    assert!(
+        head_before.content.contains("Original prompt."),
+        "pre-retry head must reflect the original persona prompt"
+    );
+
+    // Write the post-fold store: teams.json + managed-agents.json with a
+    // keyless record, no personas.json.
+    let m1_after = member("m1", "Updated prompt after publish-retry.");
+    post_fold_write_stores(
+        dir.path(),
+        std::slice::from_ref(&t),
+        std::slice::from_ref(&m1_after),
+    );
+
+    run_publish_and_refresh_for_team(
+        dir.path(),
+        &db_path,
+        &keys,
+        &member("m1", "Updated prompt after publish-retry."),
+        "m1",
+    )
+    .await;
+
+    // The 30178 team head must reflect the updated prompt — not be retracted.
+    let head_after = {
+        let conn = open_retention_db(&db_path).unwrap();
+        get_retained_event(&conn, KIND_TEAM_CATALOG, &owner, "team-retry")
+            .unwrap()
+            .expect(
+                "shared head must still exist after post-fold retry-path refresh — not retracted",
+            )
+    };
+    assert!(
+        head_after
+            .content
+            .contains("Updated prompt after publish-retry."),
+        "the team 30178 must reflect the updated persona content (post-fold, keyless managed-agents.json)"
+    );
+    assert!(head_after.pending_sync, "refreshed head must be queued");
     assert!(
         head_after.created_at >= head_before.created_at,
         "refreshed head must not predate the original"

@@ -439,11 +439,12 @@ pub(super) fn refresh_shared_team_catalog_heads_for_persona<R: tauri::Runtime>(
 
 /// File-system seam for [`refresh_shared_team_catalog_heads_for_persona`].
 ///
-/// Reads teams and personas from flat JSON files in `base_dir` rather than
-/// through the Tauri store. Calls the SAME `resolve_and_refresh_or_retract_at`
-/// that production uses — the seam is a thin file-loading shim with no
-/// independent logic. Tests therefore exercise the exact production code path,
-/// and production can call this seam directly when the base directory is known.
+/// Reads teams and personas from flat JSON files in `base_dir` using the same
+/// dual-store rule as boot reconciliation: legacy `personas.json` when
+/// non-empty, otherwise keyless definition records from `managed-agents.json`
+/// (see [`crate::event_sync::read_persona_definitions`]). This makes the seam
+/// correct on both pre-fold and post-fold installs. Calls the SAME
+/// `resolve_and_refresh_or_retract_at` that the AppHandle path uses.
 pub(crate) fn refresh_for_persona_at(
     base_dir: &std::path::Path,
     keys: &nostr::Keys,
@@ -454,15 +455,28 @@ pub(crate) fn refresh_for_persona_at(
 
     let teams: Vec<crate::managed_agents::TeamRecord> =
         read_json_store(&base_dir.join("teams.json"))?;
-    let personas: Vec<crate::managed_agents::AgentDefinition> =
-        read_json_store(&base_dir.join("personas.json"))?;
+    let personas = crate::event_sync::read_persona_definitions(base_dir)?;
 
     for team in &teams {
         if team.is_builtin || !team.persona_ids.iter().any(|id| id == persona_id) {
             continue;
         }
-        // Identical call to production — no parallel implementation.
-        let _ = resolve_and_refresh_or_retract_at(db_path, keys, team, &personas);
+        let outcome = resolve_and_refresh_or_retract_at(db_path, keys, team, &personas);
+        match outcome {
+            Ok(RefreshOrRetractOutcome::RemovalQueued { ref reason }) => {
+                eprintln!(
+                    "buzz-desktop: team-catalog-refresh: retracting '{}' after persona edit — {reason}",
+                    team.name
+                );
+            }
+            Err(ref e) => {
+                eprintln!(
+                    "buzz-desktop: team-catalog-refresh: '{}' after persona edit — {e}",
+                    team.name
+                );
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

@@ -766,7 +766,7 @@ pub(crate) fn read_json_store_pub<T: serde::de::DeserializeOwned>(
 /// agent store; `personas.json` survives only on a boot where the fold
 /// errored. Both callers must read the same set — a reconcile that saw an
 /// empty persona list would conclude every team's members were deleted.
-fn read_persona_definitions(
+pub(crate) fn read_persona_definitions(
     base_dir: &Path,
 ) -> Result<Vec<crate::managed_agents::AgentDefinition>, String> {
     let personas: Vec<crate::managed_agents::AgentDefinition> =

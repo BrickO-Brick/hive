@@ -432,9 +432,10 @@ export async function runAgentSaveCoordinator(
     // status — the relay was never reached. Attempt a publish-only retry via
     // set_persona_shared (reads the current on-disk definition; no field write
     // needed). If the retry succeeds, fall through to full success. If it
-    // fails (or no retry seam is available), report a terminal "saved locally,
-    // not published" state — the flush loop will re-attempt on reconnect, and
-    // the user can re-open and save again to force a retry.
+    // fails (or no retry seam is available), report only that the profile saved
+    // locally and could not be published — no automatic-retry promise and no
+    // reopen instruction (a fresh reopen seeds persisted values, emits null
+    // personaInput, and the coordinator never re-attempts publication).
     const personaName =
       observedPersona?.displayName ??
       personaInput?.displayName ??
