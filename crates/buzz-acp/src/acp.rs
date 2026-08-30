@@ -3383,7 +3383,7 @@ impl AcpClient {
                 // Extract a human-readable description from the real producer
                 // shapes — see `description_from_request_permission` for the
                 // full precedence rationale.
-                let description_owned: Option<String> = description_from_request_permission(&msg);
+                let description_owned: Option<String> = description_from_request_permission(msg);
                 let sentinel_event = {
                     let keys_opt = self.agent_relay_keys.clone();
                     let channel_id_opt = self.sentinel_channel_id;

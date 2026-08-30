@@ -290,3 +290,228 @@ test("test_forged_signer_sentinel_renders_prose_not_blank", async () => {
     "forged-signer sentinel must not render a permission card",
   );
 });
+
+// ── Fixtures for rerender tests ───────────────────────────────────────────
+
+// Nonce embedded in requestNonce — will appear in textContent if body
+// renders as prose (not suppressed), will be absent if card renders.
+const RERENDER_NONCE_SIGNER = "xrerender-signer-nonce-4f8d2e1a";
+const RERENDER_NONCE_CHANNEL = "xrerender-channel-nonce-7b3c9f05";
+
+function makePendingBody(nonce) {
+  return JSON.stringify({
+    v: 1,
+    state: "pending",
+    requestNonce: nonce,
+    sessionId: "sess-rerender",
+    turnId: "turn-rerender",
+    expiresAt: 9_999_999_999,
+    optionIds: ["opt-allow", "opt-deny"],
+    labels: { "opt-allow": "Allow once", "opt-deny": "Deny" },
+  });
+}
+
+test("test_trusted_to_forged_signer_rerender_restores_prose", async () => {
+  // Start: AGENT_PUBKEY is a registered agent → selectPermissionRequest
+  // returns non-null → permReq !== null → prose suppressed, card renders.
+  // Rerender: signerPubkey changed to ATTACKER_PUBKEY (unregistered) →
+  // comparator detects the change (signerPubkey comparison added) →
+  // component rerenders → selectPermissionRequest returns null →
+  // prose suppressed gate does NOT fire → body renders as prose → nonce visible.
+  //
+  // MUTATION PROOF: dropping `prev.message.signerPubkey === next.message.signerPubkey`
+  // from the comparator causes this test to FAIL: the memo skips the rerender,
+  // the stale permReq !== null result is kept, prose stays suppressed, nonce
+  // remains absent from textContent.
+  const React = (await import("react")).default;
+  const { render, act } = await import("@testing-library/react");
+  const { QueryClientProvider } = await import("@tanstack/react-query");
+  const { ChannelNavigationProvider } = await import(
+    "@/shared/context/ChannelNavigationContext.tsx"
+  );
+
+  const qc = await makeQc();
+  const MessageRowMod = await import("./MessageRow.tsx");
+  const MessageRow = MessageRowMod.MessageRow ?? MessageRowMod.default;
+
+  const BODY = makePendingBody(RERENDER_NONCE_SIGNER);
+  const baseMessage = {
+    id: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+    pubkey: AGENT_PUBKEY,
+    signerPubkey: AGENT_PUBKEY,
+    ownerPubkey: AGENT_PUBKEY,
+    kind: 9,
+    createdAt: 1_700_000_001,
+    isAgent: true,
+    author: "TrustedAgent",
+    avatarUrl: null,
+    time: "12:01",
+    depth: 0,
+    body: BODY,
+    tags: [],
+    reactions: [],
+    edited: false,
+    pending: false,
+    rootId: null,
+    parentId: null,
+  };
+  const profiles = {
+    [AGENT_PUBKEY]: {
+      displayName: "TrustedAgent",
+      avatarUrl: null,
+      isAgent: true,
+    },
+  };
+
+  const { container, rerender } = render(
+    React.createElement(
+      QueryClientProvider,
+      { client: qc },
+      React.createElement(
+        ChannelNavigationProvider,
+        { channels: [] },
+        React.createElement(MessageRow, {
+          message: baseMessage,
+          channelId: "test-channel",
+          profiles,
+        }),
+      ),
+    ),
+  );
+
+  // Initial render: trusted signer → permReq non-null → prose suppressed.
+  const initialText = container.textContent ?? "";
+  assert.ok(
+    !initialText.includes(RERENDER_NONCE_SIGNER),
+    "Initial render with trusted signer must suppress prose (nonce absent).",
+  );
+
+  // Rerender with forged (untrusted) signer.
+  const forgedMessage = { ...baseMessage, signerPubkey: ATTACKER_PUBKEY };
+  await act(async () => {
+    rerender(
+      React.createElement(
+        QueryClientProvider,
+        { client: qc },
+        React.createElement(
+          ChannelNavigationProvider,
+          { channels: [] },
+          React.createElement(MessageRow, {
+            message: forgedMessage,
+            channelId: "test-channel",
+            profiles,
+          }),
+        ),
+      ),
+    );
+  });
+
+  const afterText = container.textContent ?? "";
+  assert.ok(
+    afterText.includes(RERENDER_NONCE_SIGNER),
+    `After rerender with forged signer, prose must be restored — ` +
+      `nonce "${RERENDER_NONCE_SIGNER}" not found. ` +
+      `FAILS when signerPubkey is omitted from the memo comparator.`,
+  );
+});
+
+test("test_null_channelid_rerender_removes_card_restores_prose", async () => {
+  // Start: channelId "ch-a" (truthy) → selectPermissionRequest returns
+  // non-null → card renders, prose suppressed.
+  // Rerender: channelId set to null → comparator detects the change
+  // (channelId comparison added) → component rerenders → selectPermissionRequest
+  // returns null (channelId falsy) → prose gate does NOT fire → prose visible.
+  //
+  // MUTATION PROOF: dropping `prev.channelId === next.channelId` from the
+  // comparator causes this test to FAIL: the memo skips the rerender, stale
+  // permReq !== null kept, prose stays suppressed, nonce absent.
+  const React = (await import("react")).default;
+  const { render, act } = await import("@testing-library/react");
+  const { QueryClientProvider } = await import("@tanstack/react-query");
+  const { ChannelNavigationProvider } = await import(
+    "@/shared/context/ChannelNavigationContext.tsx"
+  );
+
+  const qc = await makeQc();
+  const MessageRowMod = await import("./MessageRow.tsx");
+  const MessageRow = MessageRowMod.MessageRow ?? MessageRowMod.default;
+
+  const BODY = makePendingBody(RERENDER_NONCE_CHANNEL);
+  const message = {
+    id: "cafe5678cafe5678cafe5678cafe5678cafe5678cafe5678cafe5678cafe5678",
+    pubkey: AGENT_PUBKEY,
+    signerPubkey: AGENT_PUBKEY,
+    ownerPubkey: AGENT_PUBKEY,
+    kind: 9,
+    createdAt: 1_700_000_002,
+    isAgent: true,
+    author: "TrustedAgent",
+    avatarUrl: null,
+    time: "12:02",
+    depth: 0,
+    body: BODY,
+    tags: [],
+    reactions: [],
+    edited: false,
+    pending: false,
+    rootId: null,
+    parentId: null,
+  };
+  const profiles = {
+    [AGENT_PUBKEY]: {
+      displayName: "TrustedAgent",
+      avatarUrl: null,
+      isAgent: true,
+    },
+  };
+
+  const { container, rerender } = render(
+    React.createElement(
+      QueryClientProvider,
+      { client: qc },
+      React.createElement(
+        ChannelNavigationProvider,
+        { channels: [] },
+        React.createElement(MessageRow, {
+          message,
+          channelId: "ch-a",
+          profiles,
+        }),
+      ),
+    ),
+  );
+
+  // Initial render: real channelId → prose suppressed.
+  const initialText = container.textContent ?? "";
+  assert.ok(
+    !initialText.includes(RERENDER_NONCE_CHANNEL),
+    "Initial render with real channelId must suppress prose (nonce absent).",
+  );
+
+  // Rerender with null channelId.
+  await act(async () => {
+    rerender(
+      React.createElement(
+        QueryClientProvider,
+        { client: qc },
+        React.createElement(
+          ChannelNavigationProvider,
+          { channels: [] },
+          React.createElement(MessageRow, {
+            message,
+            channelId: null,
+            profiles,
+          }),
+        ),
+      ),
+    );
+  });
+
+  const afterText = container.textContent ?? "";
+  assert.ok(
+    afterText.includes(RERENDER_NONCE_CHANNEL),
+    `After rerender with null channelId, prose must be restored — ` +
+      `nonce "${RERENDER_NONCE_CHANNEL}" not found. ` +
+      `FAILS when channelId is omitted from the memo comparator.`,
+  );
+});

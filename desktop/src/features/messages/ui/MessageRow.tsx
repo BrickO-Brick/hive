@@ -932,8 +932,7 @@ export const MessageRow = React.memo(
         </article>
       </div>
     );
-    // Callbacks (onReply, onToggleReaction) excluded: parent inline arrows get
-    // new refs every render, so including them would defeat memo.
+    // Callbacks (onReply, onToggleReaction) excluded: parent arrows defeat memo.
   },
   (prev, next) =>
     prev.message.id === next.message.id &&
@@ -952,8 +951,10 @@ export const MessageRow = React.memo(
     prev.message.pending === next.message.pending &&
     prev.message.edited === next.message.edited &&
     prev.message.editSignerPubkey === next.message.editSignerPubkey &&
-    // Value comparisons, not identity: these arrays get fresh identities on
-    // every ingest/refetch even when unchanged (see messageRowEquality.ts).
+    prev.message.signerPubkey === next.message.signerPubkey &&
+    prev.message.preEditBody === next.message.preEditBody &&
+    prev.channelId === next.channelId &&
+    // Value comparisons, not identity: fresh identities on ingest (messageRowEquality.ts).
     reactionsEqual(prev.message.reactions, next.message.reactions) &&
     tagsEqual(prev.message.tags, next.message.tags) &&
     prev.message.role === next.message.role &&
@@ -995,5 +996,4 @@ export const MessageRow = React.memo(
     prev.videoReviewCommentRootId === next.videoReviewCommentRootId &&
     prev.videoReviewContext === next.videoReviewContext,
 );
-
 MessageRow.displayName = "MessageRow";
