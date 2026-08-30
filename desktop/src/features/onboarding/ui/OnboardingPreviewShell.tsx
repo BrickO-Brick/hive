@@ -29,6 +29,7 @@ export function useOnboardingPreviewCardLayout() {
 }
 
 export function OnboardingPreviewStep({
+  allowHorizontalActionOverflow = false,
   children,
   current = 2,
   onBack,
@@ -36,6 +37,7 @@ export function OnboardingPreviewStep({
   testId,
   total,
 }: {
+  allowHorizontalActionOverflow?: boolean;
   children: React.ReactNode;
   current?: number;
   onBack?: () => void;
@@ -51,7 +53,12 @@ export function OnboardingPreviewStep({
       className={cn(
         "buzz-onboarding-step-frame relative flex w-full flex-col",
         cardLayout
-          ? "-mx-2 min-h-0 w-[calc(100%+1rem)] max-w-none flex-1 items-stretch overflow-hidden px-2 text-left"
+          ? cn(
+              "min-h-0 max-w-none flex-1 items-stretch overflow-x-hidden overflow-y-auto overscroll-contain text-left",
+              allowHorizontalActionOverflow
+                ? "-mx-6 w-[calc(100%+3rem)] px-6"
+                : "-mx-2 w-[calc(100%+1rem)] px-2",
+            )
           : "max-w-[1040px] flex-1 items-center text-center",
       )}
     >
@@ -75,7 +82,7 @@ export function OnboardingPreviewStep({
       {cardLayout ? (
         <Card
           className={cn(
-            "flex h-[min(41.5rem,calc(100dvh-3rem))] w-full max-w-[47rem] flex-col overflow-hidden rounded-[2rem] bg-white px-6 pb-6 pt-[4.5rem] text-left shadow-lg [--buzz-onboarding-cta-label:#fff] sm:px-[7.5rem] [&_.buzz-onboarding-transition-content]:!text-left [&_.buzz-onboarding-transition-line]:justify-start [&_h1+p]:!mx-0 [&_h1+p]:!mt-2 [&_h1+p]:!text-left [&_h1+p]:!text-base [&_h1+p]:!leading-6 [&_h1]:!text-left [&_h1]:!text-2xl [&_h1]:!leading-8 [&_h1]:!text-foreground",
+            "flex h-[min(41.5rem,calc(100dvh-3rem))] w-full max-w-[47rem] flex-col overflow-hidden rounded-[2rem] bg-white px-6 pb-6 pt-[4.5rem] text-left shadow-lg [--buzz-onboarding-cta-label:#fff] sm:px-[7.5rem] [&_.buzz-onboarding-transition-content]:!text-left [&_.buzz-onboarding-transition-line]:justify-center [&_h1+p]:!mx-0 [&_h1+p]:!mt-2 [&_h1+p]:!text-left [&_h1+p]:!text-base [&_h1+p]:!leading-6 [&_h1]:!text-left [&_h1]:!text-2xl [&_h1]:!leading-8 [&_h1]:!text-foreground",
           )}
           data-testid="onboarding-preview-content-card"
           ref={cardRef}

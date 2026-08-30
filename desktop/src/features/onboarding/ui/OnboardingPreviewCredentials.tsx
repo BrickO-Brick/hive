@@ -238,12 +238,17 @@ export function PreviewCredentialsFields({
         />
       </div>
       <div>
-        <label
-          className="mb-2 block text-sm font-medium text-foreground"
-          htmlFor={passwordId}
-        >
-          Password
-        </label>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <label
+            className="block text-sm font-medium text-foreground"
+            htmlFor={passwordId}
+          >
+            Password
+          </label>
+          {passwordHelp ? (
+            <div className="shrink-0 text-right">{passwordHelp}</div>
+          ) : null}
+        </div>
         <div className="relative">
           <OnboardingPreviewInput
             aria-describedby={
@@ -270,9 +275,6 @@ export function PreviewCredentialsFields({
             />
           ) : null}
         </div>
-        {passwordHelp ? (
-          <div className="mt-2 text-left">{passwordHelp}</div>
-        ) : null}
         {onConfirmPasswordChange ? (
           <div className="mt-5">
             <label

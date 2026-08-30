@@ -58,7 +58,6 @@ import {
 import { OnboardingPreviewControls } from "./OnboardingPreviewControls";
 import { OnboardingSlideTransition } from "./OnboardingSlideTransition";
 import { SetupStepPreview } from "./SetupStepPreview";
-import { ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS } from "./onboardingPreviewCardStyles";
 
 const EMAIL_SIGNUP_POLICY: JoinPolicy = {
   ageAttestationRequired: true,
@@ -335,30 +334,16 @@ function EmailSignIn({
             passwordId="onboarding-preview-sign-in-password"
             passwordPlaceholder="Enter your password"
           />
-          <div
-            className={cn(
-              "flex w-full flex-col gap-3 pt-1",
-              cardLayout ? "items-start" : "items-center",
-            )}
-          >
-            <div
-              aria-hidden
-              className="flex w-full max-w-64 items-center gap-3 text-xs text-foreground/70"
-            >
-              <span className="h-px flex-1 bg-foreground/20" />
-              <span>or</span>
-              <span className="h-px flex-1 bg-foreground/20" />
-            </div>
+          <div className="flex w-full items-baseline gap-1.5 pt-1 text-sm text-foreground/70">
+            <span>or</span>
             <Button
-              className={cn(
-                ONBOARDING_SECONDARY_CTA_CLASS,
-                cardLayout && ONBOARDING_PREVIEW_SECONDARY_CTA_CLASS,
-              )}
+              className="h-auto p-0 text-sm text-foreground"
+              data-testid="onboarding-preview-sign-in-with-key"
               onClick={onSignInWithKey}
               type="button"
-              variant="ghost"
+              variant="link"
             >
-              Sign in with a key
+              Sign in with private key
             </Button>
           </div>
         </form>
@@ -478,6 +463,7 @@ export function OnboardingPreviewApp() {
   } else if (page === "identity-key") {
     content = (
       <OnboardingPreviewStep
+        allowHorizontalActionOverflow={variant === "v3"}
         onBack={() => setPage(variant === "v3" ? "backup-options" : "landing")}
         testId="onboarding-preview-identity-key"
         total={journey.totalSteps}
@@ -540,7 +526,11 @@ export function OnboardingPreviewApp() {
     content = (
       <BackupPasswordPreview
         onBack={() => setPage("identity-key")}
-        onDone={() => setPage("identity-key")}
+        onDone={() =>
+          variant === "v3"
+            ? continueFromAccount("identity-key")
+            : setPage("identity-key")
+        }
         session={backupSession}
         total={journey.totalSteps}
         v3Presentation={variant === "v3"}

@@ -24,7 +24,6 @@ import { ComposerDockBackdrop } from "@/features/messages/ui/ComposerDockBackdro
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
-import { BuzzMark } from "@/shared/ui/buzz-logo/BuzzMark";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 
 const CHANNEL_ROW_CLASS =
@@ -34,9 +33,6 @@ const WELCOME_TEAM = [
   { name: "Honey", image: "/onboarding/starter-team/honey.png" },
   { name: "Pollen", image: "/onboarding/starter-team/pollen.png" },
 ] as const;
-const WELCOME_PREVIEW_MESSAGE =
-  "Hi, I'm Fizz. Welcome to Buzz.\n\nI can help you get oriented, answer questions, and make the first few steps feel less mysterious.\n\nFeel free to ask me what else you can do in Buzz, or just talk through what you want to build.";
-
 type PreviewThemeStyle = React.CSSProperties & Record<`--${string}`, string>;
 
 const PREVIEW_APP_THEME: PreviewThemeStyle = {
@@ -101,45 +97,6 @@ function PreviewAvatar({
     >
       {label.trim().charAt(0).toUpperCase() || "Y"}
     </span>
-  );
-}
-
-function PreviewCommunityRail({ communityName }: { communityName: string }) {
-  return (
-    <nav
-      aria-label="Communities"
-      className="flex w-14 shrink-0 flex-col items-center gap-2.5 px-2.5 pb-5 pt-12 text-black"
-    >
-      <button
-        aria-label={communityName}
-        className="relative flex size-9 items-center justify-center rounded-xl bg-black text-[#f4ef82]"
-        type="button"
-      >
-        <span className="absolute -left-2.5 h-5 w-1 rounded-r-full bg-black" />
-        <BuzzMark className="h-5 w-7" />
-      </button>
-      {WELCOME_TEAM.map((agent) => (
-        <button
-          aria-label={`${agent.name} community`}
-          className="size-9 overflow-hidden rounded-xl bg-white/65"
-          key={agent.name}
-          type="button"
-        >
-          <img
-            alt=""
-            className="h-full w-full object-contain"
-            src={agent.image}
-          />
-        </button>
-      ))}
-      <button
-        aria-label="Add community"
-        className="flex size-9 items-center justify-center rounded-2xl bg-white/65 text-black/65 transition-[border-radius,background-color] hover:rounded-xl hover:bg-black hover:text-white"
-        type="button"
-      >
-        <Plus className="size-4" />
-      </button>
-    </nav>
   );
 }
 
@@ -275,10 +232,11 @@ export function WelcomeChannelAppPreview({
 }) {
   const [draft, setDraft] = React.useState("");
   const [messages, setMessages] = React.useState<string[]>([]);
+  const [channelName, setChannelName] = React.useState("Welcome");
+  const [showRenamePrompt, setShowRenamePrompt] = React.useState(true);
   const [activePreviewAction, setActivePreviewAction] = React.useState<
     string | null
   >(null);
-  const channelName = "Welcome";
   const profileName = displayName.trim() || "Your profile";
   const submitDraft = (event: React.FormEvent) => {
     event.preventDefault();
@@ -321,7 +279,6 @@ export function WelcomeChannelAppPreview({
       style={PREVIEW_APP_THEME}
     >
       <StartupWindowDragRegion />
-      <PreviewCommunityRail communityName={communityName} />
       <PreviewSidebar
         avatarUrl={avatarUrl}
         channelName={channelName}
@@ -387,22 +344,98 @@ export function WelcomeChannelAppPreview({
           <div className="mx-auto w-full max-w-[920px]">
             <ChannelIntroBlock intro={intro} />
 
-            <div className="mt-8 flex items-start gap-3 px-3 text-left">
-              <img
-                alt="Fizz"
-                className="size-9 rounded-lg object-contain"
-                src="/onboarding/starter-team/fizz.png"
-              />
-              <div className="min-w-0 max-w-[680px]">
-                <div className="flex items-baseline gap-2">
-                  <p className="text-sm font-semibold">Fizz</p>
-                  <p className="text-xs text-muted-foreground">Now</p>
+            <section
+              className="mx-3 mt-7 max-w-[680px] border-t border-border/60 pt-6 text-left"
+              data-testid="welcome-preview-community-message"
+            >
+              <p className="text-lg font-semibold">
+                Welcome to {communityName}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Everyone starts with a private channel to get settled. This one
+                is yours. Use it to try out features, draft messages, or work
+                privately with agents.
+              </p>
+            </section>
+
+            {showRenamePrompt ? (
+              <section
+                className="mx-3 mt-6 flex max-w-[680px] items-center gap-4 rounded-2xl border border-border/70 bg-background/70 px-5 py-4 text-left"
+                data-testid="welcome-preview-rename-prompt"
+              >
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                  <Lock className="size-4" aria-hidden />
                 </div>
-                <p className="mt-1 whitespace-pre-line text-sm leading-5">
-                  {WELCOME_PREVIEW_MESSAGE}
-                </p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">Make this space yours</p>
+                  <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                    This private channel is yours to keep. Rename it for how you
+                    want to use it.
+                  </p>
+                </div>
+                <Button
+                  className="h-9 shrink-0 rounded-full px-5"
+                  onClick={() => {
+                    setChannelName(
+                      profileName === "Your profile"
+                        ? "My space"
+                        : `${profileName}’s space`,
+                    );
+                    setShowRenamePrompt(false);
+                    setActivePreviewAction("Channel details opened");
+                  }}
+                  type="button"
+                  variant="outline"
+                >
+                  Rename channel
+                </Button>
+              </section>
+            ) : null}
+
+            <section
+              className="mx-3 mt-6 max-w-[680px] overflow-hidden rounded-2xl border border-border/70 bg-muted/35 text-left"
+              data-testid="welcome-preview-agent-activation"
+            >
+              <div className="flex items-center gap-4 p-5">
+                <div className="flex shrink-0 -space-x-3">
+                  {WELCOME_TEAM.map((agent) => (
+                    <img
+                      alt={agent.name}
+                      className="size-14 rounded-2xl border-2 border-background bg-background object-contain"
+                      key={agent.name}
+                      src={agent.image}
+                    />
+                  ))}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-base font-semibold">
+                      Bring your starter team online
+                    </p>
+                    <span className="rounded-full bg-foreground/[0.08] px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                      Not connected
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-sm leading-5 text-muted-foreground">
+                    Connect an AI provider to start Fizz, Honey, and Pollen.
+                    They can help you learn Buzz and work through something
+                    you’re building.
+                  </p>
+                </div>
               </div>
-            </div>
+              <div className="flex items-center justify-between border-t border-border/60 bg-background/45 px-5 py-3">
+                <p className="text-xs text-muted-foreground">
+                  You can change providers or agents later.
+                </p>
+                <Button
+                  className="h-9 rounded-full px-5"
+                  onClick={() => setActivePreviewAction("Connect AI provider")}
+                  type="button"
+                >
+                  Connect AI provider
+                </Button>
+              </div>
+            </section>
 
             {messages.map((message, index) => (
               <div
