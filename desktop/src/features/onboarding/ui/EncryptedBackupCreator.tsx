@@ -277,6 +277,8 @@ type EncryptedBackupCreatorProps = {
   onVerified?: () => void;
   /** Replace native identity and file operations inside the dev-only preview. */
   previewMode?: boolean;
+  /** Apply the experimental V3 wording inside the safe preview. */
+  v3Presentation?: boolean;
 };
 
 /**
@@ -481,6 +483,7 @@ export function EncryptedBackupCreator({
   guidedTest = true,
   onVerified,
   previewMode = false,
+  v3Presentation = false,
 }: EncryptedBackupCreatorProps) {
   const cardLayout = useOnboardingPreviewCardLayout();
   // Hosts without a longer-lived session get a private one (settings card).
@@ -889,7 +892,7 @@ export function EncryptedBackupCreator({
                 <PendingDownloadTicker />
               ) : state.savedPassword ? (
                 "Download backup again"
-              ) : previewMode ? (
+              ) : v3Presentation ? (
                 "Save backup"
               ) : (
                 "Backup key"

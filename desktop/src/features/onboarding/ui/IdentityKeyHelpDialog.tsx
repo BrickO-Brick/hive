@@ -38,10 +38,13 @@ export function IdentityKeyHelpDialog({
   inline = false,
   onPreviewOpen,
   previewMode = false,
+  v3Presentation = previewMode,
 }: {
   inline?: boolean;
   onPreviewOpen?: () => void;
   previewMode?: boolean;
+  /** Apply the experimental V3 label and link treatment in preview mode. */
+  v3Presentation?: boolean;
 }) {
   const [isVisible, setIsVisible] = React.useState(
     previewMode ? true : hasSeenIdentityKeyHelp,
@@ -61,7 +64,7 @@ export function IdentityKeyHelpDialog({
   const triggerButton = (
     <Button
       className={cn(
-        previewMode
+        v3Presentation
           ? "text-foreground underline decoration-foreground/45 underline-offset-4 hover:decoration-foreground"
           : "text-foreground/70 hover:text-foreground",
         "transition-opacity duration-300 motion-reduce:transition-none",
@@ -74,7 +77,9 @@ export function IdentityKeyHelpDialog({
       type="button"
       variant="link"
     >
-      {previewMode ? "Learn how identity keys work" : "What’s an identity key?"}
+      {v3Presentation
+        ? "Learn how identity keys work"
+        : "What’s an identity key?"}
     </Button>
   );
 

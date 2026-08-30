@@ -41,11 +41,13 @@ export function BackupPasswordPreview({
   onDone,
   session,
   total,
+  v3Presentation = false,
 }: {
   onBack: () => void;
   onDone: () => void;
   session: EncryptedBackupSession;
   total: number;
+  v3Presentation?: boolean;
 }) {
   return (
     <OnboardingPreviewStep
@@ -59,6 +61,7 @@ export function BackupPasswordPreview({
         onBack={onDone}
         previewMode
         session={session}
+        v3Presentation={v3Presentation}
       />
     </OnboardingPreviewStep>
   );
@@ -335,7 +338,7 @@ export function CommunityChoicePreview({
           className={cn(
             "flex w-full flex-1 flex-col",
             cardLayout
-              ? "items-stretch justify-start gap-2 py-6"
+              ? "-mx-2 w-[calc(100%+1rem)] items-stretch justify-start gap-2 py-6"
               : "translate-y-16 items-center justify-center gap-20 py-8",
           )}
         >

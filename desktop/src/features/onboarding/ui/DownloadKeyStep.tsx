@@ -27,6 +27,8 @@ type DownloadKeyStepProps = {
   onBack: () => void;
   /** Use in-memory backup operations inside the dev-only workshop preview. */
   previewMode?: boolean;
+  /** Apply the experimental V3 wording inside the safe preview. */
+  v3Presentation?: boolean;
 };
 
 /**
@@ -39,6 +41,7 @@ export function DownloadKeyStep({
   session,
   onBack,
   previewMode = false,
+  v3Presentation = false,
 }: DownloadKeyStepProps) {
   const cardLayout = useOnboardingPreviewCardLayout();
   const reduceMotion = useReducedMotion() ?? false;
@@ -48,7 +51,7 @@ export function DownloadKeyStep({
   const hasVerifiedBackup = session.verified;
   const hasSelectedBackup = session.test.stage === "password";
   const showPreviewSaved =
-    previewMode && hasCreated && session.test.stage === "drop";
+    v3Presentation && hasCreated && session.test.stage === "drop";
   const primaryActionClass = cardLayout
     ? ONBOARDING_PRIMARY_CTA_CLASS
     : ONBOARDING_SECURITY_PRIMARY_CTA_CLASS;
@@ -157,6 +160,7 @@ export function DownloadKeyStep({
                 previewMode={previewMode}
                 session={session}
                 variant="spotlight"
+                v3Presentation={v3Presentation}
                 verifyButtonPortal={primaryActionSlot}
               />
             </div>
@@ -205,7 +209,7 @@ export function DownloadKeyStep({
             variant="ghost"
           >
             {hasVerifiedBackup
-              ? previewMode
+              ? v3Presentation
                 ? "Continue"
                 : "Finish"
               : "Skip for now"}

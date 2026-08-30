@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ONBOARDING_PREVIEW_LANDING_ACTIONS,
   ONBOARDING_PREVIEW_JOURNEYS,
+  resolveOnboardingPreviewJourney,
   resolveOnboardingPreviewMode,
 } from "./onboardingPreview.ts";
 
@@ -48,6 +50,16 @@ test("preview is available to the explicit E2E build", () => {
 });
 
 test("today preserves the complete workshop journey", () => {
+  assert.deepEqual(ONBOARDING_PREVIEW_LANDING_ACTIONS.today, {
+    primary: {
+      label: "Create a new identity key",
+      page: "identity-key",
+    },
+    secondary: {
+      label: "Use an existing key",
+      page: "sign-in-key",
+    },
+  });
   assert.deepEqual(ONBOARDING_PREVIEW_JOURNEYS.today, {
     afterAccount: "setup",
     afterCommunityEntry: "community-connecting",
@@ -61,8 +73,26 @@ test("today preserves the complete workshop journey", () => {
   });
 });
 
-test("V3 skips technical setup and the transitional community screens", () => {
+test("V3 uses the focused harness step and skips transitional community screens", () => {
+  assert.deepEqual(ONBOARDING_PREVIEW_LANDING_ACTIONS.v3, {
+    primary: { label: "Create an account", page: "email" },
+    secondary: { label: "Sign in", page: "sign-in" },
+  });
   assert.deepEqual(ONBOARDING_PREVIEW_JOURNEYS.v3, {
+    afterAccount: "harness-connection",
+    afterCommunityEntry: "community-profile",
+    afterProfile: "community-home",
+    communityChoiceBack: "harness-connection",
+    communityStep: 4,
+    finalStep: 5,
+    includeExistingCommunity: false,
+    profileStep: 5,
+    totalSteps: 5,
+  });
+});
+
+test("V3 can preview the same journey with harness connection deferred", () => {
+  assert.deepEqual(resolveOnboardingPreviewJourney("v3", false), {
     afterAccount: "community-choice",
     afterCommunityEntry: "community-profile",
     afterProfile: "community-home",
@@ -73,4 +103,8 @@ test("V3 skips technical setup and the transitional community screens", () => {
     profileStep: 4,
     totalSteps: 4,
   });
+  assert.equal(
+    resolveOnboardingPreviewJourney("today", false),
+    ONBOARDING_PREVIEW_JOURNEYS.today,
+  );
 });

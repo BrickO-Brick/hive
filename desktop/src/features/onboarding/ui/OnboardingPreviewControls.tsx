@@ -2,6 +2,7 @@ import { RotateCcw, ShieldCheck } from "lucide-react";
 
 import type { OnboardingPreviewVariant } from "../onboardingPreview";
 import { Button } from "@/shared/ui/button";
+import { Checkbox } from "@/shared/ui/checkbox";
 import { SegmentedControl } from "@/shared/ui/segmented-control";
 
 const PREVIEW_VARIANT_OPTIONS = [
@@ -10,10 +11,14 @@ const PREVIEW_VARIANT_OPTIONS = [
 ] as const;
 
 export function OnboardingPreviewControls({
+  harnessConnectionInOnboarding,
+  onHarnessConnectionInOnboardingChange,
   onRestart,
   onVariantChange,
   variant,
 }: {
+  harnessConnectionInOnboarding: boolean;
+  onHarnessConnectionInOnboardingChange: (included: boolean) => void;
   onRestart: () => void;
   onVariantChange: (variant: OnboardingPreviewVariant) => void;
   variant: OnboardingPreviewVariant;
@@ -56,6 +61,22 @@ export function OnboardingPreviewControls({
         testId="onboarding-preview-variant"
         value={variant}
       />
+      {variant === "v3" ? (
+        <label
+          className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+          htmlFor="onboarding-preview-harness-placement"
+        >
+          <Checkbox
+            checked={harnessConnectionInOnboarding}
+            className="border-foreground data-[state=checked]:bg-foreground data-[state=checked]:text-background"
+            id="onboarding-preview-harness-placement"
+            onCheckedChange={(checked) =>
+              onHarnessConnectionInOnboardingChange(checked === true)
+            }
+          />
+          <span>Harness connection in onboarding</span>
+        </label>
+      ) : null}
     </aside>
   );
 }

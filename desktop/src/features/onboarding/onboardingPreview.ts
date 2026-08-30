@@ -18,6 +18,8 @@ export type OnboardingPreviewPage =
   | "identity-key-help"
   | "backup-password"
   | "setup"
+  | "harness-connection"
+  | "harness-connection-detail"
   | "config"
   | "community-choice"
   | "community-entry"
@@ -28,6 +30,35 @@ export type OnboardingPreviewPage =
   | "community-home";
 
 export type OnboardingPreviewVariant = "today" | "v3";
+
+export const ONBOARDING_PREVIEW_LANDING_ACTIONS = {
+  today: {
+    primary: {
+      label: "Create a new identity key",
+      page: "identity-key",
+    },
+    secondary: {
+      label: "Use an existing key",
+      page: "sign-in-key",
+    },
+  },
+  v3: {
+    primary: {
+      label: "Create an account",
+      page: "email",
+    },
+    secondary: {
+      label: "Sign in",
+      page: "sign-in",
+    },
+  },
+} as const satisfies Record<
+  OnboardingPreviewVariant,
+  Record<
+    "primary" | "secondary",
+    { label: string; page: OnboardingPreviewPage }
+  >
+>;
 
 type OnboardingPreviewJourney = {
   afterAccount: OnboardingPreviewPage;
@@ -58,17 +89,36 @@ export const ONBOARDING_PREVIEW_JOURNEYS: Record<
     totalSteps: 7,
   },
   v3: {
-    afterAccount: "community-choice",
+    afterAccount: "harness-connection",
     afterCommunityEntry: "community-profile",
     afterProfile: "community-home",
+    communityChoiceBack: "harness-connection",
+    communityStep: 4,
+    finalStep: 5,
+    includeExistingCommunity: false,
+    profileStep: 5,
+    totalSteps: 5,
+  },
+};
+
+/** Resolve the optional V3 harness experiment without changing Today's flow. */
+export function resolveOnboardingPreviewJourney(
+  variant: OnboardingPreviewVariant,
+  harnessConnectionInOnboarding: boolean,
+): OnboardingPreviewJourney {
+  const journey = ONBOARDING_PREVIEW_JOURNEYS[variant];
+  if (variant !== "v3" || harnessConnectionInOnboarding) return journey;
+
+  return {
+    ...journey,
+    afterAccount: "community-choice",
     communityChoiceBack: null,
     communityStep: 3,
     finalStep: 4,
-    includeExistingCommunity: false,
     profileStep: 4,
     totalSteps: 4,
-  },
-};
+  };
+}
 
 /** Resolve the explicit, non-production onboarding workshop route. */
 export function resolveOnboardingPreviewMode({

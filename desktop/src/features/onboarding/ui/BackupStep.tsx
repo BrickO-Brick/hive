@@ -74,6 +74,8 @@ type BackupStepProps = {
   previewMode?: boolean;
   returningFromSecurity: boolean;
   showPreviewBackupShortcut?: boolean;
+  /** Apply the experimental V3 copy and controls inside the safe preview. */
+  v3Presentation?: boolean;
 };
 
 /**
@@ -94,6 +96,7 @@ export function BackupStep({
   previewMode = false,
   returningFromSecurity,
   showPreviewBackupShortcut = true,
+  v3Presentation = false,
 }: BackupStepProps) {
   const cardLayout = useOnboardingPreviewCardLayout();
   const reduceMotion = useReducedMotion() ?? false;
@@ -105,8 +108,8 @@ export function BackupStep({
   const [nsec, setNsec] = React.useState<string | null>(null);
   const [isRevealed, setIsRevealed] = React.useState(false);
   const canUseSpoilerParticles = React.useMemo(
-    () => previewMode && supportsSpoilerParticles(),
-    [previewMode],
+    () => v3Presentation && supportsSpoilerParticles(),
+    [v3Presentation],
   );
   const cancelledRef = React.useRef(false);
   const copiedTimerRef = React.useRef<number | null>(null);
@@ -224,9 +227,11 @@ export function BackupStep({
           )}
         >
           <h1 className="text-title font-normal text-foreground">
-            {previewMode ? "Create a private identity key" : "Backup options"}
+            {v3Presentation
+              ? "Create a private identity key"
+              : "Backup options"}
           </h1>
-          {previewMode ? (
+          {v3Presentation ? (
             <div className={cardLayout ? "mt-2" : "mt-5"}>
               <p className="text-sm leading-6 text-foreground/75">
                 This key will be how you log into Buzz. You can use it across
@@ -236,7 +241,8 @@ export function BackupStep({
                 <IdentityKeyHelpDialog
                   inline
                   onPreviewOpen={onOpenIdentityKeyHelp}
-                  previewMode
+                  previewMode={previewMode}
+                  v3Presentation={v3Presentation}
                 />
               </div>
             </div>
@@ -249,7 +255,7 @@ export function BackupStep({
           )}
         </div>
 
-        {previewMode ? (
+        {v3Presentation ? (
           <div className="flex w-full max-w-[560px] flex-1 items-center py-10">
             <div
               className="w-full space-y-6"
@@ -383,7 +389,7 @@ export function BackupStep({
           </div>
         )}
 
-        {previewMode ? (
+        {v3Presentation ? (
           <OnboardingFooter>
             <Button
               className={ONBOARDING_PRIMARY_CTA_CLASS}
@@ -421,7 +427,7 @@ export function BackupStep({
           className={`text-title font-normal text-foreground ${REVEAL_ANIMATION_CLASS}`}
           key={created ? "created" : "creating"}
         >
-          {created && previewMode
+          {created && v3Presentation
             ? "Your private identity key"
             : created
               ? "Your unique identity key has been created"
@@ -434,7 +440,7 @@ export function BackupStep({
               REVEAL_ANIMATION_CLASS,
             )}
           >
-            {previewMode ? (
+            {v3Presentation ? (
               "Don’t share this key. Anyone who has it can access your account."
             ) : (
               <>
@@ -535,7 +541,7 @@ export function BackupStep({
               </div>
             </Card>
 
-            {previewMode ? (
+            {v3Presentation ? (
               <div
                 className={cn(
                   "mt-8 flex flex-wrap items-center gap-3",
@@ -602,7 +608,7 @@ export function BackupStep({
               </p>
             ) : null}
 
-            {!previewMode ? (
+            {!v3Presentation ? (
               <p className="mx-auto mt-5 flex max-w-[440px] items-start justify-center gap-1.5 text-center text-xs leading-5 text-[var(--buzz-onboarding-backup-ink)]">
                 <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
@@ -616,7 +622,7 @@ export function BackupStep({
       )}
 
       <OnboardingFooter className={REVEAL_ANIMATION_CLASS}>
-        {previewMode && created && showPreviewBackupShortcut ? (
+        {v3Presentation && created && showPreviewBackupShortcut ? (
           <Button
             className={cn(ONBOARDING_SECONDARY_CTA_CLASS, "gap-2")}
             data-testid="backup-options-link"
@@ -635,7 +641,7 @@ export function BackupStep({
           onClick={onNext}
           type="button"
         >
-          {previewMode ? "I’ve saved my key" : "Next"}
+          {v3Presentation ? "I’ve saved my key" : "Next"}
         </Button>
       </OnboardingFooter>
     </OnboardingSlideTransition>
