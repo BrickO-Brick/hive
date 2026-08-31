@@ -13,7 +13,10 @@ import {
   getPresenceLabel,
 } from "@/features/presence/lib/presence";
 import { SetStatusDialog } from "@/features/user-status/ui/SetStatusDialog";
-import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
+import {
+  DEFAULT_USER_STATUS_EMOJI,
+  StatusEmoji,
+} from "@/features/user-status/ui/StatusEmoji";
 import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
@@ -210,15 +213,20 @@ export function ProfilePopover({
                 role="menuitem"
                 type="button"
               >
-                <Smile className="h-4 w-4 shrink-0 text-muted-foreground" />
+                {hasUserStatus ? (
+                  <StatusEmoji
+                    className="size-4 shrink-0 text-base"
+                    showTitle={false}
+                    value={userStatusEmoji || DEFAULT_USER_STATUS_EMOJI}
+                  />
+                ) : (
+                  <Smile
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0 text-muted-foreground"
+                  />
+                )}
                 {hasUserStatus ? (
                   <span className="flex min-w-0 flex-1 items-center gap-1 truncate text-popover-foreground">
-                    {userStatusEmoji ? (
-                      <StatusEmoji
-                        className="w-5 shrink-0 text-base"
-                        value={userStatusEmoji}
-                      />
-                    ) : null}
                     <span className="truncate">{userStatusText}</span>
                   </span>
                 ) : (

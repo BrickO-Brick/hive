@@ -4,6 +4,26 @@ import { installMockBridge } from "../helpers/bridge";
 
 const SHORTCODE = "buzz";
 const STATUS_TEXT = "testing custom status";
+const MOCK_IDENTITY_PUBKEY = "deadbeef".repeat(8);
+
+async function waitForMockLiveSubscription(
+  page: import("@playwright/test").Page,
+  channelName: string,
+  kind?: number,
+) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ currentChannelName, currentKind }) =>
+          window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: currentChannelName,
+            kind: currentKind,
+          }) ?? false,
+        { currentChannelName: channelName, currentKind: kind },
+      ),
+    )
+    .toBe(true);
+}
 
 async function openProfilePopover(page: import("@playwright/test").Page) {
   await page.getByTestId("open-settings").click();
@@ -45,5 +65,82 @@ test("profile popover renders a custom emoji status as an image", async ({
   const statusButton = page.getByTestId("profile-popover-set-status");
   await expect(statusButton).toContainText(STATUS_TEXT);
   await expect(statusButton.locator(`img[alt=":${SHORTCODE}:"]`)).toBeVisible();
+  await expect(statusButton.locator("svg")).toHaveCount(0);
+  await expect(statusButton.locator("[title]")).toHaveCount(0);
   await expect(statusButton).not.toContainText(`:${SHORTCODE}:`);
+});
+
+test("shows status and huddle indicators beside chat names with tooltips", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProfilePopover(page);
+  await page.getByTestId("profile-popover-set-status").click();
+  await page.getByTestId("set-status-input").fill(STATUS_TEXT);
+  await page.getByTestId("set-status-save").click();
+
+  await openProfilePopover(page);
+  const statusButton = page.getByTestId("profile-popover-set-status");
+  await expect(statusButton.getByText("💬", { exact: true })).toBeVisible();
+  await expect(statusButton.locator("svg")).toHaveCount(0);
+  await expect(statusButton.locator("[title]")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("profile-popover")).not.toBeVisible();
+
+  await page.getByTestId("channel-alice-tyler").click();
+  await waitForMockLiveSubscription(page, "alice-tyler");
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "alice-tyler",
+      content: "Status indicator fixture",
+      kind: 40002,
+      pubkey,
+    });
+  }, MOCK_IDENTITY_PUBKEY);
+  const row = page.getByTestId("message-row").filter({
+    hasText: "Status indicator fixture",
+  });
+  const statusIndicator = row.getByTestId("user-status-indicator");
+  await expect(statusIndicator).toBeVisible();
+  await expect(statusIndicator).toHaveAttribute(
+    "aria-label",
+    `💬 ${STATUS_TEXT}`,
+  );
+  await expect
+    .poll(() =>
+      statusIndicator.evaluate((element) => getComputedStyle(element).fontSize),
+    )
+    .toBe("14px");
+  await expect
+    .poll(() =>
+      statusIndicator.locator("[aria-hidden='true']").evaluate((element) => ({
+        height: getComputedStyle(element).height,
+        width: getComputedStyle(element).width,
+      })),
+    )
+    .toEqual({ height: "14px", width: "14px" });
+  await expect(statusIndicator.locator("[title]")).toHaveCount(0);
+  await statusIndicator.hover();
+  await expect(page.getByRole("tooltip")).toHaveText(STATUS_TEXT);
+
+  await waitForMockLiveSubscription(page, "alice-tyler", 48100);
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "alice-tyler",
+      content: JSON.stringify({ ephemeral_channel_id: "status-huddle" }),
+      id: "8".repeat(64),
+      kind: 48100,
+      pubkey,
+    });
+  }, MOCK_IDENTITY_PUBKEY);
+  const huddleIndicator = row.getByTestId("user-huddle-indicator");
+  await expect(huddleIndicator).toBeVisible();
+  await expect(huddleIndicator).toHaveAttribute("aria-label", "🎧 In a huddle");
+  await expect
+    .poll(() =>
+      huddleIndicator.evaluate((element) => getComputedStyle(element).fontSize),
+    )
+    .toBe("14px");
+  await huddleIndicator.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("In a huddle");
 });
