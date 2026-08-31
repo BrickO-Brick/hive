@@ -10,8 +10,6 @@ const _attachmentMenuIconSize = 24.0;
 const _attachmentMenuIconSlotWidth = 28.0;
 const _attachmentExpandedHeight = 372.0;
 
-bool get _supportsVoiceNotes => defaultTargetPlatform == TargetPlatform.iOS;
-
 @immutable
 class _AttachmentMenuLayout {
   final double itemHeight;
@@ -24,10 +22,7 @@ class _AttachmentMenuLayout {
     required this.height,
   });
 
-  factory _AttachmentMenuLayout.from(
-    BuildContext context, {
-    required int itemCount,
-  }) {
+  factory _AttachmentMenuLayout.from(BuildContext context) {
     final textPainter = TextPainter(
       text: TextSpan(text: 'Camera', style: context.textTheme.titleMedium),
       textDirection: Directionality.of(context),
@@ -41,8 +36,8 @@ class _AttachmentMenuLayout {
     textPainter.dispose();
     final contentHeight =
         (_attachmentMenuPadding * 2) +
-        (itemHeight * itemCount) +
-        (_attachmentMenuItemSpacing * math.max(0, itemCount - 1));
+        (itemHeight * 5) +
+        (_attachmentMenuItemSpacing * 4);
 
     return _AttachmentMenuLayout(
       itemHeight: itemHeight,
@@ -88,11 +83,7 @@ class _AttachmentSurfacePanel extends HookWidget {
   Widget build(BuildContext context) {
     if (surface == _AttachmentSurface.closed) return suggestionPanel;
 
-    final supportsVoiceNotes = _supportsVoiceNotes;
-    final menuLayout = _AttachmentMenuLayout.from(
-      context,
-      itemCount: supportsVoiceNotes ? 5 : 4,
-    );
+    final menuLayout = _AttachmentMenuLayout.from(context);
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
     final isExpanded =
         surface == _AttachmentSurface.camera ||
@@ -226,7 +217,6 @@ class _AttachmentSurfacePanel extends HookWidget {
                         opacity: menuOpacity,
                         child: _AttachmentMenu(
                           layout: menuLayout,
-                          supportsVoiceNotes: supportsVoiceNotes,
                           onCamera: onCamera,
                           onPhotos: onPhotos,
                           onVideo: onVideo,
@@ -464,7 +454,6 @@ class _AttachmentTrigger extends StatelessWidget {
 
 class _AttachmentMenu extends StatelessWidget {
   final _AttachmentMenuLayout layout;
-  final bool supportsVoiceNotes;
   final VoidCallback onCamera;
   final VoidCallback onPhotos;
   final VoidCallback onVideo;
@@ -473,7 +462,6 @@ class _AttachmentMenu extends StatelessWidget {
 
   const _AttachmentMenu({
     required this.layout,
-    required this.supportsVoiceNotes,
     required this.onCamera,
     required this.onPhotos,
     required this.onVideo,
@@ -487,7 +475,7 @@ class _AttachmentMenu extends StatelessWidget {
       (LucideIcons.camera, 'Camera', onCamera),
       (LucideIcons.images, 'Photos', onPhotos),
       (LucideIcons.video, 'Video', onVideo),
-      if (supportsVoiceNotes) (LucideIcons.mic, 'Voice note', onVoiceNote),
+      (LucideIcons.mic, 'Voice note', onVoiceNote),
       (LucideIcons.file, 'Files', onFiles),
     ];
     return SizedBox(

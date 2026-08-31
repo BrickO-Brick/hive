@@ -81,6 +81,24 @@ Future<String> _packagePickedVoiceNoteForUpload(String filePath) async {
   if (result == null || result.isEmpty) {
     throw Exception('Failed to prepare voice note for upload.');
   }
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    final source = File(result);
+    final destination = File(
+      '$result.faststart-${DateTime.now().microsecondsSinceEpoch}.mp4',
+    );
+    try {
+      await rewriteMp4ForFastStart(source, destination);
+      await source.delete();
+      return destination.path;
+    } catch (_) {
+      try {
+        await destination.delete();
+      } on FileSystemException {
+        // Best-effort cleanup; preserve the original platform error.
+      }
+      rethrow;
+    }
+  }
   return result;
 }
 
