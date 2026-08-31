@@ -4430,16 +4430,18 @@ mod tests {
     /// one would falsely record that the lifecycle transition occurred.
     ///
     /// Mutation sensitivity:
-    /// - Removing the `outcome_code IN (1, 3)` branch entirely makes the positive case
-    ///   red — the denied enroll receipt cannot commit alone because the guard then
-    ///   demands a paired enroll audit event (expected_event_kind = 1) that is absent.
-    /// - The negative fixture below (denied receipt + mapped success event) covers the
-    ///   `outcome_code = 2` zero-event branch: removing that ELSIF branch makes the
-    ///   negative green, failing the expected COMMIT rejection.
-    /// Applied/no-op lifecycle cardinality is covered by the applied path exercised
-    /// in `authorization_operation_receipt_event_guard_v1`'s existing constraint
-    /// trigger, verified by the mutation above (bypass makes the positive denied path
-    /// demand an absent event, confirming the guard is active for both branches).
+    /// - Removing the `outcome_code IN (1, 3)` branch entirely (or replacing it with a
+    ///   blanket early-return) makes the positive case red — the denied enroll receipt
+    ///   cannot commit alone because the guard then demands a paired enroll audit event
+    ///   (expected_event_kind = 1) that is absent.
+    /// - Removing the `ELSIF outcome_code = 2` zero-event branch makes the
+    ///   receipt-then-event negative below green (COMMIT succeeds when it must not),
+    ///   failing `expect_err`. The event-side isolation in
+    ///   `denied_lifecycle_receipt_event_side_trigger_isolated` independently confirms
+    ///   the same branch using only the `authorization_event_receipt_cardinality`
+    ///   trigger direction.
+    /// Applied/no-op lifecycle cardinality is exercised by
+    /// `applied_lifecycle_receipt_requires_exactly_one_event`.
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn denied_lifecycle_receipt_commits_without_audit_event() {
@@ -4504,10 +4506,9 @@ mod tests {
 
         // --- Negative: denied enroll receipt paired with its mapped success-
         // transition event (event_kind = 1, enrolled) must be rejected at COMMIT.
-        // Both deferred trigger directions share the same
-        // authorization_operation_receipt_event_guard_v1 function, so a single
-        // transaction exercising both INSERT paths (receipt then event) covers
-        // both trigger directions.
+        // The receipt-side deferred trigger fires here (receipt was inserted in
+        // this same transaction). The event-side trigger direction is isolated in
+        // `denied_lifecycle_receipt_event_side_trigger_isolated`.
         //
         // Seed event capacity; the authorization_events BEFORE INSERT trigger
         // requires a capacity row. No lifecycle history is needed: denied receipts
@@ -4591,6 +4592,408 @@ mod tests {
             Some("authorization_denied_lifecycle_receipt_no_success_event"),
             "expected authorization_denied_lifecycle_receipt_no_success_event constraint \
              rejection for denied receipt + success event, got: {contradiction_err}"
+        );
+    }
+
+    /// NIP-FI event-side trigger isolation: when a denied enroll receipt is already
+    /// committed (auto-commit via pool), a new independent transaction that inserts
+    /// only the mapped success-transition event must be rejected at COMMIT by
+    /// `authorization_event_receipt_cardinality` (the event-side deferred trigger).
+    ///
+    /// This isolates the `authorization_event_receipt_cardinality` trigger path.
+    /// In `denied_lifecycle_receipt_commits_without_audit_event`'s receipt-then-event
+    /// negative, the receipt-side trigger (`authorization_operation_receipt_event_cardinality`)
+    /// also fires. Here the committed receipt produces no deferred trigger, so rejection
+    /// can only come from the event-side trigger.
+    ///
+    /// Mutation sensitivity: disabling the
+    /// `authorization_event_receipt_cardinality` trigger (DROP or ALTER TABLE
+    /// DISABLE TRIGGER) makes this negative green — the COMMIT succeeds when it
+    /// must not, so `expect_err` panics.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn denied_lifecycle_receipt_event_side_trigger_isolated() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("evt-side-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Seed event capacity before any event insert.
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        // Commit a denied enroll receipt in auto-commit mode (no explicit BEGIN).
+        // This receipt produces no deferred trigger — the receipt-side deferred
+        // trigger only fires within the transaction that inserts the receipt row.
+        let op_id = uuid::Uuid::new_v4();
+        let fp = vec![0xE1_u8; 32];
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 2, $5)",
+        )
+        .bind(community_id)
+        .bind(op_id)
+        .bind(&fp)
+        .bind(vec![0xE2_u8; 32])
+        .bind(vec![0xE3_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("denied receipt must commit alone in auto-commit mode");
+
+        // Now open a NEW transaction and insert only the mapped success-transition
+        // event (event_kind = 1, enrolled). The receipt is already committed and
+        // its deferred trigger is no longer active. Rejection at COMMIT must come
+        // from authorization_event_receipt_cardinality (the event-side trigger).
+        let event_id = uuid::Uuid::new_v4();
+        let corr_id = uuid::Uuid::new_v4();
+        let attempt_id = uuid::Uuid::new_v4();
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for event-side test");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin event-side transaction");
+
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, actor_fingerprint, operation_id, request_fingerprint, \
+              correlation_id, attempt_id, semantic_fingerprint, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 1, 1, 4, 1, $3, $4, $5, $6, $7, NULL, \
+                     '2026-01-01T00:00:00Z', $8, $9)",
+        )
+        .bind(community_id)
+        .bind(event_id)
+        .bind(vec![0xE4_u8; 32]) // actor_fingerprint
+        .bind(op_id)
+        .bind(&fp)
+        .bind(corr_id)
+        .bind(attempt_id)
+        .bind(vec![0xE5_u8; 64]) // canonical_envelope
+        .bind(vec![0xE6_u8; 32]) // envelope_digest
+        .execute(&mut *conn)
+        .await
+        .expect("event INSERT must pass — event-side deferred guard fires at COMMIT");
+
+        let event_side_err = sqlx::query("COMMIT").execute(&mut *conn).await.expect_err(
+            "mapping a success-transition event to a committed denied receipt \
+                 must be rejected at COMMIT by the event-side trigger",
+        );
+        assert_eq!(
+            event_side_err
+                .as_database_error()
+                .and_then(|e| e.constraint()),
+            Some("authorization_denied_lifecycle_receipt_no_success_event"),
+            "event-side trigger must reject with authorization_denied_lifecycle_receipt_no_success_event, \
+             got: {event_side_err}"
+        );
+    }
+
+    /// NIP-FI applied lifecycle receipt: an applied core lifecycle enroll receipt
+    /// (outcome_code = 1) requires exactly one mapped success-transition event
+    /// (event_kind = 1, enrolled). This exercises the `outcome_code IN (1, 3)`
+    /// branch of `authorization_operation_receipt_event_guard_v1` at migration 42.
+    ///
+    /// Mutation sensitivity:
+    /// - Removing/bypassing the applied/no-op branch (replacing it with a blanket
+    ///   RETURN NULL) makes the positive transaction commit without an event, leaving
+    ///   the contract silently unenforced. The negative below requires the cardinality
+    ///   constraint to fire when the event is absent.
+    /// - Removing the negative assertion: the absent-event case would commit when it
+    ///   must not.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn applied_lifecycle_receipt_requires_exactly_one_event() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!(
+                "applied-lifecycle-{}.example",
+                community_id.simple()
+            ))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Enrollment policy (TOFU, mode 3).
+        let policy_revision: i64 = 1;
+        sqlx::query(
+            "INSERT INTO identity_enrollment_policies \
+             (community_id, policy_revision, enrollment_mode, policy_digest, effective_at) \
+             VALUES ($1, $2, 3, $3, '2026-01-01T00:00:00Z')",
+        )
+        .bind(community_id)
+        .bind(policy_revision)
+        .bind(vec![0xF0_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("insert enrollment policy");
+
+        // Event capacity — required by authorization_event_capacity_before_insert_v1.
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        // --- Positive: applied enroll commits with exactly one mapped event ---
+        //
+        // All cross-table FKs between identity_lifecycle_history, identity_bindings,
+        // authorization_operation_receipts, and authorization_events are
+        // DEFERRABLE INITIALLY DEFERRED — insert order within the transaction is
+        // flexible, but a pinned connection is required for BEGIN/COMMIT to share
+        // the same session. The receipt_history_cardinality trigger (migration 0041)
+        // fires at COMMIT and requires exactly one history row for applied enroll.
+        let op_id = uuid::Uuid::new_v4();
+        let binding_id = uuid::Uuid::new_v4();
+        let history_id = uuid::Uuid::new_v4();
+        let fp = vec![0xF1_u8; 32];
+        let event_id = uuid::Uuid::new_v4();
+        let corr_id = uuid::Uuid::new_v4();
+        let attempt_id = uuid::Uuid::new_v4();
+
+        let mut conn = pool
+            .acquire()
+            .await
+            .expect("acquire connection for positive case");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin positive transaction");
+
+        // History first: the receipt_history_cardinality AFTER INSERT trigger
+        // on authorization_operation_receipts is DEFERRED and checks at COMMIT
+        // time, but inserting history before receipt is idiomatic.
+        // successor_binding_version = 1 because binding_version is an identity
+        // sequence starting at 1 per community; this is the first binding.
+        sqlx::query(
+            "INSERT INTO identity_lifecycle_history \
+             (community_id, history_id, transition_kind, outcome_code, \
+              successor_binding_id, successor_binding_version, \
+              successor_lifecycle_revision, successor_state, \
+              operation_id, request_fingerprint, transition_digest) \
+             VALUES ($1, $2, 1, 1, $3, 1, 1, 1, $4, $5, $6)",
+        )
+        .bind(community_id)
+        .bind(history_id)
+        .bind(binding_id)
+        .bind(op_id)
+        .bind(&fp)
+        .bind(vec![0xF2_u8; 32])
+        .execute(&mut *conn)
+        .await
+        .expect("insert lifecycle history");
+
+        // Applied enroll receipt (operation_kind = 1, outcome_code = 1).
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op_id)
+        .bind(&fp)
+        .bind(vec![0xF3_u8; 32])
+        .bind(vec![0xF4_u8; 32])
+        .execute(&mut *conn)
+        .await
+        .expect("insert applied enroll receipt");
+
+        // Binding — birth_history_id FK is deferred; binding_version is generated.
+        sqlx::query(
+            "INSERT INTO identity_bindings \
+             (community_id, binding_id, issuer, subject, \
+              principal_fingerprint, event_author_pubkey, \
+              binding_state, lifecycle_revision, binding_provenance, \
+              policy_revision, enrollment_evidence_digest, \
+              birth_history_id, creation_operation_id, \
+              creation_request_fingerprint) \
+             VALUES ($1, $2, 'https://issuer.example', 'sub-applied', \
+                     $3, $4, 1, 1, 1, $5, $6, $7, $8, $9)",
+        )
+        .bind(community_id)
+        .bind(binding_id)
+        .bind(vec![0xF5_u8; 32]) // principal_fingerprint
+        .bind(vec![0xF6_u8; 32]) // event_author_pubkey
+        .bind(policy_revision)
+        .bind(vec![0xF7_u8; 32]) // enrollment_evidence_digest
+        .bind(history_id)
+        .bind(op_id)
+        .bind(&fp)
+        .execute(&mut *conn)
+        .await
+        .expect("insert identity binding");
+
+        // Mapped success-transition event (event_kind = 1, enrolled).
+        // actor_kind = 1 requires non-null actor_fingerprint and matching receipt FK.
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, actor_fingerprint, operation_id, request_fingerprint, \
+              correlation_id, attempt_id, semantic_fingerprint, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 1, 1, 4, 1, $3, $4, $5, $6, $7, NULL, \
+                     '2026-01-01T00:00:00Z', $8, $9)",
+        )
+        .bind(community_id)
+        .bind(event_id)
+        .bind(vec![0xF8_u8; 32]) // actor_fingerprint
+        .bind(op_id)
+        .bind(&fp)
+        .bind(corr_id)
+        .bind(attempt_id)
+        .bind(vec![0xF9_u8; 64]) // canonical_envelope
+        .bind(vec![0xFA_u8; 32]) // envelope_digest
+        .execute(&mut *conn)
+        .await
+        .expect("insert mapped success-transition event");
+
+        sqlx::query("COMMIT").execute(&mut *conn).await.expect(
+            "applied enroll receipt + exactly one mapped event must commit — \
+                 authorization_operation_receipt_event_guard_v1 applied/no-op branch",
+        );
+
+        // Confirm exactly one event committed for this operation.
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM authorization_events \
+             WHERE community_id = $1 AND operation_id = $2",
+        )
+        .bind(community_id)
+        .bind(op_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count events for applied receipt");
+        assert_eq!(
+            event_count, 1,
+            "exactly one audit event must be present for an applied enroll receipt"
+        );
+
+        // --- Negative: applied enroll receipt without a mapped event must reject ---
+        //
+        // A second applied enroll transaction that commits receipt + history + binding
+        // but no event must be rejected with authorization_operation_receipt_event_cardinality.
+        let op_neg = uuid::Uuid::new_v4();
+        let binding_neg = uuid::Uuid::new_v4();
+        let history_neg = uuid::Uuid::new_v4();
+        let fp_neg = vec![0xFB_u8; 32];
+
+        let mut conn_neg = pool
+            .acquire()
+            .await
+            .expect("acquire connection for negative case");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_neg)
+            .await
+            .expect("begin negative transaction");
+
+        sqlx::query(
+            "INSERT INTO identity_lifecycle_history \
+             (community_id, history_id, transition_kind, outcome_code, \
+              successor_binding_id, successor_binding_version, \
+              successor_lifecycle_revision, successor_state, \
+              operation_id, request_fingerprint, transition_digest) \
+             VALUES ($1, $2, 1, 1, $3, 2, 1, 1, $4, $5, $6)",
+            // successor_binding_version = 2: second binding in this community
+        )
+        .bind(community_id)
+        .bind(history_neg)
+        .bind(binding_neg)
+        .bind(op_neg)
+        .bind(&fp_neg)
+        .bind(vec![0xFC_u8; 32])
+        .execute(&mut *conn_neg)
+        .await
+        .expect("insert negative lifecycle history");
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 1, $5)",
+        )
+        .bind(community_id)
+        .bind(op_neg)
+        .bind(&fp_neg)
+        .bind(vec![0xFD_u8; 32])
+        .bind(vec![0xFE_u8; 32])
+        .execute(&mut *conn_neg)
+        .await
+        .expect("insert negative applied receipt");
+
+        sqlx::query(
+            "INSERT INTO identity_bindings \
+             (community_id, binding_id, issuer, subject, \
+              principal_fingerprint, event_author_pubkey, \
+              binding_state, lifecycle_revision, binding_provenance, \
+              policy_revision, enrollment_evidence_digest, \
+              birth_history_id, creation_operation_id, \
+              creation_request_fingerprint) \
+             VALUES ($1, $2, 'https://issuer.example', 'sub-applied-neg', \
+                     $3, $4, 1, 1, 1, $5, $6, $7, $8, $9)",
+        )
+        .bind(community_id)
+        .bind(binding_neg)
+        .bind(vec![0xE7_u8; 32]) // principal_fingerprint (distinct from positive)
+        .bind(vec![0xE8_u8; 32]) // event_author_pubkey (distinct from positive)
+        .bind(policy_revision)
+        .bind(vec![0xE9_u8; 32])
+        .bind(history_neg)
+        .bind(op_neg)
+        .bind(&fp_neg)
+        .execute(&mut *conn_neg)
+        .await
+        .expect("insert negative binding — no event inserted");
+
+        // Commit without the mapped event — guard must reject.
+        let absent_event_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_neg)
+            .await
+            .expect_err(
+                "applied enroll receipt without a mapped success-transition event \
+                 must be rejected at COMMIT",
+            );
+        assert_eq!(
+            absent_event_err
+                .as_database_error()
+                .and_then(|e| e.constraint()),
+            Some("authorization_operation_receipt_event_cardinality"),
+            "expected authorization_operation_receipt_event_cardinality rejection \
+             for applied receipt without event, got: {absent_event_err}"
         );
     }
 }
