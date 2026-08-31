@@ -87,6 +87,7 @@ export function ProjectsCategoryCreateDialogs({
             : "Choose a project for this channel."
         }
         isCreating={createChannelMutation.isPending}
+        submitEnabled={Boolean(channelProject)}
         onCreate={async (input) => {
           if (!channelProject) throw new Error("Choose a project.");
           const result = await createChannelMutation.mutateAsync({
