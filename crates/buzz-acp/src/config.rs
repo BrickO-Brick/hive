@@ -661,6 +661,35 @@ const SESSION_TITLE_SEPARATOR: &str = " · ";
 /// survives. Returns the bare agent name when there is no channel, the channel
 /// name is blank, or no room is left for it.
 pub(crate) fn compose_session_title(agent: &str, channel_name: Option<&str>) -> String {
+    compose_session_title_with_limit(agent, channel_name, SESSION_TITLE_MAX_CHARS)
+}
+
+/// Append the canonical thread root's first eight characters to a session title.
+/// Reserve suffix space before truncating names so thread identity always survives.
+/// Conversation and heartbeat sessions preserve their existing title behavior.
+pub(crate) fn compose_scoped_session_title(
+    agent: &str,
+    channel_name: Option<&str>,
+    thread_root: Option<&str>,
+) -> String {
+    let Some(root) = thread_root.filter(|root| !root.is_empty()) else {
+        return compose_session_title(agent, channel_name);
+    };
+    let short_root: String = root.chars().take(8).collect();
+    let suffix = format!("{SESSION_TITLE_SEPARATOR}{short_root}");
+    let budget = SESSION_TITLE_MAX_CHARS.saturating_sub(suffix.chars().count());
+    let agent: String = agent.chars().take(budget).collect();
+    format!(
+        "{}{suffix}",
+        compose_session_title_with_limit(agent.trim_end(), channel_name, budget)
+    )
+}
+
+fn compose_session_title_with_limit(
+    agent: &str,
+    channel_name: Option<&str>,
+    max_chars: usize,
+) -> String {
     let Some(channel) = channel_name.and_then(sanitize_session_title) else {
         return agent.to_string();
     };
@@ -668,7 +697,7 @@ pub(crate) fn compose_session_title(agent: &str, channel_name: Option<&str>) -> 
     let reserved = agent.chars().count() + SESSION_TITLE_SEPARATOR.chars().count() + 1;
     let channel: String = channel
         .chars()
-        .take(SESSION_TITLE_MAX_CHARS.saturating_sub(reserved))
+        .take(max_chars.saturating_sub(reserved))
         .collect::<String>()
         .trim_end()
         .to_string();
@@ -3043,6 +3072,36 @@ channels = "ALL"
     fn compose_session_title_drops_the_channel_when_the_agent_name_fills_the_cap() {
         let agent = "a".repeat(SESSION_TITLE_MAX_CHARS);
         assert_eq!(compose_session_title(&agent, Some("buzz-dev")), agent);
+    }
+
+    #[test]
+    fn scoped_session_title_keeps_short_root_even_when_names_fill_the_cap() {
+        let root = "abcdef01".repeat(8);
+        assert_eq!(
+            compose_scoped_session_title("Fizz", Some("buzz-dev"), Some(&root)),
+            "Fizz · #buzz-dev · abcdef01"
+        );
+        assert_eq!(
+            compose_scoped_session_title("Fizz", None, Some(&root)),
+            "Fizz · abcdef01"
+        );
+        assert_eq!(
+            compose_scoped_session_title("Fizz", Some("buzz-dev"), Some("abc")),
+            "Fizz · #buzz-dev · abc"
+        );
+        for (agent, channel) in [
+            ("🐝".repeat(80), "work".into()),
+            ("Fizz".into(), "🐝".repeat(100)),
+        ] {
+            let title = compose_scoped_session_title(&agent, Some(&channel), Some(&root));
+            assert_eq!(title.chars().count(), SESSION_TITLE_MAX_CHARS);
+            assert!(title.ends_with(" · abcdef01"));
+        }
+        assert_eq!(
+            compose_scoped_session_title("Fizz", Some("buzz-dev"), None),
+            "Fizz · #buzz-dev"
+        );
+        assert_eq!(compose_scoped_session_title("Fizz", None, None), "Fizz");
     }
 
     /// Every arg whose env var name contains KEY/SECRET/TOKEN/PASSWORD/CRED/AUTH

@@ -1580,7 +1580,7 @@ fn append_project_home(s: &mut String, channel_info: Option<&PromptChannelInfo>,
     ));
 }
 
-/// Format a `<context>` hints section based on event scope.
+/// Format a `<context>` section from the resolved session scope and turn routing.
 ///
 /// `reply_anchor` is the pre-resolved `--reply-to` target for this turn (see
 /// [`resolve_reply_anchor`]). In the thread/DM branches it threads ordinary
@@ -1588,13 +1588,14 @@ fn append_project_home(s: &mut String, channel_info: Option<&PromptChannelInfo>,
 /// top-level mention whose reply should open a new thread rooted at the
 /// triggering event.
 fn format_context_hints(
-    channel_id: Uuid,
+    scope: &SessionScope,
     channel_info: Option<&PromptChannelInfo>,
     thread_tags: &ThreadTags,
     is_dm: bool,
     conversation_context_status: ConversationContextStatus,
     reply_anchor: Option<&str>,
 ) -> String {
+    let channel_id = scope.channel_id();
     let channel_display = match channel_info {
         Some(ci) => format!("{} (#{channel_id})", ci.name),
         None => channel_id.to_string(),
@@ -1633,6 +1634,7 @@ fn format_context_hints(
         };
         let mut s = format!(
             "Scope: dm\n\
+             Session scope: dm conversation\n\
              Channel: {channel_display}\n\
              {ctx_hint}"
         );
@@ -1649,7 +1651,10 @@ fn format_context_hints(
             }
         }
         crate::prompt_framing::semantic_section("context", &s)
-    } else if let Some(ref root) = thread_tags.root_event_id {
+    } else if let Some(root) = scope
+        .root_event_id()
+        .or(thread_tags.root_event_id.as_deref())
+    {
         let ctx_hint = if complete_conversation_context {
             "Thread context included below."
         } else if has_conversation_context {
@@ -1659,8 +1664,14 @@ fn format_context_hints(
         } else {
             "Use `buzz messages thread --channel <UUID> --event <ID>` to fetch thread context."
         };
+        let session_scope = if scope.is_thread() {
+            "thread"
+        } else {
+            "channel"
+        };
         let mut s = format!(
             "Scope: thread\n\
+             Session scope: {session_scope}\n\
              Channel: {channel_display}"
         );
         append_channel_description(&mut s, channel_info);
@@ -1673,12 +1684,17 @@ fn format_context_hints(
         }
         s.push_str(&format!("\n{ctx_hint}"));
         if let Some(event_id) = reply_anchor {
-            append_reply_instruction(&mut s, event_id);
+            if thread_tags.root_event_id.is_some() {
+                append_reply_instruction(&mut s, event_id);
+            } else {
+                append_new_thread_reply_instruction(&mut s, event_id);
+            }
         }
         crate::prompt_framing::semantic_section("context", &s)
     } else {
         let mut s = format!(
             "Scope: channel\n\
+             Session scope: channel\n\
              Channel: {channel_display}"
         );
         append_channel_description(&mut s, channel_info);
@@ -1955,10 +1971,9 @@ pub(crate) fn base_section(base_prompt: &str) -> String {
 /// For agents with `protocol_version >= 2`, base_prompt and system_prompt are
 /// delivered via the system role in `session/new` and omitted from this message.
 pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<String> {
-    // Scope is always derived from the LAST event in the batch — that's the
-    // one the agent is responding to. Thread/DM context is supplementary info
-    // included alongside, not a scope override. This prevents mixed batches
-    // (thread reply + later plain message) from being mislabeled as "thread".
+    // Session identity comes from admission (`batch.scope`). The last event
+    // determines reply routing only: a top-level trigger already owns a thread
+    // session under thread policy, even though it has no NIP-10 reply tags.
     let last_event = match batch.events.last() {
         Some(e) => e,
         None => {
@@ -2015,7 +2030,7 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
         )
     };
     sections.push(format_context_hints(
-        batch.channel_id,
+        &batch.scope,
         args.channel_info,
         &thread_tags,
         is_dm,
@@ -3943,6 +3958,95 @@ mod tests {
         )
         .join("\n\n");
         assert!(prompt.contains("Scope: dm"));
+    }
+
+    #[test]
+    fn prompt_session_scope_matrix_preserves_turn_routing() {
+        use crate::scope::SessionPolicy;
+
+        let channel_id = Uuid::new_v4();
+        let top = make_event("start work");
+        let root = top.id.to_hex();
+        let reply = make_event_with_tags(
+            "continue work",
+            vec![vec![
+                "e".into(),
+                root.to_uppercase(),
+                "".into(),
+                "reply".into(),
+            ]],
+        );
+        for policy in [SessionPolicy::Channel, SessionPolicy::Thread] {
+            for is_dm in [false, true] {
+                for (event, is_reply) in [(&top, false), (&reply, true)] {
+                    let batch = FlushBatch {
+                        channel_id,
+                        scope: SessionScope::derive(policy, channel_id, is_dm, event),
+                        events: vec![BatchEvent {
+                            event: event.clone(),
+                            prompt_tag: "@mention".into(),
+                            received_at: Instant::now(),
+                        }],
+                        cancelled_events: vec![],
+                        cancel_reason: None,
+                    };
+                    let ci = PromptChannelInfo {
+                        name: "test".into(),
+                        channel_type: if is_dm { "dm" } else { "stream" }.into(),
+                        description: None,
+                        project: None,
+                    };
+                    // Session scope must remain visible on every turn, even
+                    // after standing context was sent or via modern ACP.
+                    for modern in [false, true] {
+                        let prompt = format_prompt(
+                            &batch,
+                            &FormatPromptArgs {
+                                channel_info: Some(&ci),
+                                has_system_prompt_support: modern,
+                                standing_context_sent: true,
+                                ..Default::default()
+                            },
+                        )
+                        .join("\n\n");
+                        if is_dm {
+                            assert!(prompt.contains("Session scope: dm conversation"));
+                            assert!(prompt.contains("Scope: dm"));
+                        } else if policy == SessionPolicy::Thread {
+                            assert!(prompt.contains("Session scope: thread"));
+                            assert!(prompt.contains("Scope: thread"));
+                            assert!(prompt.contains(&format!("Thread root: {root}")));
+                            assert!(prompt.contains("buzz messages thread"));
+                            assert!(!prompt.contains("buzz messages get"));
+                        } else {
+                            assert!(prompt.contains("Session scope: channel"));
+                            assert!(prompt.contains(if is_reply {
+                                "Scope: thread"
+                            } else {
+                                "Scope: channel"
+                            }));
+                        }
+                        assert_eq!(
+                            prompt.contains("This is a new top-level message"),
+                            !is_dm && !is_reply
+                        );
+                        if !is_dm || is_reply {
+                            let anchor = if is_dm {
+                                reply.id.to_hex()
+                            } else if is_reply {
+                                root.to_uppercase()
+                            } else {
+                                root.clone()
+                            };
+                            assert!(prompt.contains(&format!("--reply-to {anchor}")));
+                        } else {
+                            assert!(!prompt.contains("--reply-to"));
+                            assert!(prompt.contains("buzz messages get"));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

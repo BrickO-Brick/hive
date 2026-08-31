@@ -41,6 +41,18 @@ pub enum SessionPolicy {
     Thread,
 }
 
+impl SessionPolicy {
+    /// Append only the configured session model to the shared base instructions.
+    /// The resulting base is reused by modern and legacy ACP standing context.
+    pub(crate) fn append_session_model(self, base_prompt: &str) -> String {
+        let session_model = match self {
+            Self::Channel => include_str!("session_model_channel.md"),
+            Self::Thread => include_str!("session_model_thread.md"),
+        };
+        format!("{}\n\n{}", base_prompt.trim_end(), session_model.trim_end())
+    }
+}
+
 impl std::fmt::Display for SessionPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -164,6 +176,35 @@ mod tests {
 
     fn plain_event() -> Event {
         event_with_tags(vec![])
+    }
+
+    #[test]
+    fn session_model_is_appended_once_and_matches_policy() {
+        let base = include_str!("base_prompt.md");
+        assert!(!base.contains("## Session Model"));
+        for policy in [SessionPolicy::Channel, SessionPolicy::Thread] {
+            let prompt = policy.append_session_model(base);
+            assert!(prompt.starts_with(base.trim_end()));
+            assert_eq!(prompt.matches("## Session Model").count(), 1);
+            assert!(prompt.ends_with("assume the owning session has it handled."));
+            assert!(prompt.contains("DMs stay one conversation"));
+            assert!(prompt.contains(
+                "core memory, your workspace on disk, relay access, and channel authorization"
+            ));
+            assert!(prompt.contains("leave execution with the owning session"));
+            match policy {
+                SessionPolicy::Channel => {
+                    assert!(prompt.contains("one per-channel session"));
+                    assert!(!prompt.contains("each thread gets its own"));
+                    assert!(!prompt.contains("sibling channel thread"));
+                }
+                SessionPolicy::Thread => {
+                    assert!(prompt.contains("each thread gets its own"));
+                    assert!(prompt.contains("sibling channel thread"));
+                    assert!(!prompt.contains("one per-channel session"));
+                }
+            }
+        }
     }
 
     #[test]

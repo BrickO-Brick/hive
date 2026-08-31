@@ -34,7 +34,7 @@ use crate::acp::{
     model_in_catalog, resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer,
     ModelSwitchMethod, StopReason, SystemPromptTransport,
 };
-use crate::config::{compose_session_title, DedupMode, PermissionMode};
+use crate::config::{compose_scoped_session_title, DedupMode, PermissionMode};
 use crate::observer;
 use crate::prompt_project::{pick_authoritative_project_home, PromptProjectInfo};
 use crate::queue::{
@@ -766,18 +766,16 @@ pub struct PromptContext {
     pub turn_liveness_interval: Duration,
     pub dedup_mode: DedupMode,
     pub system_prompt: Option<String>,
-    /// Sanitized title for each new ACP session, sent as `_meta.sessionTitle`
-    /// on `session/new`. Never part of the prompt.
+    /// Sanitized agent name used to compose `_meta.sessionTitle` on session/new.
+    /// Channel sessions add the channel name; thread sessions also add the root
+    /// ID prefix. Never part of the prompt.
     pub session_title: Option<String>,
     pub team_instructions: Option<String>,
     pub heartbeat_prompt: Option<String>,
-    /// Base prompt content, or `None` if `--no-base-prompt` was passed.
-    ///
-    /// `'static` because `PromptContext` is `Arc`-shared across async tasks.
-    /// Content from `--base-prompt-file` is promoted via `Box::leak` in `main.rs`
-    /// after validated file read in `Config::from_cli()`. The compiled-in default
-    /// (`include_str!`) is inherently `'static`.
-    pub base_prompt: Option<&'static str>,
+    /// Base instructions with the configured policy's Session Model appended,
+    /// assembled once and shared by modern and legacy ACP standing context.
+    /// `None` when `--no-base-prompt` was passed.
+    pub base_prompt: Option<String>,
     pub cwd: String,
     /// REST client for pre-prompt context fetches (thread/DM history).
     pub rest_client: RestClient,
@@ -1083,9 +1081,32 @@ impl AgentPool {
         count
     }
 
+    /// Whether a channel-only control could name more than one session scope.
+    ///
+    /// Include idle and checked-out sessions, not just active turns: selecting
+    /// the first worker for an idle model switch is equally ambiguous. Stale
+    /// ownership entries may conservatively reject a control until reconciled.
+    pub fn channel_control_is_ambiguous(&self, channel_id: Uuid) -> bool {
+        let mut scopes = self
+            .session_owners
+            .keys()
+            .chain(
+                self.agents
+                    .iter()
+                    .flatten()
+                    .flat_map(|a| a.state.sessions.keys()),
+            )
+            .chain(self.task_map.values().filter_map(|m| m.scope.as_ref()))
+            .filter(|scope| scope.channel_id() == channel_id);
+        let Some(first) = scopes.next() else {
+            return false;
+        };
+        scopes.any(|scope| scope != first)
+    }
+
     /// Idle-path model switch: set `desired_model` on the idle agent for
-    /// `channel_id` and invalidate its session so the next turn re-creates the
-    /// session under the new model.
+    /// `channel_id` and invalidate its exact session scope so the next turn
+    /// re-creates that session under the new model.
     ///
     /// Pre-cancel guard: the desired model is validated against the agent's
     /// cached catalog *before* the session is invalidated, so an unsupported
@@ -1102,17 +1123,25 @@ impl AgentPool {
         model_id: &str,
         request_id: Option<String>,
     ) -> IdleSwitchResult {
-        // TODO(thread-scope): model switch is still channel-level targeted —
-        // with multiple thread sessions in a channel this picks the first idle
-        // agent holding ANY session for the channel. Channel-vs-thread control
-        // targeting is deferred (same open question as top-level !cancel /
-        // !rotate).
-        let Some(agent) = self.agents.iter_mut().flatten().find(|a| {
-            a.state
-                .sessions
-                .keys()
-                .any(|s| s.channel_id() == channel_id)
-        }) else {
+        if self.channel_control_is_ambiguous(channel_id) {
+            return IdleSwitchResult::AmbiguousTarget;
+        }
+        let Some((agent_index, scope)) =
+            self.agents.iter().enumerate().find_map(|(index, slot)| {
+                slot.as_ref().and_then(|agent| {
+                    agent
+                        .state
+                        .sessions
+                        .keys()
+                        .find(|scope| scope.channel_id() == channel_id)
+                        .cloned()
+                        .map(|scope| (index, scope))
+                })
+            })
+        else {
+            return IdleSwitchResult::NoIdleAgent;
+        };
+        let Some(agent) = self.agents.get_mut(agent_index).and_then(Option::as_mut) else {
             return IdleSwitchResult::NoIdleAgent;
         };
 
@@ -1133,7 +1162,8 @@ impl AgentPool {
         // Carry the pick's correlator so a deferred-validation miss on the next
         // turn's session creation emits a late frame the Desktop can match.
         agent.desired_model_request_id = request_id;
-        agent.state.invalidate_channel(&channel_id);
+        agent.state.invalidate_scope(&scope);
+        self.session_owners.remove(&scope);
         IdleSwitchResult::Switched
     }
 }
@@ -1141,7 +1171,9 @@ impl AgentPool {
 /// Outcome of [`AgentPool::switch_idle_agent_model`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum IdleSwitchResult {
-    /// `desired_model` set and the channel session invalidated.
+    /// More than one session scope belongs to this channel; nothing changed.
+    AmbiguousTarget,
+    /// `desired_model` set and the selected session invalidated.
     Switched,
     /// Desired model is not in the agent's cached catalog — pick rejected,
     /// session untouched.
@@ -1225,7 +1257,7 @@ struct NewSessionChannelContext<'a> {
     huddle_instructions: Option<&'a str>,
     canvas: Option<&'a str>,
     name: Option<&'a str>,
-    id: Option<Uuid>,
+    scope: Option<&'a SessionScope>,
     channel_type: Option<&'a str>,
 }
 
@@ -1246,7 +1278,11 @@ async fn create_session_and_apply_model(
         with_huddle_instructions(
             with_core(
                 with_team(
-                    framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+                    framed_system_prompt(
+                        &ctx.cwd,
+                        ctx.base_prompt.as_deref(),
+                        ctx.system_prompt.as_deref(),
+                    ),
                     ctx.team_instructions.as_deref(),
                 ),
                 agent_core,
@@ -1256,13 +1292,16 @@ async fn create_session_and_apply_model(
         channel.canvas,
     );
 
-    let session_title = ctx
-        .session_title
-        .as_deref()
-        .map(|agent_name| compose_session_title(agent_name, channel.name));
+    let session_title = ctx.session_title.as_deref().map(|agent_name| {
+        compose_scoped_session_title(
+            agent_name,
+            channel.name,
+            channel.scope.and_then(SessionScope::root_event_id),
+        )
+    });
     let mcp_servers = mcp_servers_with_git_origin(
         &ctx.mcp_servers,
-        channel.id,
+        channel.scope.map(SessionScope::channel_id),
         channel.channel_type,
         ctx.session_title.as_deref(),
     );
@@ -2238,10 +2277,9 @@ pub async fn run_prompt_task(
             if let Some(sid) = agent.state.sessions.get(scope) {
                 (sid.clone(), false)
             } else {
-                // The title is channel-qualified (`Agent · #channel`) so one
-                // agent in several channels doesn't produce identical session
-                // rows; `title_channel` comes from the single resolve above and
-                // is `None` for DM, unresolved, and unnamed channels.
+                // The title includes channel and, for thread sessions, the
+                // canonical root prefix so sibling sessions are distinguishable.
+                // DMs, unresolved, and unnamed channels omit the channel name.
                 match create_session_and_apply_model(
                     &mut agent,
                     &ctx,
@@ -2250,7 +2288,7 @@ pub async fn run_prompt_task(
                         huddle_instructions: huddle_instructions.as_deref(),
                         canvas: agent_canvas.as_deref(),
                         name: title_channel.as_deref(),
-                        id: Some(*cid),
+                        scope: Some(scope),
                         channel_type: origin_channel_type.as_deref(),
                     },
                 )
@@ -2316,7 +2354,7 @@ pub async fn run_prompt_task(
                         huddle_instructions: None,
                         canvas: None,
                         name: None,
-                        id: None,
+                        scope: None,
                         channel_type: None,
                     },
                 )
@@ -2385,7 +2423,7 @@ pub async fn run_prompt_task(
     // whenever a session is invalidated — so the replacement session re-delivers
     // rather than leaving the agent unbriefed.
     let standing = crate::queue::StandingContext {
-        base_prompt: ctx.base_prompt,
+        base_prompt: ctx.base_prompt.as_deref(),
         system_prompt: ctx.system_prompt.as_deref(),
         team_instructions: ctx.team_instructions.as_deref(),
         agent_core: agent_core.as_deref(),
@@ -2586,7 +2624,7 @@ pub async fn run_prompt_task(
                     1
                 },
                 &crate::queue::StandingContext {
-                    base_prompt: ctx.base_prompt,
+                    base_prompt: ctx.base_prompt.as_deref(),
                     ..Default::default()
                 },
                 &text,
@@ -6448,7 +6486,7 @@ done"#
         agent.state.heartbeat_session = Some("live-session".into());
 
         let mut ctx = make_prompt_context_no_owner();
-        ctx.base_prompt = Some("standing-once");
+        ctx.base_prompt = Some("standing-once".into());
         let ctx = Arc::new(ctx);
         let (result_tx, mut result_rx) = mpsc::unbounded_channel();
 
@@ -6555,7 +6593,7 @@ done"#
             .insert(conv(channel_id), ChannelDeliveryState::default());
 
         let mut ctx = make_prompt_context_no_owner();
-        ctx.base_prompt = Some("standing-once");
+        ctx.base_prompt = Some("standing-once".into());
         let ctx = Arc::new(ctx);
         let (result_tx, mut result_rx) = mpsc::unbounded_channel();
 
@@ -9736,7 +9774,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -9773,7 +9811,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -9807,7 +9845,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -9840,7 +9878,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -9880,7 +9918,7 @@ exit 0"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -9981,6 +10019,154 @@ done"#
     const OPTS_MODEL_A_AND_B: &str = r#"[{"configId":"model","category":"model","currentValue":"model-a","options":[{"value":"model-a"},{"value":"model-b"}]}]"#;
 
     #[tokio::test]
+    async fn session_new_sends_policy_specific_base_and_scope_specific_title() {
+        use crate::scope::SessionPolicy;
+
+        let channel_id = Uuid::new_v4();
+        let thread_a = SessionScope::Thread {
+            channel_id,
+            root_event_id: "abcdef01".repeat(8),
+        };
+        let thread_b = SessionScope::Thread {
+            channel_id,
+            root_event_id: "12345678".repeat(8),
+        };
+        let conversation = SessionScope::Conversation { channel_id };
+        for (policy, scope, name, channel_type, title) in [
+            (
+                SessionPolicy::Channel,
+                Some(&conversation),
+                Some("engineering"),
+                Some("stream"),
+                "Fizz · #engineering",
+            ),
+            (
+                SessionPolicy::Thread,
+                Some(&thread_a),
+                Some("engineering"),
+                Some("stream"),
+                "Fizz · #engineering · abcdef01",
+            ),
+            (
+                SessionPolicy::Thread,
+                Some(&thread_b),
+                Some("engineering"),
+                Some("stream"),
+                "Fizz · #engineering · 12345678",
+            ),
+            (
+                SessionPolicy::Thread,
+                Some(&conversation),
+                None,
+                Some("dm"),
+                "Fizz",
+            ),
+            (SessionPolicy::Thread, None, None, None, "Fizz"),
+        ] {
+            for (version, include_base) in [(1, true), (2, true), (1, false), (2, false)] {
+                let acp = spawn_switch_acp("[]", r#""result":{}"#).await;
+                let mut agent = switching_agent(acp, "unused");
+                agent.desired_model = None;
+                agent.protocol_version = version;
+                let observer = observer::ObserverHandle::in_process();
+                agent.acp.set_observer(Some(observer.clone()), 0);
+                let mut ctx = make_prompt_context_no_owner();
+                ctx.session_title = Some("Fizz".into());
+                ctx.base_prompt =
+                    include_base.then(|| policy.append_session_model("Custom base instructions."));
+                create_session_and_apply_model(
+                    &mut agent,
+                    &ctx,
+                    None,
+                    NewSessionChannelContext {
+                        huddle_instructions: None,
+                        canvas: None,
+                        name,
+                        scope,
+                        channel_type,
+                    },
+                )
+                .await
+                .unwrap();
+                let request = observer
+                    .snapshot()
+                    .into_iter()
+                    .find(|event| {
+                        event.kind == "acp_write" && event.payload["method"] == "session/new"
+                    })
+                    .unwrap()
+                    .payload;
+                assert_eq!(request["params"]["_meta"]["sessionTitle"], title);
+                let base = ctx
+                    .base_prompt
+                    .as_deref()
+                    .map(crate::queue::base_section)
+                    .unwrap_or_default();
+                if !include_base {
+                    assert!(request["params"].get("systemPrompt").is_none());
+                } else if version == 2 {
+                    let system = request["params"]["systemPrompt"].as_str().unwrap();
+                    assert!(system.starts_with(&base));
+                    assert_eq!(system.matches("## Session Model").count(), 1);
+                } else {
+                    assert!(request["params"].get("systemPrompt").is_none());
+                    let legacy = prepend_standing_for_legacy(
+                        version,
+                        &crate::queue::StandingContext {
+                            base_prompt: ctx.base_prompt.as_deref(),
+                            ..Default::default()
+                        },
+                        "hello",
+                    );
+                    assert!(legacy.starts_with(&base));
+                    assert_eq!(legacy.matches("## Session Model").count(), 1);
+                }
+                agent.acp.shutdown().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_channel_switch_preserves_all_sibling_sessions_and_model() {
+        let channel_id = Uuid::new_v4();
+        let scopes = ["a", "b"].map(|root| SessionScope::Thread {
+            channel_id,
+            root_event_id: root.repeat(64),
+        });
+        let acp = spawn_switch_acp(OPTS_MODEL_A_AND_B, r#""result":{}"#).await;
+        let mut agent = switching_agent(acp, "model-a");
+        for scope in &scopes {
+            agent
+                .state
+                .sessions
+                .insert(scope.clone(), scope.telemetry_label());
+        }
+        let original_sessions = agent.state.sessions.clone();
+        let mut pool = AgentPool::from_slots(vec![Some(agent)]);
+        assert_eq!(
+            pool.switch_idle_agent_model(channel_id, "model-b", Some("pick".into())),
+            IdleSwitchResult::AmbiguousTarget,
+        );
+        let agent = pool.agents[0].as_ref().unwrap();
+        assert_eq!(agent.desired_model.as_deref(), Some("model-a"));
+        assert_eq!(agent.desired_model_request_id, None);
+        assert_eq!(agent.state.sessions, original_sessions);
+
+        // One remaining session is an unambiguous channel control again. The
+        // selected scope and its owner are cleared without broad channel cleanup.
+        pool.invalidate_scope_session(&scopes[1]);
+        pool.record_scope_owner(scopes[0].clone(), 0);
+        assert_eq!(
+            pool.switch_idle_agent_model(channel_id, "model-b", Some("pick".into())),
+            IdleSwitchResult::Switched,
+        );
+        let agent = pool.agents[0].as_ref().unwrap();
+        assert_eq!(agent.desired_model.as_deref(), Some("model-b"));
+        assert!(!agent.state.sessions.contains_key(&scopes[0]));
+        assert!(!pool.session_owners.contains_key(&scopes[0]));
+    }
+
+    #[tokio::test]
     async fn test_applied_switch_refreshes_capabilities_from_post_switch_snapshot() {
         // The adapter accepts the switch and echoes the target model's rebuilt
         // configOptions — including a thought_level option the default model
@@ -10007,7 +10193,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10078,7 +10264,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10133,7 +10319,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10175,7 +10361,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10216,7 +10402,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10282,7 +10468,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10319,7 +10505,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10392,7 +10578,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )
@@ -10433,7 +10619,7 @@ done"#
                 huddle_instructions: None,
                 canvas: None,
                 name: None,
-                id: None,
+                scope: None,
                 channel_type: None,
             },
         )

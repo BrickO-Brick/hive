@@ -1785,8 +1785,13 @@ fn handle_cancel_turn_control(
         return;
     };
 
-    let fired = signal_in_flight_task(pool, channel_id, ControlSignal::Cancel);
-    let status = if fired { "sent" } else { "no_active_turn" };
+    let status = if pool.channel_control_is_ambiguous(channel_id) {
+        "ambiguous_target"
+    } else if signal_in_flight_task(pool, channel_id, ControlSignal::Cancel) {
+        "sent"
+    } else {
+        "no_active_turn"
+    };
     if let Some(observer) = observer {
         observer.emit(
             "control_result",
@@ -1800,6 +1805,7 @@ fn handle_cancel_turn_control(
             serde_json::json!({
                 "type": "cancel_turn",
                 "status": status,
+                "requestId": payload.get("requestId"),
             }),
         );
     }
@@ -1849,7 +1855,11 @@ fn handle_switch_model_control(
         .values()
         .any(|m| m.channel_id == Some(channel_id));
 
-    let status = if turn_in_flight {
+    let status = if pool.channel_control_is_ambiguous(channel_id) {
+        // The Desktop protocol names channels, not sessions. Never switch one
+        // arbitrary sibling and report a channel-wide success.
+        "ambiguous_target"
+    } else if turn_in_flight {
         // Busy path: deliver over the oneshot. `false` means the oneshot was
         // already consumed this turn (a prior cancel/interrupt) — the turn is
         // already ending, so the switch cannot land on it.
@@ -1868,6 +1878,7 @@ fn handle_switch_model_control(
     } else {
         // Idle path: validate against the cached catalog before invalidating.
         match pool.switch_idle_agent_model(channel_id, model_id, request_id.clone()) {
+            IdleSwitchResult::AmbiguousTarget => "ambiguous_target",
             IdleSwitchResult::Switched => "switched",
             IdleSwitchResult::UnsupportedModel => "unsupported_model",
             IdleSwitchResult::NoIdleAgent => "no_active_turn",
@@ -2690,10 +2701,17 @@ async fn tokio_main() -> Result<()> {
         team_instructions: config.team_instructions.clone(),
         base_prompt: if config.no_base_prompt {
             None
-        } else if let Some(content) = base_prompt_content {
-            Some(Box::leak(content.into_boxed_str()))
         } else {
-            Some(include_str!("base_prompt.md"))
+            // Build standing context once under the configured policy, before
+            // any session/new. Both modern ACP and legacy first-turn framing
+            // consume this same assembled base (including custom base files).
+            Some(
+                config.session_policy.append_session_model(
+                    base_prompt_content
+                        .as_deref()
+                        .unwrap_or(include_str!("base_prompt.md")),
+                ),
+            )
         },
         heartbeat_prompt: config.heartbeat_prompt.clone(),
         cwd,
@@ -4061,9 +4079,9 @@ fn mode_gate_signal(
 
 /// Send a control signal to the in-flight task for `channel_id`.
 ///
-/// Channel-targeted: picks the first in-flight task matching the channel. Used
-/// only by the desktop observer control frames (`cancel_turn` / `switch_model`),
-/// which carry a bare `channelId` and no thread context. Every thread-aware
+/// Channel-targeted: refuses channels with multiple session scopes. Used only
+/// by desktop observer frames (`cancel_turn` / `switch_model`), which carry a
+/// bare `channelId` and no thread context. Every thread-aware
 /// path — mid-turn steering/interruption and the owner `!cancel` / `!rotate`
 /// commands, whose triggering event carries NIP-10 thread tags — uses
 /// [`signal_in_flight_task_for_scope`], which targets one exact
@@ -4076,6 +4094,9 @@ fn signal_in_flight_task(
     channel_id: uuid::Uuid,
     mode: ControlSignal,
 ) -> bool {
+    if pool.channel_control_is_ambiguous(channel_id) {
+        return false;
+    }
     let entry = pool
         .task_map_mut()
         .values_mut()
@@ -5886,6 +5907,82 @@ mod owner_control_command_tests {
                 successful_steer_deliveries: HashSet::new(),
             },
         );
+    }
+
+    #[tokio::test]
+    async fn observer_channel_controls_reject_sibling_sessions_without_signalling() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let ch = Uuid::new_v4();
+        let a = thread_scope(ch, &"a".repeat(64));
+        let b = thread_scope(ch, &"b".repeat(64));
+        let (tx_a, mut rx_a) = tokio::sync::oneshot::channel();
+        let (tx_b, mut rx_b) = tokio::sync::oneshot::channel();
+        insert_task_meta(&mut pool, 0, a.clone(), tx_a);
+        insert_task_meta(&mut pool, 1, b.clone(), tx_b);
+        let observer = observer::ObserverHandle::in_process();
+        let payload = serde_json::json!({
+            "channelId": ch.to_string(), "modelId": "new-model", "requestId": "pick-1",
+        });
+
+        handle_cancel_turn_control(&payload, &mut pool, Some(&observer));
+        handle_switch_model_control(&payload, &mut pool, Some(&observer));
+        let results = observer.snapshot();
+        assert_eq!(results.len(), 2);
+        for result in results {
+            assert_eq!(result.payload["status"], "ambiguous_target");
+            assert_eq!(result.payload["requestId"], "pick-1");
+            assert_eq!(result.channel_id, Some(ch.to_string()));
+        }
+        assert_eq!(
+            rx_a.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+        assert_eq!(
+            rx_b.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        );
+
+        // Completion does not make a channel-wide model switch safe: the
+        // sibling's retained session is still a distinct target.
+        pool.record_scope_owner(a, 0);
+        pool.record_scope_owner(b, 1);
+        pool.task_map_mut().clear();
+        assert_eq!(
+            pool.switch_idle_agent_model(ch, "new-model", None),
+            IdleSwitchResult::AmbiguousTarget
+        );
+        assert!(!pool.channel_control_is_ambiguous(Uuid::new_v4()));
+    }
+
+    #[tokio::test]
+    async fn observer_channel_controls_allow_one_scope_and_ignore_other_channels() {
+        for signal in [
+            ControlSignal::Cancel,
+            ControlSignal::SwitchModel {
+                model_id: "new-model".into(),
+                request_id: Some("pick-1".into()),
+            },
+        ] {
+            let mut pool = AgentPool::from_slots(vec![]);
+            let ch = Uuid::new_v4();
+            let scope = scope::SessionScope::Conversation { channel_id: ch };
+            pool.record_scope_owner(scope.clone(), 0);
+            pool.record_scope_owner(thread_scope(Uuid::new_v4(), &"a".repeat(64)), 1);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            insert_task_meta(&mut pool, 0, scope, tx);
+            let observer = observer::ObserverHandle::in_process();
+            let payload = serde_json::json!({
+                "channelId": ch.to_string(), "modelId": "new-model", "requestId": "pick-1",
+            });
+            match &signal {
+                ControlSignal::Cancel => {
+                    handle_cancel_turn_control(&payload, &mut pool, Some(&observer))
+                }
+                _ => handle_switch_model_control(&payload, &mut pool, Some(&observer)),
+            }
+            assert_eq!(rx.await.unwrap(), signal);
+            assert_eq!(observer.snapshot()[0].payload["status"], "sent");
+        }
     }
 
     // Fix #2: mid-turn steer/interrupt must target the exact thread scope, not
