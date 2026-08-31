@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9 on supported macOS development hosts.
+    tomllib = None
 
 IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*=")
 BARE_IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*\]")
@@ -17,6 +21,10 @@ PATH_ATTRIBUTE = re.compile(r"#\s*\[\s*path\s*=\s*")
 EXTERNAL_INFRA = re.compile(r"\b(?:s3|minio|storage|docker|network)\b", re.IGNORECASE)
 RAW_STRING = re.compile(r'(?:b?r)(?P<hashes>#{0,255})"')
 CHAR_LITERAL = re.compile(r"(?:b)?'(?:\\(?:u\{[0-9A-Fa-f_]+\}|x[0-9A-Fa-f]{2}|.)|[^\\'\n])'")
+TOML_SECTION = re.compile(r"^\s*\[(?P<name>[^]]+)]\s*(?:#.*)?$")
+TOML_PACKAGE_NAME = re.compile(
+    r"^\s*name\s*=\s*(?P<quote>['\"])(?P<name>[A-Za-z0-9_-]+)(?P=quote)\s*(?:#.*)?$"
+)
 
 
 def sanitize_rust(source: str) -> str:
@@ -176,28 +184,81 @@ def integration_binary_is_postgres(path: Path) -> bool:
     )
 
 
+def standard_module_paths(parent_source: Path, module_name: str) -> list[Path]:
+    """Resolve Rust's conventional out-of-line module source paths."""
+    root = crate_root(parent_source)
+    is_crate_root = parent_source.name in {"lib.rs", "main.rs", "mod.rs"}
+    if root is not None:
+        is_crate_root = is_crate_root or (
+            parent_source.parent == root / "tests"
+            or parent_source.parent == root / "examples"
+            or parent_source.parent == root / "benches"
+            or parent_source.parent == root / "src" / "bin"
+        )
+    base = (
+        parent_source.parent
+        if is_crate_root
+        else parent_source.parent / parent_source.stem
+    )
+    return [base / f"{module_name}.rs", base / module_name / "mod.rs"]
+
+
 def out_of_line_module_index(files: list[Path]) -> dict[Path, list[str]]:
-    """Index explicit-path module names by their resolved source file."""
+    """Index explicit and conventional module names by resolved source file."""
     names: dict[Path, list[str]] = {}
     context_files = set(files)
     for directory in {path.parent for path in files}:
         context_files.update(directory.glob("*.rs"))
     for parent_source in sorted(context_files):
         source = parent_source.read_text(encoding="utf-8")
-        if "path" not in source:
-            continue
         sanitized = sanitize_rust(source)
-        for attribute in PATH_ATTRIBUTE.finditer(sanitized):
-            equals = source.find("=", attribute.start(), attribute.end())
-            parsed = parse_rust_string_literal(source, equals + 1)
-            if parsed is None:
-                continue
-            module_path, literal_end = parsed
-            module = OUT_OF_LINE_MODULE.search(sanitized, literal_end)
-            if module is not None:
-                resolved_path = (parent_source.parent / module_path).resolve()
-                names.setdefault(resolved_path, []).append(module.group("name"))
+
+        if "path" in source:
+            for attribute in PATH_ATTRIBUTE.finditer(sanitized):
+                equals = source.find("=", attribute.start(), attribute.end())
+                parsed = parse_rust_string_literal(source, equals + 1)
+                if parsed is None:
+                    continue
+                module_path, literal_end = parsed
+                module = OUT_OF_LINE_MODULE.search(sanitized, literal_end)
+                if module is not None:
+                    resolved_path = (parent_source.parent / module_path).resolve()
+                    module_names = names.setdefault(resolved_path, [])
+                    if module.group("name") not in module_names:
+                        module_names.append(module.group("name"))
+
+        for module in OUT_OF_LINE_MODULE.finditer(sanitized):
+            module_name = module.group("name")
+            for candidate in standard_module_paths(parent_source, module_name):
+                if candidate.is_file():
+                    module_names = names.setdefault(candidate.resolve(), [])
+                    if module_name not in module_names:
+                        module_names.append(module_name)
     return names
+
+
+def package_name(root: Path) -> str:
+    """Read Cargo's package name with a Python 3.9-compatible fallback."""
+    manifest_path = root / "Cargo.toml"
+    if tomllib is not None:
+        try:
+            with manifest_path.open("rb") as manifest:
+                package = tomllib.load(manifest).get("package", {})
+        except tomllib.TOMLDecodeError as error:
+            raise ValueError(f"invalid Cargo manifest {manifest_path}: {error}") from error
+        name = package.get("name")
+        if isinstance(name, str) and name:
+            return name
+    else:
+        in_package = False
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            section = TOML_SECTION.match(line)
+            if section is not None:
+                in_package = section.group("name").strip() == "package"
+                continue
+            if in_package and (match := TOML_PACKAGE_NAME.match(line)) is not None:
+                return match.group("name")
+    raise ValueError(f"discoverable PostgreSQL tests lack a package name: {root}")
 
 
 def file_has_postgres_lane_test(
@@ -233,15 +294,7 @@ def postgres_packages(
         if file_has_postgres_lane_test(path, out_of_line_modules)
         if (root := crate_root(path)) is not None
     }
-    packages = []
-    for root in roots:
-        with (root / "Cargo.toml").open("rb") as manifest:
-            package = tomllib.load(manifest).get("package", {})
-        name = package.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"discoverable PostgreSQL tests lack a package name: {root}")
-        packages.append(name)
-    return sorted(packages)
+    return sorted(package_name(root) for root in roots)
 
 
 def validate_file(
@@ -364,7 +417,7 @@ def main() -> int:
     if print_packages:
         try:
             packages = postgres_packages(files, out_of_line_modules)
-        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+        except (OSError, ValueError) as error:
             print(error, file=sys.stderr)
             return 1
         for package in packages:

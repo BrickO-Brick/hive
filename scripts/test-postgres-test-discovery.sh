@@ -6,7 +6,7 @@ checker="$repo_root/scripts/check-postgres-test-discovery.py"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/buzz-postgres-discovery.XXXXXX")"
 trap 'rm -rf "$fixture_root"' EXIT
 
-mkdir -p "$fixture_root/src/tests" "$fixture_root/tests/common"
+mkdir -p "$fixture_root/src/standard" "$fixture_root/src/tests" "$fixture_root/tests/common"
 
 cat >"$fixture_root/Cargo.toml" <<'TOML'
 [package]
@@ -40,6 +40,9 @@ cat >"$fixture_root/src/lib.rs" <<'RS'
 #[cfg(test)]
 #[path = "out_of_line.rs"]
 mod postgres_tests;
+
+#[cfg(test)]
+mod standard;
 RS
 
 cat >"$fixture_root/src/out_of_line.rs" <<'RS'
@@ -48,12 +51,36 @@ cat >"$fixture_root/src/out_of_line.rs" <<'RS'
 fn out_of_line_database_test() {}
 RS
 
+cat >"$fixture_root/src/standard.rs" <<'RS'
+mod postgres_tests;
+RS
+
+cat >"$fixture_root/src/standard/postgres_tests.rs" <<'RS'
+#[test]
+#[ignore = "requires PostgreSQL"]
+fn standard_out_of_line_database_test() {}
+RS
+
 python3 "$checker" "$fixture_root"
 python3 "$checker" "$fixture_root/src/out_of_line.rs"
 
 packages="$("$repo_root/scripts/postgres-test-packages.sh" "$fixture_root")"
 if [[ "$packages" != "postgres-discovery-fixture" ]]; then
   echo "expected fixture package discovery, got: $packages" >&2
+  exit 1
+fi
+
+mkdir -p "$fixture_root/no-tomllib"
+cat >"$fixture_root/no-tomllib/tomllib.py" <<'PY'
+raise ModuleNotFoundError("simulate Python 3.9 without tomllib")
+PY
+
+fallback_packages="$(
+  PYTHONPATH="$fixture_root/no-tomllib" \
+    python3 "$checker" --print-packages "$fixture_root"
+)"
+if [[ "$fallback_packages" != "postgres-discovery-fixture" ]]; then
+  echo "expected Python 3.9-compatible package discovery, got: $fallback_packages" >&2
   exit 1
 fi
 
