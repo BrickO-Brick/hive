@@ -710,6 +710,18 @@ jobs:
         env:
           DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
           TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
+      - name: Community archive fence PostgreSQL tests
+        # Exact archive-transition matching and row-lock serialization require
+        # real Postgres and are ignored by the infrastructure-free unit job.
+        run: |
+          filter='(package(buzz-db) and test(=store::community::tests::archive_disconnect_fence_tracks_the_exact_archive_transition)) or (package(buzz-db) and test(=store::community::tests::inactive_community_fence_holds_the_row_lock_through_disconnect))'
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E "${filter}" \
+            --run-ignored ignored-only
+        env:
+          DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
+          TEST_DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
       - name: Writer session timeout guardrails
         run: |
           cargo nextest run \
