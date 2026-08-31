@@ -478,6 +478,21 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Tune disposable PostgreSQL
+        env:
+          PGPASSWORD: ${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}
+        run: |
+          # Database-per-test cloning forces checkpoints. Durability is redundant
+          # for this disposable service and makes runtime depend on runner disk I/O.
+          psql --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
+          ALTER SYSTEM SET fsync = off;
+          ALTER SYSTEM SET full_page_writes = off;
+          ALTER SYSTEM SET synchronous_commit = off;
+          SELECT pg_reload_conf();
+          SQL
+          psql --dbname postgres --tuples-only --no-align --command \
+            "SELECT bool_and(setting = 'off') FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'synchronous_commit')" \
+            | grep --fixed-strings --line-regexp t
       - name: Install cargo-nextest
         uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
         with:
