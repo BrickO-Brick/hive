@@ -699,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 40);
+        assert_eq!(migrations.len(), 41);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1242,11 +1242,11 @@ mod tests {
             "migration 39 must register relay_operator_audit in _operator_global_tables"
         );
 
-        assert_eq!(migrations[39].version, 40);
-        let project_revisions = migrations[39].sql.as_str();
+        assert_eq!(migrations[40].version, 41);
+        let project_revisions = migrations[40].sql.as_str();
         assert!(
             project_revisions.contains("CREATE TABLE project_revision_heads"),
-            "migration 40 must create project_revision_heads"
+            "migration 41 must create project_revision_heads"
         );
     }
 
