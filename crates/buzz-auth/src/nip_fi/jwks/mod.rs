@@ -27,7 +27,7 @@
 
 use super::config::MAX_JWKS_KEYS;
 use super::verifier::{AssertionKeySet, IssuerKeySource};
-use buzz_core::network::is_private_ip;
+use buzz_core::network::is_not_global_unicast;
 use chrono::{DateTime, Duration, Utc};
 use futures_util::StreamExt as _;
 use jsonwebtoken::jwk::JwkSet;
@@ -73,12 +73,12 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
     }
     // Reject bare private/reserved IP targets at construction time.
     if let Some(url::Host::Ipv4(addr)) = parsed.host() {
-        if is_private_ip(&std::net::IpAddr::V4(addr)) {
+        if is_not_global_unicast(&std::net::IpAddr::V4(addr)) {
             return Err(JwksFetchError::InvalidUri);
         }
     }
     if let Some(url::Host::Ipv6(addr)) = parsed.host() {
-        if is_private_ip(&std::net::IpAddr::V6(addr)) {
+        if is_not_global_unicast(&std::net::IpAddr::V6(addr)) {
             return Err(JwksFetchError::InvalidUri);
         }
     }
@@ -104,7 +104,7 @@ pub(crate) async fn resolve_and_check_ssrf(
 ) -> Result<std::net::IpAddr, JwksFetchError> {
     // Fast path: if the host is already a parsed IP literal, skip the resolver.
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if is_private_ip(&ip) {
+        if is_not_global_unicast(&ip) {
             return Err(JwksFetchError::InvalidUri);
         }
         return Ok(ip);
@@ -126,7 +126,7 @@ pub(crate) async fn resolve_and_check_ssrf(
         return Err(JwksFetchError::NetworkError);
     }
     for ip in &addrs {
-        if is_private_ip(ip) {
+        if is_not_global_unicast(ip) {
             return Err(JwksFetchError::InvalidUri);
         }
     }
@@ -147,8 +147,10 @@ struct IssuerState {
     snapshot: Option<CachedSnapshot>,
     /// Advances only when `content_digest` changes; never wraps (saturating).
     generation_counter: u64,
-    /// True while a refresh task owns the fetch lock. Prevents thundering-herd.
-    refresh_in_flight: bool,
+    /// Owned permit for in-flight refresh. Held across the complete fetch +
+    /// state commit; dropped automatically if the caller future is cancelled.
+    /// `try_lock_owned()` succeeds iff no refresh is in progress.
+    refresh_permit: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl IssuerState {
@@ -156,7 +158,7 @@ impl IssuerState {
         Self {
             snapshot: None,
             generation_counter: 0,
-            refresh_in_flight: false,
+            refresh_permit: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -230,7 +232,7 @@ pub trait JwksFetcher: super::verifier::sealed::Sealed + Send + Sync + 'static {
 ///
 /// Per-fetch boundary enforcement:
 /// - hostname DNS is resolved and every address checked against
-///   `buzz_core::network::is_private_ip` before the request is sent;
+///   `buzz_core::network::is_not_global_unicast` before the request is sent;
 /// - the request is pinned to the validated address to prevent DNS rebinding
 ///   TOCTOU (the OS resolver is called once per fetch, not once per URL);
 /// - the complete operation (resolution, connect, headers, body streaming) is
@@ -464,9 +466,11 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
     /// Returns the cached snapshot for `issuer`, refreshing inline if stale.
     /// Returns `None` when no live snapshot is available and the fetch fails.
     ///
-    /// If a refresh is already in flight for this issuer, returns the current
-    /// snapshot rather than blocking — coalesces concurrent callers. Drops
-    /// both locks before the async fetch so other issuers are not blocked.
+    /// Coalesces concurrent callers: a second call while a refresh is in
+    /// flight returns the current snapshot immediately rather than starting a
+    /// second fetch. The refresh permit is an RAII guard — if this future is
+    /// cancelled while DNS, HTTP, or streaming is pending, the guard drops and
+    /// the permit is released, so the next caller can start a new fetch.
     pub async fn get_snapshot(&self, issuer: &str) -> Option<AssertionKeySet> {
         let states = self.states.read().await;
         let state_mutex = states.get(issuer)?;
@@ -493,11 +497,14 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
             return state.snapshot.as_ref().map(|c| c.key_set.clone());
         }
 
-        if state.refresh_in_flight {
-            return state.snapshot.as_ref().map(|c| c.key_set.clone());
-        }
+        // Try to acquire the per-issuer refresh permit. Failure means another
+        // caller is already fetching; return the current snapshot rather than
+        // starting a second fetch.
+        let permit = match Arc::clone(&state.refresh_permit).try_lock_owned() {
+            Ok(g) => g,
+            Err(_) => return state.snapshot.as_ref().map(|c| c.key_set.clone()),
+        };
 
-        state.refresh_in_flight = true;
         let prev_digest = state.snapshot.as_ref().map(|c| c.content_digest);
         let prev_generation = state.generation_counter;
         drop(state);
@@ -505,14 +512,16 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
 
         let fresh = self.fetch_fresh(issuer, prev_digest, prev_generation).await;
 
+        // Re-acquire state to commit and release the permit atomically.
         let states = self.states.read().await;
         if let Some(state_mutex) = states.get(issuer) {
             let mut st = state_mutex.lock().await;
-            st.refresh_in_flight = false;
             if let Some((ref cached, new_generation)) = fresh {
                 st.generation_counter = new_generation;
                 st.snapshot = Some(cached.clone());
             }
+            // Drop the permit only after the state commit is visible.
+            drop(permit);
             let now2 = Utc::now();
             return st
                 .snapshot
@@ -521,6 +530,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
                 .map(|c| c.key_set.clone());
         }
 
+        drop(permit);
         None
     }
 }

@@ -361,7 +361,7 @@ pub const ALL_KINDS: &[u32]  // 80 entries (KIND_AUTH excluded — never stored)
 |----------|---------|
 | `filters_match(filters, event)` | OR across filters, AND within each filter. Includes NIP-01 prefix matching on event IDs. |
 | `verify_event(event)` | Schnorr signature + SHA-256 ID check. CPU-bound — callers use `spawn_blocking`. |
-| `is_private_ip(ip)` | SSRF protection: IPv4 unspecified/loopback/private/link-local/CGNAT/benchmarking/broadcast + IPv6 loopback/ULA/link-local/multicast/documentation + IPv4-mapped IPv6. |
+| `is_not_global_unicast(ip)` | SSRF protection: starts from IANA deny/exception table — denies ranges whose registry entry is non-global or blank, carves out explicit global exceptions inside denied envelopes, and evaluates embedded IPv4 recursively. Registries last updated 2025-10-09. Compat alias: `is_private_ip`. |
 
 **Does NOT:** store events, make network calls, spawn tasks, or depend on any async runtime.
 
@@ -746,12 +746,10 @@ Every security-sensitive operation uses an explicit, verified pattern. No implic
 
 ### SSRF Protection
 
-`is_private_ip()` in `buzz-core` covers:
-- IPv4: unspecified (0.0.0.0/8), loopback (127.0.0.0/8), private (10/8, 172.16/12, 192.168/16), link-local (169.254/16), CGNAT (100.64/10), benchmarking (198.18/15), broadcast (255.255.255.255)
-- IPv6: loopback (::1), ULA (fc00::/7), link-local (fe80::/10), multicast (ff00::/8), documentation (2001:db8::/32)
-- IPv4-mapped IPv6 (::ffff:0:0/96) — recursively checks the embedded IPv4 address
+`is_not_global_unicast(ip)` (compat alias `is_private_ip`) in `buzz-core` starts from the IANA deny/exception table: denies ranges whose IPv4 or IPv6 Special-Purpose Address Space registry entry is non-global or blank (registries last updated 2025-10-09), carves out explicit globally-reachable exceptions inside otherwise-denied envelopes (e.g., PCP/TURN/DNS-SD anycast inside 2001::/23), and evaluates IPv4 embedded in IPv4-mapped, IPv4-compatible, and NAT64 well-known (64:ff9b::/96) space recursively against the IPv4 table. SIIT IPv4-translated (::ffff:0:0:0/96) follows the same recursive path. The local-use NAT64 prefix (64:ff9b:1::/48) is blocked wholesale. Conservative posture: `None`/blank entries are treated as non-global.
 
-Applied in: `buzz-workflow` (CallWebhook action), `buzz-core` (shared utility).
+Applied in: `buzz-auth` (JWKS boundary), `buzz-workflow` (CallWebhook action),
+desktop `link_preview` (SSRF check).
 
 ### Audit Integrity
 
