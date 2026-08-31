@@ -1,6 +1,7 @@
 import type { RelayEvent } from "@/shared/api/types";
 import {
   KIND_PROJECT_ANNOUNCEMENT,
+  KIND_PROJECT_REVISION,
   KIND_REPO_ANNOUNCEMENT,
 } from "@/shared/constants/kinds";
 import { effectiveCloneUrls } from "./lib/projectCloneUrl";
@@ -38,6 +39,8 @@ export type Project = {
    * unrecognized metadata, so older readers ignore it.
    */
   relatedChannelIds: string[];
+  /** Current base or collaborative revision id used as the next CAS token. */
+  effectiveRevisionId?: string;
   status: string;
   projectAddress: string;
   primaryRepositoryAddress: string | null;
@@ -56,6 +59,7 @@ export function isExplicitProject(project: Project): boolean {
 
 type BuildProjectReadModelsInput = {
   projectEvents: RelayEvent[];
+  projectRevisionEvents?: RelayEvent[];
   repositoryEvents: RelayEvent[];
   /** NIP-09 kind:5 deletion events relevant to projects and repositories. */
   deletionEvents?: RelayEvent[];
@@ -381,6 +385,7 @@ export function eventToExplicitProject(
     createdAt: event.created_at,
     projectChannelId,
     relatedChannelIds,
+    effectiveRevisionId: event.id.toLowerCase(),
     status: visibility === "listed" ? "active" : "unlisted",
     projectAddress,
     primaryRepositoryAddress,
@@ -408,6 +413,7 @@ function repositoryToLegacyProject(repository: Repository): Project {
     createdAt: repository.createdAt,
     projectChannelId: null,
     relatedChannelIds: [],
+    effectiveRevisionId: repository.id.toLowerCase(),
     status: repository.status,
     projectAddress: repository.repoAddress,
     primaryRepositoryAddress: repository.repoAddress,
@@ -454,6 +460,7 @@ function projectIsListingEligible(
 
 export function buildProjectReadModels({
   projectEvents,
+  projectRevisionEvents = [],
   repositoryEvents,
   deletionEvents = [],
   relayOrigin,
@@ -501,7 +508,7 @@ export function buildProjectReadModels({
       return project &&
         projectIsListingEligible(project, viewerPubkey) &&
         !hiddenAddresses.has(project.projectAddress)
-        ? [project]
+        ? [applyProjectRevisionEvents(project, event.id, projectRevisionEvents)]
         : [];
     });
   const claimedRepositories = new Set(
@@ -523,6 +530,64 @@ export function buildProjectReadModels({
   return [...explicitProjects, ...legacyProjects].sort(
     (left, right) => right.createdAt - left.createdAt,
   );
+}
+
+function singletonRevisionTag(event: RelayEvent, name: string): string | null {
+  const matches = event.tags.filter(
+    (tag) => tag.length === 2 && tag[0] === name && Boolean(tag[1]),
+  );
+  return matches.length === 1 ? matches[0][1] : null;
+}
+
+/** Fold the relay-authorized linear revision chain rooted at a Project head. */
+export function applyProjectRevisionEvents(
+  project: Project,
+  baseEventId: string,
+  events: RelayEvent[],
+): Project {
+  let effectiveRevisionId = baseEventId.toLowerCase();
+  let relatedChannelIds = [...project.relatedChannelIds];
+  const candidates = events.filter(
+    (event) =>
+      event.kind === KIND_PROJECT_REVISION &&
+      singletonRevisionTag(event, "a") === project.projectAddress,
+  );
+  for (;;) {
+    const next = candidates.find(
+      (event) =>
+        singletonRevisionTag(event, "e")?.toLowerCase() === effectiveRevisionId,
+    );
+    if (!next) break;
+    const operation = singletonRevisionTag(next, "op");
+    const channelId = singletonRevisionTag(next, "channel");
+    if (!channelId || !isValidProjectChannelId(channelId)) break;
+    if (operation === "add-related-channel") {
+      if (
+        channelId === project.projectChannelId ||
+        relatedChannelIds.includes(channelId) ||
+        relatedChannelIds.length >= MAX_PROJECT_RELATED_CHANNELS
+      ) {
+        break;
+      }
+      relatedChannelIds.push(channelId);
+    } else if (operation === "remove-related-channel") {
+      if (!relatedChannelIds.includes(channelId)) break;
+      relatedChannelIds = relatedChannelIds.filter(
+        (candidate) => candidate !== channelId,
+      );
+    } else {
+      break;
+    }
+    effectiveRevisionId = next.id.toLowerCase();
+  }
+  return {
+    ...project,
+    createdAt:
+      events.find((event) => event.id.toLowerCase() === effectiveRevisionId)
+        ?.created_at ?? project.createdAt,
+    effectiveRevisionId,
+    relatedChannelIds,
+  };
 }
 
 export function selectProjectRepository(

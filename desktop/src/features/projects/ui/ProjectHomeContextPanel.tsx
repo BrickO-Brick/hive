@@ -26,6 +26,14 @@ import { cn } from "@/shared/lib/cn";
 import type { EntityLinkTab } from "@/shared/lib/entityLink";
 import { Button } from "@/shared/ui/button";
 import { ProjectChannelManagement } from "./ProjectChannelManagement";
+import { useCanManageProjectChannels } from "./ProjectChannelManagement";
+import { useRemoveProjectRelatedChannelMutation } from "@/features/projects/useRemoveProjectRelatedChannel";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/shared/ui/context-menu";
 import { ProjectRepositoryManagement } from "./ProjectRepositoryManagement";
 import { SECTION_ACTION_VISIBILITY_CLASS } from "@/features/sidebar/ui/sidebarSectionStyles";
 
@@ -152,29 +160,39 @@ function ContextNavButton({
 function ChannelContextRow({
   channel,
   onClick,
+  onRemove,
   projectHome,
   testId,
 }: {
   channel: Channel;
   onClick?: () => void;
+  onRemove?: () => void;
   projectHome?: boolean;
   testId: string;
 }) {
   const Icon = projectHome ? ProjectChannelIcon : Hash;
-  if (onClick) {
-    return (
-      <ContextNavButton icon={<Icon />} onClick={onClick} testId={testId}>
-        {channel.name}
-      </ContextNavButton>
-    );
-  }
-  return (
+  const row = onClick ? (
+    <ContextNavButton icon={<Icon />} onClick={onClick} testId={testId}>
+      {channel.name}
+    </ContextNavButton>
+  ) : (
     <div
       className={`${PROJECT_HOME_SIDEBAR_ROW_CLASS} pointer-events-none flex items-center`}
       data-testid={testId}
     >
       <ContextRowContent icon={<Icon />}>{channel.name}</ContextRowContent>
     </div>
+  );
+  if (!onRemove) return row;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={onRemove}>
+          Remove from Project
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -219,6 +237,11 @@ export function ProjectHomeContextPanel({
     ...project.repositories.flatMap((repository) => repository.contributors),
   ]).size;
   const activityQuery = useProjectActivitySummariesQuery([project]);
+  const canManageProjectChannels = useCanManageProjectChannels(
+    project,
+    identityPubkey,
+  );
+  const removeProjectChannelMutation = useRemoveProjectRelatedChannelMutation();
   const activity = activityQuery.data?.[project.id];
   const repoStateQuery = useRepoStateQuery(firstRepository);
   const defaultBranch = firstRepository
@@ -343,6 +366,15 @@ export function ProjectHomeContextPanel({
                   isHome || !onOpenChannel
                     ? undefined
                     : () => onOpenChannel(binding.channel.id)
+                }
+                onRemove={
+                  !isHome && canManageProjectChannels
+                    ? () =>
+                        removeProjectChannelMutation.mutate({
+                          channelId: binding.channel.id,
+                          project,
+                        })
+                    : undefined
                 }
                 projectHome={isHome}
                 testId={

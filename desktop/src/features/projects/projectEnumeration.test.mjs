@@ -82,10 +82,14 @@ test("buildProjectHomeFromFetcher scopes startup lookup to the active channel", 
     extraFilter: { "#buzz-channel": [channelId] },
   });
   assert.deepEqual(calls[1], {
+    kinds: [1622],
+    extraFilter: undefined,
+  });
+  assert.deepEqual(calls[2], {
     kinds: [30617],
     extraFilter: { "#buzz-channel": [channelId] },
   });
-  assert.deepEqual(calls[2], {
+  assert.deepEqual(calls[3], {
     kinds: [5],
     extraFilter: { "#a": [`30621:${owner}:relay`, repositoryAddress] },
   });

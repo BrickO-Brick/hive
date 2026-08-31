@@ -8,14 +8,16 @@ import {
 import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { type Project, projectsQueryKey } from "@/features/projects/hooks";
 import { isUnsupportedProjectKindError } from "@/features/projects/projectCreation";
-import { buildProjectRelatedChannelPatchTemplate } from "@/features/projects/projectChannelCreation";
 import { addRelatedChannelToProject } from "@/features/projects/projectModels";
-import { publishOwnedAgentProjectAnnouncements } from "@/features/projects/projectOwnerControl";
+import { publishProjectRelatedChannelRevision } from "@/features/projects/projectRelatedChannelRevision";
 import { markProjectDataAuthoritative } from "@/features/projects/projectSnapshot";
-import { publishProjectOwnerAnnouncement } from "@/shared/api/projectGit";
 import { relayClient } from "@/shared/api/relayClient";
 import { deleteChannel as deleteChannelApi } from "@/shared/api/tauriChannels";
-import type { Channel, ChannelVisibility } from "@/shared/api/types";
+import type {
+  Channel,
+  ChannelVisibility,
+  RelayEvent,
+} from "@/shared/api/types";
 import { KIND_PROJECT_ANNOUNCEMENT } from "@/shared/constants/kinds";
 
 export type AddProjectChannelInput = {
@@ -43,8 +45,7 @@ export async function addProjectChannel(
     createChannel: ReturnType<typeof useCreateChannelMutation>["mutateAsync"];
     deleteChannel?: typeof deleteChannelApi;
     fetchEvents?: typeof relayClient.fetchEvents;
-    publishOwnedAgentAnnouncements?: typeof publishOwnedAgentProjectAnnouncements;
-    publishOwnerAnnouncement?: typeof publishProjectOwnerAnnouncement;
+    publishRevision?: typeof publishProjectRelatedChannelRevision;
   },
 ): Promise<{ channel: Channel; project: Project }> {
   const {
@@ -53,8 +54,7 @@ export async function addProjectChannel(
     createChannel,
     deleteChannel = deleteChannelApi,
     fetchEvents = relayClient.fetchEvents.bind(relayClient),
-    publishOwnedAgentAnnouncements = publishOwnedAgentProjectAnnouncements,
-    publishOwnerAnnouncement = publishProjectOwnerAnnouncement,
+    publishRevision = publishProjectRelatedChannelRevision,
   } = deps;
   const targetOwner = input.project.owner.toLowerCase();
 
@@ -114,60 +114,35 @@ export async function addProjectChannel(
     );
   }
 
-  const templates = buildProjectRelatedChannelPatchTemplate({
-    channelId: channel.id,
-    liveHead: confirmedLiveHead,
-    ownerPubkey: targetOwner,
-  });
-  let projectCreatedAt = confirmedLiveHead.created_at;
-  if (!templates.alreadyBound) {
-    const createdAt = Math.max(
-      Math.floor(Date.now() / 1_000),
-      confirmedLiveHead.created_at + 1,
-    );
-    try {
-      if (input.ownerControlAgentPubkey) {
-        const events = await publishOwnedAgentAnnouncements(
-          input.ownerControlAgentPubkey,
-          [{ ...templates.project, createdAt }],
-        );
-        projectCreatedAt =
-          events.find((event) => event.kind === KIND_PROJECT_ANNOUNCEMENT)
-            ?.created_at ?? createdAt;
-      } else {
-        const publication = await publishOwnerAnnouncement({
-          ...templates.project,
-          createdAt,
-          targetOwner,
-        });
-        if (publication.publicationError) {
-          throw new Error(publication.publicationError);
-        }
-        projectCreatedAt = publication.event.created_at;
-      }
-    } catch (error) {
-      await removeCreatedChannelAndThrow(
-        isUnsupportedProjectKindError(error)
-          ? new Error(
-              "This relay does not support projects yet, so the channel could not be linked.",
-            )
-          : error instanceof Error
-            ? error
-            : new Error("Could not link the channel to this project."),
-      );
-    }
-  }
+  const revision: RelayEvent = await publishRevision(
+    input.project,
+    channel.id,
+    "add-related-channel",
+  ).catch((error: unknown) =>
+    removeCreatedChannelAndThrow(
+      isUnsupportedProjectKindError(error)
+        ? new Error(
+            "This relay does not support collaborative Project channels yet, so the channel could not be linked.",
+          )
+        : error instanceof Error
+          ? error
+          : new Error("Could not link the channel to this project."),
+    ),
+  );
 
   await applyCanvas(input.templateId, channel.id, input.name);
   void applyAgents(input.templateId, channel.id);
 
   return {
     channel,
-    project: addRelatedChannelToProject(
-      input.project,
-      channel.id,
-      projectCreatedAt,
-    ),
+    project: {
+      ...addRelatedChannelToProject(
+        input.project,
+        channel.id,
+        revision.created_at,
+      ),
+      effectiveRevisionId: revision.id.toLowerCase(),
+    },
   };
 }
 

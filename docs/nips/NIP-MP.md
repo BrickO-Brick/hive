@@ -28,7 +28,9 @@ One custom kind, held by one signer, with all group state in one replaceable eve
 
 ## Non-Goals
 
-This NIP does not define shared or delegated project editing — a project is replaceable only by its own signer (see [Authority](#authority)).
+This NIP defines collaborative editing only for related-channel membership. All
+other project fields remain replaceable only by the project signer (see
+[Authority](#authority)).
 This NIP does not define any authorization over member repositories. Membership is not a permission grant, and a project is never consulted by git push policy.
 This NIP does not define project-level branch protection, CI, or workflow configuration.
 This NIP does not define nested projects. A project's members are repositories, never other projects.
@@ -50,6 +52,7 @@ This document uses MUST, MUST NOT, SHOULD, SHOULD NOT, MAY, and RECOMMENDED as d
 | Kind | Name | Signer | Class | Purpose |
 |------|------|--------|-------|---------|
 | `30621` | Project | user | addressable | A named grouping of `kind:30617` repository announcements |
+| `1622` | Project revision | project owner or current home-channel owner/admin | regular | A CAS-protected related-channel add/remove operation |
 
 `kind:30621` is an addressable event per NIP-01 (`30000 <= n < 40000`), addressed by `(pubkey, 30621, d)`. Two signers may use the same `d` value; those are two distinct projects. Addressable events were formerly specified as "parameterized replaceable events" in NIP-33, which upstream has since folded into NIP-01; this document cites NIP-01 throughout.
 
@@ -140,9 +143,33 @@ Clients MUST preserve each member repository's own owner provenance in the UI. A
 
 ### Editing model
 
-Editing is **owner-only**: publish a replacement `kind:30621` with the same `d` and a newer `created_at`. Adding, removing, or reordering members and changing metadata are all one operation — replacing the container. This falls out of the addressable-event model with no relay-side permission machinery; NIP-01 replacement already refuses to let one pubkey overwrite another's coordinate.
+The project signer may still edit by publishing a replacement `kind:30621`
+with the same `d` and a newer `created_at`. Changing repositories, metadata,
+visibility, or the home channel remains owner-only.
 
-Delegated or maintainer editing is deliberately out of scope for this version. Adding it later needs no change to this event shape — only a new rule about who may replace a coordinate.
+Related channels additionally support actor-signed `kind:1622` revisions. A
+revision has empty content and exactly one of each of these tags:
+
+- `a`: the stable `30621:<owner>:<d>` Project coordinate
+- `e`: the exact current base/revision event id (the compare-and-swap token)
+- `op`: `add-related-channel` or `remove-related-channel`
+- `channel`: the related channel UUID
+
+The relay serializes revisions with replacements of the referenced Project,
+loads the current live `kind:30621`, and authorizes the revision signer against
+current state. The Project signer is always authorized. Otherwise, the current
+home channel must resolve to a live channel and the signer must be an active
+`owner` or `admin` of it. Members, guests, bots, and unrelated users are not
+authorized. A missing, malformed, or deleted home channel therefore falls back
+to owner-only management.
+
+The relay applies the add/remove operation to its current materialized related
+channels and rejects an `e` tag that does not name the current effective
+revision. It stores the signed operation for attribution and audit. Readers
+start from the current base Project id and follow the unique accepted `e`
+chain, applying operations in order. A replacement base starts a new chain.
+This mechanism does not permit a collaborator to replace the owner's
+`kind:30621` coordinate.
 
 ### Zero-member projects
 

@@ -1895,3 +1895,21 @@ CREATE INDEX idx_relay_operator_audit_target
 
 INSERT INTO _operator_global_tables (table_name, reason) VALUES
     ('relay_operator_audit', 'deployment-global append-only roster mutation audit trail; no community_id intentionally');
+
+-- ── Collaborative Project revision heads ────────────────────────────────────
+-- The signed kind:1622 events remain in `events`; this is the transactional
+-- compare-and-swap head and materialized related-channel membership.
+
+CREATE TABLE project_revision_heads (
+    community_id UUID NOT NULL,
+    project_owner BYTEA NOT NULL CHECK (octet_length(project_owner) = 32),
+    project_d_tag TEXT NOT NULL,
+    base_event_id BYTEA NOT NULL CHECK (octet_length(base_event_id) = 32),
+    revision_event_id BYTEA NOT NULL CHECK (octet_length(revision_event_id) = 32),
+    related_channel_ids UUID[] NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (community_id, project_owner, project_d_tag)
+);
+
+CREATE INDEX idx_project_revision_heads_revision
+    ON project_revision_heads (community_id, revision_event_id);

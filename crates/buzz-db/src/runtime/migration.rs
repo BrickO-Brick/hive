@@ -1241,6 +1241,13 @@ mod tests {
             operator_audit.contains("_operator_global_tables"),
             "migration 39 must register relay_operator_audit in _operator_global_tables"
         );
+
+        assert_eq!(migrations[39].version, 40);
+        let project_revisions = migrations[39].sql.as_str();
+        assert!(
+            project_revisions.contains("CREATE TABLE project_revision_heads"),
+            "migration 40 must create project_revision_heads"
+        );
     }
 
     #[test]
@@ -2207,14 +2214,15 @@ mod tests {
             .await
             .expect("connect migrated probe database");
         MIGRATOR
-            .run_to(39, &migrated)
+            .run_to(40, &migrated)
             .await
-            .expect("apply migrations 1-39");
+            .expect("apply migrations 1-40");
 
         for table in [
             "relay_admin_actions",
             "relay_admin_outbox",
             "relay_operator_audit",
+            "project_revision_heads",
         ] {
             assert_eq!(
                 columns(&desired, table).await,

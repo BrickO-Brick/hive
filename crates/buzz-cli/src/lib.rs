@@ -1356,6 +1356,30 @@ pub enum ProjectsCmd {
         #[arg(long)]
         template: Option<String>,
     },
+    /// Link an existing channel to a Project using collaborative permissions
+    #[command(name = "link-channel")]
+    LinkChannel {
+        /// Project slug
+        slug: String,
+        /// Project owner pubkey. Defaults to the current identity.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Existing channel UUID to link
+        #[arg(long)]
+        channel: String,
+    },
+    /// Remove an existing related channel from a Project
+    #[command(name = "unlink-channel")]
+    UnlinkChannel {
+        /// Project slug
+        slug: String,
+        /// Project owner pubkey. Defaults to the current identity.
+        #[arg(long)]
+        owner: Option<String>,
+        /// Related channel UUID to unlink
+        #[arg(long)]
+        channel: String,
+    },
     /// Remove one or more member repositories from a project
     #[command(name = "remove-repo")]
     RemoveRepo {

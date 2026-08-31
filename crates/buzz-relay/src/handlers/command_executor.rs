@@ -70,8 +70,52 @@ pub async fn handle_command(
         KIND_WORKFLOW_TRIGGER => handle_workflow_trigger(tenant, state, &event, &auth).await,
         KIND_APPROVAL_GRANT => handle_approval_grant(tenant, state, &event, &auth).await,
         KIND_APPROVAL_DENY => handle_approval_deny(tenant, state, &event, &auth).await,
+        KIND_PROJECT_REVISION => handle_project_revision(tenant, state, &event).await,
         _ => Err(IngestError::Rejected(format!(
             "unknown command kind: {kind}"
+        ))),
+    }
+}
+
+async fn handle_project_revision(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+) -> Result<IngestResult, IngestError> {
+    use buzz_core::project_revision::ProjectRevision;
+    use buzz_db::project_revision::ProjectRevisionApplyStatus;
+
+    let revision = ProjectRevision::parse(event)
+        .map_err(|error| IngestError::Rejected(format!("invalid: {error}")))?;
+    let result = state
+        .db
+        .apply_project_revision(tenant.community(), event, &revision)
+        .await
+        .map_err(|error| {
+            IngestError::Internal(format!("error: applying Project revision: {error}"))
+        })?;
+    match result.status {
+        ProjectRevisionApplyStatus::Applied | ProjectRevisionApplyStatus::Duplicate => {
+            Ok(IngestResult {
+                event_id: event.id.to_hex(),
+                accepted: true,
+                message: String::new(),
+            })
+        }
+        ProjectRevisionApplyStatus::ProjectNotFound => Err(IngestError::Rejected(
+            "invalid: Project does not exist".into(),
+        )),
+        ProjectRevisionApplyStatus::Conflict => Err(IngestError::Rejected(
+            "conflict: Project changed since it was loaded".into(),
+        )),
+        ProjectRevisionApplyStatus::Forbidden => Err(IngestError::Rejected(
+            "restricted: Project owner or home-channel admin required".into(),
+        )),
+        ProjectRevisionApplyStatus::InvalidMutation => Err(IngestError::Rejected(format!(
+            "invalid: {}",
+            result
+                .message
+                .unwrap_or_else(|| "invalid Project mutation".into())
         ))),
     }
 }

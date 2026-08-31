@@ -16,6 +16,7 @@ function makeProject(overrides = {}) {
     createdAt: 100,
     projectChannelId: "11111111-1111-4111-8111-111111111111",
     relatedChannelIds: [],
+    effectiveRevisionId: "f".repeat(64),
     status: "active",
     projectAddress: `30621:${OWNER}:platform`,
     primaryRepositoryAddress: null,
@@ -105,7 +106,7 @@ test("addProjectChannel removes its channel and does not publish when the projec
       createChannel: async () => ({ id: CREATED_CHANNEL }),
       deleteChannel: async (channelId) => deleted.push(channelId),
       fetchEvents: async () => fetchResults.shift() ?? [],
-      publishOwnerAnnouncement: async () => {
+      publishRevision: async () => {
         publishCalls += 1;
         throw new Error("must not publish a stale project replacement");
       },
@@ -132,7 +133,7 @@ test("addProjectChannel removes its channel when project publication fails", asy
         fetchCalls += 1;
         return [liveHead];
       },
-      publishOwnerAnnouncement: async () => {
+      publishRevision: async () => {
         throw new Error("publication failed");
       },
     }),
@@ -141,4 +142,33 @@ test("addProjectChannel removes its channel when project publication fails", asy
 
   assert.equal(fetchCalls, 2);
   assert.deepEqual(deleted, [CREATED_CHANNEL]);
+});
+
+test("addProjectChannel publishes an actor-signed revision and advances the local CAS head", async () => {
+  const liveHead = makeLiveHead(100);
+  const revision = {
+    id: "e".repeat(64),
+    kind: 1622,
+    pubkey: "b".repeat(64),
+    created_at: 110,
+    content: "",
+    tags: [],
+  };
+  const calls = [];
+  const result = await addProjectChannel(input(), {
+    applyAgents: async () => {},
+    applyCanvas: async () => {},
+    createChannel: async () => ({ id: CREATED_CHANNEL }),
+    fetchEvents: async () => [liveHead],
+    publishRevision: async (...args) => {
+      calls.push(args);
+      return revision;
+    },
+  });
+
+  assert.deepEqual(calls, [
+    [input().project, CREATED_CHANNEL, "add-related-channel"],
+  ]);
+  assert.deepEqual(result.project.relatedChannelIds, [CREATED_CHANNEL]);
+  assert.equal(result.project.effectiveRevisionId, revision.id);
 });

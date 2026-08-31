@@ -17,9 +17,10 @@
 //!     not in scope.
 
 use buzz_core::kind::KIND_PROJECT;
+use buzz_core::project_revision::{ProjectCoordinate, ProjectRevision};
 use buzz_sdk::{
-    build_delete_addressable, build_project, build_project_with_tags, ProjectMemberCoord,
-    PROJECT_D_MAX_LEN,
+    build_delete_addressable, build_project, build_project_revision, build_project_with_tags,
+    ProjectMemberCoord, PROJECT_D_MAX_LEN,
 };
 use nostr::{Event, EventBuilder, PublicKey, Tag, Timestamp};
 
@@ -276,6 +277,70 @@ async fn fetch_project(
 /// Fetch the caller's own live kind:30621 head for `slug`.
 async fn fetch_own_project(client: &BuzzClient, slug: &str) -> Result<Option<Event>, CliError> {
     fetch_project(client, slug, None).await
+}
+
+async fn current_project_revision(
+    client: &BuzzClient,
+    project: &Event,
+    slug: &str,
+) -> Result<String, CliError> {
+    let coordinate = ProjectCoordinate {
+        owner: project.pubkey.to_hex(),
+        slug: slug.to_owned(),
+    }
+    .as_string();
+    let filter = serde_json::json!({
+        "kinds": [buzz_core::kind::KIND_PROJECT_REVISION],
+        "#a": [coordinate],
+    });
+    let events: Vec<Event> = client
+        .query_all_bounded(filter, PROJECT_QUERY_EVENT_BOUND)
+        .await?
+        .into_iter()
+        .map(|event| {
+            serde_json::from_value(event).map_err(|error| {
+                CliError::Other(format!("failed to parse Project revision: {error}"))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let mut current = project.id.to_hex();
+    loop {
+        let next = events.iter().find(|candidate| {
+            ProjectRevision::parse(candidate)
+                .is_ok_and(|revision| revision.expected_revision == current)
+        });
+        let Some(next) = next else { break };
+        current = next.id.to_hex();
+    }
+    Ok(current)
+}
+
+async fn cmd_related_channel_revision(
+    client: &BuzzClient,
+    slug: &str,
+    owner: Option<&str>,
+    channel: &str,
+    operation: buzz_core::project_revision::ProjectRevisionOperation,
+) -> Result<(), CliError> {
+    validate_project_slug(slug)?;
+    let channel_id = crate::validate::parse_uuid(channel)?;
+    let project = fetch_project(client, slug, owner)
+        .await?
+        .ok_or_else(|| CliError::NotFound(format!("project {slug:?} not found")))?;
+    let expected_revision = current_project_revision(client, &project, slug).await?;
+    let coordinate = ProjectCoordinate {
+        owner: project.pubkey.to_hex(),
+        slug: slug.to_owned(),
+    }
+    .as_string();
+    let event = client.sign_event(
+        build_project_revision(&coordinate, &expected_revision, operation, channel_id)
+            .map_err(crate::validate::sdk_err)?,
+    )?;
+    let raw = client.submit_event(event).await?;
+    let response = parse_write_response(&raw, "Project changed concurrently; refresh and retry")?;
+    println!("{response}");
+    Ok(())
 }
 
 // ── Tag helpers ───────────────────────────────────────────────────────────────
@@ -839,6 +904,34 @@ pub async fn dispatch(cmd: crate::ProjectsCmd, client: &BuzzClient) -> Result<()
                 visibility.to_string(),
                 ttl,
                 template,
+            )
+            .await
+        }
+        ProjectsCmd::LinkChannel {
+            slug,
+            owner,
+            channel,
+        } => {
+            cmd_related_channel_revision(
+                client,
+                &slug,
+                owner.as_deref(),
+                &channel,
+                buzz_core::project_revision::ProjectRevisionOperation::AddRelatedChannel,
+            )
+            .await
+        }
+        ProjectsCmd::UnlinkChannel {
+            slug,
+            owner,
+            channel,
+        } => {
+            cmd_related_channel_revision(
+                client,
+                &slug,
+                owner.as_deref(),
+                &channel,
+                buzz_core::project_revision::ProjectRevisionOperation::RemoveRelatedChannel,
             )
             .await
         }

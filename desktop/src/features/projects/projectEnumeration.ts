@@ -3,6 +3,7 @@ import type { RelayEvent } from "@/shared/api/types";
 import {
   KIND_DELETION,
   KIND_PROJECT_ANNOUNCEMENT,
+  KIND_PROJECT_REVISION,
   KIND_REPO_ANNOUNCEMENT,
 } from "@/shared/constants/kinds";
 import { absorbStandaloneProjectRepositories } from "./lib/projectCollection";
@@ -179,10 +180,12 @@ export async function buildProjectsFromFetcher(
     viewerPubkey?: string | null;
   } = {},
 ): Promise<Project[]> {
-  const [projectEvents, repositoryEvents] = await Promise.all([
-    fetchExhaustively([KIND_PROJECT_ANNOUNCEMENT]),
-    fetchExhaustively([KIND_REPO_ANNOUNCEMENT]),
-  ]);
+  const [projectEvents, projectRevisionEvents, repositoryEvents] =
+    await Promise.all([
+      fetchExhaustively([KIND_PROJECT_ANNOUNCEMENT]),
+      fetchExhaustively([KIND_PROJECT_REVISION]),
+      fetchExhaustively([KIND_REPO_ANNOUNCEMENT]),
+    ]);
 
   // Tombstones are fetched second (not in parallel) because the `#a` scoping
   // needs the announcement coordinates; both announcement kinds are small,
@@ -207,6 +210,7 @@ export async function buildProjectsFromFetcher(
   return absorbStandaloneProjectRepositories(
     buildProjectReadModels({
       projectEvents,
+      projectRevisionEvents,
       repositoryEvents,
       deletionEvents: tombstoneResult.events,
       relayOrigin: options.relayOrigin ?? null,
@@ -233,7 +237,7 @@ export async function buildProjectHomeFromFetcher(
     (kinds, extraFilter) =>
       fetchExhaustively(
         kinds,
-        kinds.includes(KIND_DELETION)
+        kinds.includes(KIND_DELETION) || kinds.includes(KIND_PROJECT_REVISION)
           ? extraFilter
           : { ...extraFilter, "#buzz-channel": [channelId] },
       ),
