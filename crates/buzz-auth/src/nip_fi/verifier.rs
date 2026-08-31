@@ -49,7 +49,7 @@ use std::fmt;
 /// the key-source trait. Combined with the crate-private [`AssertionKeySet`]
 /// constructor, this makes the accepted issuer→JWKS authority impossible to
 /// synthesize outside the crate's trusted configuration path.
-mod sealed {
+pub(crate) mod sealed {
     /// Private marker preventing external implementations of the key source.
     pub trait Sealed {}
 }
@@ -101,13 +101,6 @@ impl AssertionKeySet {
     /// finite key-snapshot bound into `revalidation_dependencies`
     /// (NIP-FI.md:240-249).
     ///
-    /// Its only current callers are the in-crate `cfg(test)` verifier suite;
-    /// PR 3's JWKS runtime is the intended non-test consumer. Until it lands the
-    /// non-test lib build sees no caller, so this narrowly allows `dead_code`
-    /// for this one constructor rather than deferring it or widening the lint.
-    /// `expect` would misfire: under `cfg(test)` the lint does not trigger, so
-    /// the expectation would be unfulfilled and fail `-D warnings`.
-    #[allow(dead_code)]
     pub(crate) fn new(
         issuer: String,
         generation: u64,
