@@ -17,8 +17,8 @@ use mesh_llm_system::vram::{format_rated_capacity, rated_capacity_gb};
 ///
 /// The recommended ladder follows rated unified memory:
 /// - below 32 GB: Gemma 4 E4B;
-/// - 32 through 79 GB: Qwen3.5 9B;
-/// - 80 GB and above: Qwen3.8 27B.
+/// - 32 GB through the rated classes below 64 GB: Qwen3.5 9B;
+/// - 64 GB and above: Qwen3.8 27B.
 ///
 /// The Qwen entries are canonicalized from mesh-llm's compiled
 /// `MODEL_CATALOG` rather than synthesized.
@@ -35,9 +35,10 @@ const LEGACY_LARGE: &str = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M";
 const LEGACY_LARGE_ALIAS: &str = "gemma-4-26B-A4B-it-UD-Q4_K_M";
 /// Rated-capacity boundary for the balanced Qwen3.5 9B tier.
 const CURATED_MEDIUM_MIN_RATED_GB: u64 = 32;
-/// Qwen3.8 27B is reserved for 80 GB-and-larger rated capacity classes,
-/// leaving headroom beyond the model weights for KV cache and runtime use.
-const CURATED_LARGE_MIN_RATED_GB: u64 = 80;
+/// Qwen3.8 27B is recommended for 64 GB-and-larger rated capacity classes,
+/// leaving substantial headroom beyond its observed working footprint for KV
+/// cache and runtime use.
+const CURATED_LARGE_MIN_RATED_GB: u64 = 64;
 
 /// The Buzz-curated recommendation for a machine's rated memory capacity.
 fn buzz_recommended_model(rated_gb: Option<u64>) -> &'static str {
@@ -268,16 +269,19 @@ mod tests {
         assert_eq!(CURATED_MEDIUM, "unsloth/Qwen3.5-9B-GGUF:Q4_K_M");
         assert_eq!(CURATED_LARGE, "unsloth/Qwen3.8-27B-GGUF:Q4_K_M");
 
-        // Qwen3.8 is reserved for 80 GB-and-larger rated capacity classes.
-        let large = build_catalog(None, 80_000_000_000, 80.0, &[]);
+        // Qwen3.8 is recommended for 64 GB-and-larger rated capacity classes.
+        let large = build_catalog(None, 64_000_000_000, 64.0, &[]);
         assert_eq!(large.recommended.as_deref(), Some(CURATED_LARGE));
+        let large_80 = build_catalog(None, 80_000_000_000, 80.0, &[]);
+        assert_eq!(large_80.recommended.as_deref(), Some(CURATED_LARGE));
         let big = build_catalog(None, 128_000_000_000, 128.0, &[]);
         assert_eq!(big.recommended.as_deref(), Some(CURATED_LARGE));
 
-        // The balanced Qwen3.5 tier spans 32 through 64 GB.
+        // The balanced Qwen3.5 tier covers every rated class from 32 GB up
+        // to (but not including) 64 GB.
         let medium = build_catalog(None, 32_000_000_000, 32.0, &[]);
         assert_eq!(medium.recommended.as_deref(), Some(CURATED_MEDIUM));
-        let medium_max = build_catalog(None, 64_000_000_000, 64.0, &[]);
+        let medium_max = build_catalog(None, 48_000_000_000, 48.0, &[]);
         assert_eq!(medium_max.recommended.as_deref(), Some(CURATED_MEDIUM));
 
         // Smaller and unknown machines use the light Gemma tier.
