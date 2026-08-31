@@ -8,6 +8,7 @@ mod build_info;
 /// orchestration.  All construction paths are private to this module;
 /// external crates cannot mint a sealed context or produce an admission result.
 mod nip_fi;
+mod rejection;
 
 /// REST API route handlers.
 pub mod api;
