@@ -167,34 +167,52 @@ async fn partition_range_covered(
     start_date_str: &str,
     end_date_str: &str,
 ) -> Result<bool> {
-    let covered = sqlx::query_scalar(
+    let (all_bounds_recognized, covered): (bool, bool) = sqlx::query_as(
         r#"
         WITH partition_bounds AS (
-            SELECT pg_get_expr(c.relpartbound, c.oid, true) AS bound
+            SELECT pg_get_expr(c.relpartbound, c.oid, false) AS bound
             FROM pg_catalog.pg_partition_tree(to_regclass($1)) AS tree
             JOIN pg_catalog.pg_class c ON c.oid = tree.relid
             WHERE tree.isleaf
         ),
+        extracted_bounds AS (
+            SELECT
+                bound,
+                regexp_match(
+                    bound,
+                    $partition_bound$^FOR VALUES FROM \((MINVALUE|'[^']+')\) TO \((MAXVALUE|'[^']+')\)$$partition_bound$
+                ) AS parts
+            FROM partition_bounds
+        ),
         parsed_bounds AS (
             SELECT
+                bound,
                 CASE
-                    WHEN bound LIKE 'FOR VALUES FROM (MINVALUE)%'
+                    WHEN parts[1] = 'MINVALUE'
                         THEN '-infinity'::timestamptz
-                    ELSE split_part(bound, '''', 2)::timestamptz
+                    WHEN parts IS NOT NULL
+                        THEN trim(both '''' from parts[1])::timestamptz
                 END AS start_at,
                 CASE
-                    WHEN bound LIKE '% TO (MAXVALUE)'
+                    WHEN parts[2] = 'MAXVALUE'
                         THEN 'infinity'::timestamptz
-                    ELSE split_part(bound, '''', 4)::timestamptz
+                    WHEN parts IS NOT NULL
+                        THEN trim(both '''' from parts[2])::timestamptz
                 END AS end_at
-            FROM partition_bounds
+            FROM extracted_bounds
         )
-        SELECT EXISTS (
-            SELECT 1
-            FROM parsed_bounds
-            WHERE start_at <= to_date($2, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
-              AND end_at >= to_date($3, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
-        )
+        SELECT
+            COALESCE(bool_and(bound = 'DEFAULT' OR parts IS NOT NULL), true),
+            EXISTS (
+                SELECT 1
+                FROM parsed_bounds
+                WHERE bound = 'DEFAULT'
+                   OR (
+                       start_at <= to_date($2, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
+                       AND end_at >= to_date($3, 'YYYY-MM-DD')::timestamp AT TIME ZONE 'UTC'
+                   )
+            )
+        FROM extracted_bounds
         "#,
     )
     .bind(table_name)
@@ -202,6 +220,12 @@ async fn partition_range_covered(
     .bind(end_date_str)
     .fetch_one(pool)
     .await?;
+
+    if !all_bounds_recognized {
+        return Err(DbError::InvalidData(format!(
+            "unsupported partition bound for table {table_name:?}"
+        )));
+    }
 
     Ok(covered)
 }
@@ -286,8 +310,10 @@ mod tests {
     async fn create_partitioned_tables(pool: &PgPool) {
         for statement in [
             "CREATE TABLE events (created_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (created_at)",
+            "CREATE TABLE events_p_past PARTITION OF events FOR VALUES FROM (MINVALUE) TO ('2000-01-01')",
             "CREATE TABLE events_p_future PARTITION OF events FOR VALUES FROM ('2000-01-01') TO (MAXVALUE)",
             "CREATE TABLE delivery_log (delivered_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (delivered_at)",
+            "CREATE TABLE delivery_log_p_past PARTITION OF delivery_log FOR VALUES FROM (MINVALUE) TO ('2000-01-01')",
             "CREATE TABLE delivery_log_p_future PARTITION OF delivery_log FOR VALUES FROM ('2000-01-01') TO (MAXVALUE)",
         ] {
             sqlx::query(statement)
@@ -366,6 +392,108 @@ mod tests {
             .expect("partition DDL must stop at the transaction-local lock timeout")
             .expect_err("blocked partition DDL must return a lock timeout");
         assert!(is_lock_timeout(&error), "unexpected error: {error}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn missing_partition_is_created_with_production_bounds() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_missing").await;
+        sqlx::query("DROP TABLE events_p_future, delivery_log_p_future")
+            .execute(&pool)
+            .await
+            .expect("remove catch-all partitions");
+
+        ensure_future_partitions(&pool, 0)
+            .await
+            .expect("create genuinely missing monthly partitions");
+
+        let now = Utc::now();
+        let suffix = format!("{:04}_{:02}", now.year(), now.month());
+        for table in PARTITIONED_TABLES {
+            let partition_name = format!("{table}_p{suffix}");
+            let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(&partition_name)
+                .fetch_one(&pool)
+                .await
+                .expect("check created partition");
+            assert!(exists, "missing partition {partition_name}");
+        }
+
+        drop_scratch_db(&admin, pool, &name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn default_partition_avoids_partition_ddl() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_default").await;
+        sqlx::query("DROP TABLE events_p_future, delivery_log_p_future")
+            .execute(&pool)
+            .await
+            .expect("remove catch-all partitions");
+        for statement in [
+            "CREATE TABLE events_p_default PARTITION OF events DEFAULT",
+            "CREATE TABLE delivery_log_p_default PARTITION OF delivery_log DEFAULT",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create default partition");
+        }
+        let mut blocker = pool.begin().await.expect("begin blocker");
+        sqlx::query("LOCK TABLE events IN ACCESS SHARE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock partition parent");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            ensure_future_partitions(&pool, 0),
+        )
+        .await;
+
+        blocker.rollback().await.expect("release parent lock");
+        drop_scratch_db(&admin, pool, &name).await;
+        result
+            .expect("default coverage must return without waiting for a DDL lock")
+            .expect("default partitions cover the target range");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn unrecognized_partition_bounds_fail_closed() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_unrecognized").await;
+        sqlx::query("DROP TABLE events CASCADE")
+            .execute(&pool)
+            .await
+            .expect("replace events test table");
+        for statement in [
+            "CREATE TABLE events (created_at TIMESTAMPTZ NOT NULL, sequence INT NOT NULL) \
+             PARTITION BY RANGE (created_at, sequence)",
+            "CREATE TABLE events_multicolumn PARTITION OF events \
+             FOR VALUES FROM (MINVALUE, MINVALUE) TO (MAXVALUE, MAXVALUE)",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create unsupported partition topology");
+        }
+
+        let error = ensure_future_partitions(&pool, 0)
+            .await
+            .expect_err("unsupported bounds must fail closed before DDL");
+        assert!(
+            matches!(
+                error,
+                DbError::InvalidData(ref message)
+                    if message.contains("unsupported partition bound")
+            ),
+            "unexpected error: {error}"
+        );
+
+        drop_scratch_db(&admin, pool, &name).await;
     }
 
     #[tokio::test]

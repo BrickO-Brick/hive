@@ -739,7 +739,7 @@ jobs:
         # Catalog-bound coverage and lock-timeout behavior require real
         # Postgres and are ignored by the infrastructure-free unit-test job.
         run: |
-          filter='package(buzz-db) and test(/partition::tests::(existing_catch_all_bounds_avoid_partition_ddl|blocked_partition_ddl_stops_at_lock_timeout|exact_utc_bounds_are_covered_in_non_utc_session)/)'
+          filter='package(buzz-db) and test(/partition::tests::(existing_catch_all_bounds_avoid_partition_ddl|blocked_partition_ddl_stops_at_lock_timeout|missing_partition_is_created_with_production_bounds|default_partition_avoids_partition_ddl|unrecognized_partition_bounds_fail_closed|exact_utc_bounds_are_covered_in_non_utc_session)/)'
           cargo nextest run \
             --archive-file target/ci/backend-integration-tests.tar.zst \
             -E "${filter}" \
