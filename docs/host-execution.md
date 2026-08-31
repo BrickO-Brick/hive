@@ -4,7 +4,8 @@ The owner-operated native Start outbox, receiver and Hosts picker are implemente
 behind the **non-default `remote-start-preview` Cargo feature**. Default builds
 advertise `accepts_start: false` and reject queuing. Even a preview build advertises
 Start only with a successful same-owner/community receiver pump in the last 15s
-and at least one destination-local provisioned, compatible configuration. A
+and at least one destination-local provisioned, compatible configuration with an
+available agent key (the same availability refusal as launch). A
 runtime catalog entry alone is not launch capability. This is not a release or
 physical-host/provider certification.
 
@@ -64,7 +65,24 @@ immutable ledger replay and before creating any new intent or side effect. Futur
 timestamps are rejected. Expiration never creates a replacement operation.
 
 The native outbox uses restricted atomic writes, directory fsync and OS file locks.
-It retains signed commands and receipts through ACK loss/reconnect/restart.
+It retains signed commands and receipt ciphertext through ACK loss/reconnect/restart.
+Before retrying a durable receipt, the destination checks accepted history. If the
+result never reached the relay and its envelope is at least 10 minutes old, it
+re-signs the **same encrypted observation bytes and routing tags** with a fresh
+transport timestamp and fsyncs before sending. Original command ID, operation,
+run, outcome and observation time do not change. Recent retries reuse exact
+signed bytes; accepted history of any earlier envelope resolves ACK loss without
+creating another observation. Only a saved, authenticated result may be renewed;
+this never executes an expired intent or opens a new ledger operation. Current
+registration and unlocked owner/community authority are still required.
+
+Owner-private host registration/inventory and execution history reads use the
+same native no-redirect client as Start publication. Their 15-second per-request
+deadline includes response-body consumption (rate-limit admission wait is
+separate). Redirects are errors, including 307/308: neither private filter bodies
+nor authentication are sent to a redirect target. Unrelated query transports
+retain their existing policy.
+
 Publication errors are recorded per entry, remain visible and retry independently;
 a revoked old registration does not starve another operation. Corrupt bindings,
 missing receipts and invalid/cyclic supersession chains fail closed. Transport ACK

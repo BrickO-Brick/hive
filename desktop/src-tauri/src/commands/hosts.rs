@@ -471,7 +471,7 @@ pub async fn get_host_history_page(
     {
         return Err("Invalid host history scope".into());
     }
-    let events = crate::relay::query_relay_at_with_keys(
+    let events = crate::relay::query_private_host_at_with_keys(
         &state,
         &crate::relay::relay_http_base_url(&relay_url),
         &[filter],

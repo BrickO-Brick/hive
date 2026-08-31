@@ -1,4 +1,5 @@
-//! Encrypted, immutable transport outbox. Execution authority remains in the
+//! Encrypted transport outbox with immutable command and observation payloads.
+//! Only a receipt transport timestamp/signature may be renewed. Authority remains in the
 //! per-placement journal; transport retry must never create a new operation.
 use nostr::Event;
 use serde::{Deserialize, Serialize};
@@ -77,6 +78,53 @@ impl Store {
         })
     }
 
+    /// Prepare/authenticate one durable result, fsync its envelope, then publish.
+    /// No later entry can age an earlier prepared envelope while doing network
+    /// reads. A failed entry remains visible and never starves other placements.
+    pub async fn retry_receipts<
+        Prepared: std::future::Future<Output = Result<Pending, String>> + Send,
+        Published: std::future::Future<Output = Result<(), String>> + Send,
+    >(
+        &mut self,
+        mut prepare: impl FnMut(Pending) -> Prepared,
+        mut publish: impl FnMut(Pending) -> Published,
+    ) -> Result<(), String> {
+        let ids: Vec<_> = self.journal.received.keys().cloned().collect();
+        for id in ids {
+            let Some(pending) = self.journal.received.get(&id).cloned() else {
+                continue;
+            };
+            if pending.published {
+                continue;
+            }
+            match prepare(pending.clone()).await {
+                Ok(mut ready) => {
+                    // Even a crash inside publish leaves exactly these signed
+                    // bytes durable. Keep the original observation ciphertext.
+                    self.journal.received.insert(id.clone(), ready.clone());
+                    self.save()?;
+                    if !ready.published {
+                        match publish(ready.clone()).await {
+                            Ok(()) => {
+                                ready.published = true;
+                                ready.error = None;
+                            }
+                            Err(error) => ready.error = Some(error),
+                        }
+                    }
+                    self.journal.received.insert(id, ready);
+                }
+                Err(error) => {
+                    let mut failed = pending;
+                    failed.error = Some(error);
+                    self.journal.received.insert(id, failed);
+                }
+            }
+            self.save()?;
+        }
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<(), String> {
         if self.journal.sent.len() + self.journal.received.len() + self.journal.moves.len() > 4096 {
             return Err("Start outbox requires archival".into());
@@ -93,9 +141,82 @@ impl Store {
     }
 }
 
+/// Recover delivery of an already durable observation, never execution. The caller
+/// saves the journal BEFORE sending any renewed envelope and still revalidates
+/// current registration/owner authority at publication. Keep ciphertext byte-exact:
+/// even ambiguous acceptance can only yield the same proof, not a new observation.
+pub(super) fn prepare_receipt(
+    pending: &mut Pending,
+    owner: &nostr::Keys,
+    host: &nostr::Keys,
+    relay: &str,
+    history: &[Event],
+    now: u64,
+) -> Result<(), String> {
+    use buzz_core_pkg::host_execution;
+    if pending.published {
+        return Ok(());
+    }
+    // Authenticate the original command at its signed time, including its bounded
+    // lifetime. This is read-only evidence recovery, not admission of an expired
+    // intent to the executor. Wrong host/community/registration fail closed.
+    let request = host_execution::decrypt_command(
+        host,
+        &pending.registration,
+        &pending.command,
+        relay,
+        pending.command.created_at.as_secs(),
+    )?;
+    let event = pending
+        .receipt
+        .as_ref()
+        .ok_or("missing durable Start receipt")?;
+    host_execution::decrypt_receipt(
+        owner,
+        &pending.registration,
+        event,
+        &pending.command,
+        &request,
+    )?;
+    if event.created_at.as_secs() > now.saturating_add(30) {
+        return Err("receipt timestamp is in the future".into());
+    }
+    // ACK loss is not non-acceptance. Match immutable ciphertext/routing, not only
+    // event ID: an earlier envelope may have committed before a later retry.
+    if history.iter().any(|accepted| {
+        accepted.content == event.content
+            && accepted.tags == event.tags
+            && host_execution::decrypt_receipt(
+                owner,
+                &pending.registration,
+                accepted,
+                &pending.command,
+                &request,
+            )
+            .is_ok()
+    }) {
+        pending.published = true;
+        pending.error = None;
+        return Ok(());
+    }
+    // Renew before the relay's +/-900s admission window, leaving time for I/O.
+    // Recent retries reuse exact bytes; observation/request/run remain unchanged.
+    if now.saturating_sub(event.created_at.as_secs()) >= 600 {
+        pending.receipt = Some(
+            nostr::EventBuilder::new(event.kind, event.content.clone())
+                .allow_self_tagging()
+                .tags(event.tags.clone())
+                .custom_created_at(nostr::Timestamp::from(now))
+                .sign_with_keys(host)
+                .map_err(|_| "receipt transport signing failed")?,
+        );
+    }
+    Ok(())
+}
+
 /// Attempt every eligible entry independently. Failed publication remains pending
 /// and visible; an ACK is recorded only for that exact event. Caller fsyncs before
-/// returning. Dropped ACK/restart consequently resends immutable bytes.
+/// returning. Receipt preparation is persisted separately before this send loop.
 pub(super) async fn retry_pending<Fut: std::future::Future<Output = Result<(), String>> + Send>(
     entries: &mut BTreeMap<String, Pending>,
     receipts: bool,
@@ -221,3 +342,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "host_start_recovery_tests.rs"]
+mod recovery_tests;

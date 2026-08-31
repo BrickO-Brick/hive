@@ -1,7 +1,7 @@
 //! Owner-operated Desktop Start transport. No host-key login and no source
 //! identity/config/file transfer. Command/receipt payloads are encrypted; routing
 //! envelopes and local retry bookkeeping contain no launch secrets.
-use super::host_start_store::{retry_pending, Pending, Store};
+use super::host_start_store::{prepare_receipt, retry_pending, Pending, Store};
 use crate::app_state::AppState;
 use buzz_core_pkg::{
     host,
@@ -28,7 +28,7 @@ pub(super) async fn current_registration(
     relay: &str,
     id: &str,
 ) -> Result<Event, String> {
-    let events = crate::relay::query_relay_at_with_keys(state, &crate::relay::relay_http_base_url(relay),
+    let events = crate::relay::query_private_host_at_with_keys(state, &crate::relay::relay_http_base_url(relay),
         &[serde_json::json!({"kinds":[50000], "ids":[id], "#p":[owner.public_key().to_hex()], "limit":2})], owner, None)
         .await.map_err(|_| "cannot verify destination registration")?;
     let [reg] = events.as_slice() else {
@@ -170,7 +170,7 @@ pub(super) async fn history(
 ) -> Result<Vec<Event>, String> {
     let mut result = Vec::new();
     loop {
-        let page = crate::relay::query_relay_at_with_keys(
+        let page = crate::relay::query_private_host_at_with_keys(
             state,
             &crate::relay::relay_http_base_url(relay),
             &[filter.clone()],
@@ -229,7 +229,7 @@ async fn publish(
     let response = state
         .media_fetch_client
         .post(url)
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(crate::relay::PRIVATE_HOST_REQUEST_TIMEOUT)
         .header("Authorization", auth)
         .header("Content-Type", "application/json")
         .body(bytes)
@@ -367,12 +367,37 @@ pub async fn pump_host_start(
         );
         store.save()?;
     }
+    // The durable publication owner fsyncs each prepared envelope before send.
     // One revoked/unpublishable operation must not starve another placement.
-    retry_pending(&mut store.journal.received, true, |pending| {
-        publish_pending(&state, &owner, &relay, pending, true)
-    })
-    .await;
-    store.save()?;
+    store
+        .retry_receipts(
+            |mut pending| {
+                let (state, owner, host_keys, relay, receipts, expected_owner) = (
+                    &state,
+                    &owner,
+                    &host_keys,
+                    &relay,
+                    &receipts,
+                    &expected_owner,
+                );
+                async move {
+                    current_registration(state, owner, relay, &pending.registration.id.to_hex())
+                        .await?;
+                    scope(state, expected_owner, relay)?;
+                    prepare_receipt(
+                        &mut pending,
+                        owner,
+                        host_keys,
+                        relay,
+                        receipts,
+                        Timestamp::now().as_secs(),
+                    )?;
+                    Ok(pending)
+                }
+            },
+            |pending| publish_pending(&state, &owner, &relay, pending, true),
+        )
+        .await?;
     retry_pending(&mut store.journal.sent, false, |pending| {
         publish_pending(&state, &owner, &relay, pending, false)
     })
@@ -638,6 +663,7 @@ async fn publish_pending(
         &pending.command
     };
     current_registration(state, owner, relay, &pending.registration.id.to_hex()).await?;
+    scope(state, &owner.public_key().to_hex(), relay)?;
     publish(state, owner, relay, &pending.registration, event).await
 }
 

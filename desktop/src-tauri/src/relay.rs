@@ -350,6 +350,9 @@ pub async fn relay_error_message(response: reqwest::Response) -> String {
     format!("relay returned {status}")
 }
 
+mod private_host;
+pub(crate) use private_host::{query_private_host_at_with_keys, PRIVATE_HOST_REQUEST_TIMEOUT};
+
 // ── HTTP bridge: POST /query ────────────────────────────────────────────────
 
 /// Execute a one-shot query via the relay's HTTP bridge (`POST /query`).

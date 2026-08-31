@@ -88,7 +88,7 @@ pub async fn execute_host_command(
     let catalog = super::discover_acp_providers(app.clone(), Some(true))
         .await
         .unwrap_or_default();
-    let registrations = crate::relay::query_relay_at_with_keys(&state,
+    let registrations = crate::relay::query_private_host_at_with_keys(&state,
         &crate::relay::relay_http_base_url(&relay),
         &[serde_json::json!({"kinds": [50000], "ids": [registration_id], "#p": [expected_owner], "limit": 2})],
         &owner, None).await.map_err(|_| "cannot revalidate execution registration")?;

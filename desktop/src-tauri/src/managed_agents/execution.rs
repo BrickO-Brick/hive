@@ -43,9 +43,7 @@ pub(crate) fn local_execution_config(
     app: &AppHandle,
     record: &ManagedAgentRecord,
 ) -> Result<LocalExecutionConfig, String> {
-    if record.backend != BackendKind::Local {
-        return Err("destination agent is not locally provisioned".into());
-    }
+    local_execution_prerequisites(record)?;
     let personas = load_personas(app)?;
     let teams = load_teams(app)?;
     let global = load_global_agent_config(app)?;
@@ -74,6 +72,18 @@ pub(crate) fn local_execution_config(
         runtime: runtime.id.into(),
         revision: config_revision(record, &personas, &global, &teams, &descriptor)?,
     })
+}
+
+// Shared by inspection/advertisement and the launch preflight. Only key
+// availability is checked, exactly as at spawn; no key parsing/export is needed.
+fn local_execution_prerequisites(record: &ManagedAgentRecord) -> Result<(), String> {
+    if record.backend != BackendKind::Local {
+        return Err("destination agent is not locally provisioned".into());
+    }
+    if let Some(error) = super::storage::spawn_key_refusal(record) {
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Remote execution requires an explicit verified owner attestation, even for
@@ -437,6 +447,24 @@ fn exact_generation_matches(actual: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keyless_record_is_not_advertised_as_locally_provisioned() {
+        let mut record: ManagedAgentRecord = serde_json::from_value(serde_json::json!({
+            "pubkey": "synthetic-agent", "name": "test-agent", "private_key_nsec": "",
+            "relay_url": "wss://relay.example", "acp_command": "buzz-acp",
+            "agent_command": "buzz-agent", "agent_args": [], "mcp_command": "",
+            "turn_timeout_seconds": 320, "created_at": "", "updated_at": ""
+        }))
+        .unwrap();
+        assert_eq!(
+            local_execution_prerequisites(&record).unwrap_err(),
+            super::super::storage::spawn_key_refusal(&record).unwrap()
+        );
+        // Availability only: this preflight must not inspect or export key bytes.
+        record.private_key_nsec = "synthetic-nonempty-placeholder".into();
+        assert!(local_execution_prerequisites(&record).is_ok());
+    }
+
     #[test]
     fn stop_fences_successor_and_malformed_or_legacy_generation() {
         assert!(exact_generation_matches(&"aa".repeat(16), &"aa".repeat(16)));
