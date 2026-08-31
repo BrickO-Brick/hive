@@ -2,6 +2,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::media_transcode::transcode_voice_note_to_mp4_with_cancellation;
 
+const VOICE_NOTE_MAX_INPUT_BYTES: usize = 128 * 1024 * 1024;
+
 pub(super) fn is_voice_note_filename(filename: Option<&str>) -> bool {
     filename.is_some_and(|name| {
         let lower = name.to_ascii_lowercase();
@@ -20,6 +22,7 @@ pub(super) async fn prepare_voice_note_for_upload(
     data: Vec<u8>,
     cancellation: Option<&CancellationToken>,
 ) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    validate_voice_note_input_size(data.len())?;
     let cancellation = cancellation.cloned();
     tokio::task::spawn_blocking(move || {
         let detected = infer::get(&data)
@@ -47,9 +50,21 @@ pub(super) async fn prepare_voice_note_for_upload(
     .map_err(|error| format!("voice note task failed: {error}"))?
 }
 
+fn validate_voice_note_input_size(size: usize) -> Result<(), String> {
+    if size > VOICE_NOTE_MAX_INPUT_BYTES {
+        return Err(format!(
+            "Voice note exceeds the maximum input size of {VOICE_NOTE_MAX_INPUT_BYTES} bytes."
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_voice_note_filename, voice_note_mp4_filename};
+    use super::{
+        is_voice_note_filename, validate_voice_note_input_size, voice_note_mp4_filename,
+        VOICE_NOTE_MAX_INPUT_BYTES,
+    };
 
     #[test]
     fn voice_note_filenames_are_scoped_and_rewritten_for_video_upload() {
@@ -60,5 +75,11 @@ mod tests {
             voice_note_mp4_filename("voice-note-123.wav"),
             "voice-note-123.mp4"
         );
+    }
+
+    #[test]
+    fn voice_note_input_size_is_bounded_before_transcoding() {
+        assert!(validate_voice_note_input_size(VOICE_NOTE_MAX_INPUT_BYTES).is_ok());
+        assert!(validate_voice_note_input_size(VOICE_NOTE_MAX_INPUT_BYTES + 1).is_err());
     }
 }

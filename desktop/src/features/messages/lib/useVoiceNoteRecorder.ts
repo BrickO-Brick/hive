@@ -43,7 +43,7 @@ export function useVoiceNoteRecorder() {
   const mountedRef = React.useRef(true);
   const sessionRef = React.useRef<RecordingSession | null>(null);
   const [status, setStatus] = React.useState<
-    "idle" | "recording" | "processing"
+    "idle" | "requesting" | "recording" | "processing"
   >("idle");
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
   const [levels, setLevels] = React.useState<number[]>([]);
@@ -83,6 +83,7 @@ export function useVoiceNoteRecorder() {
       stream: null,
     };
     sessionRef.current = session;
+    setStatus("requesting");
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -211,6 +212,7 @@ export function useVoiceNoteRecorder() {
         return;
       }
       sessionRef.current = null;
+      setStatus("idle");
       const denied =
         cause instanceof DOMException &&
         (cause.name === "NotAllowedError" || cause.name === "SecurityError");

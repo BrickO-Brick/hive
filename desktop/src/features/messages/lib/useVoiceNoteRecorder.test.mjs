@@ -63,6 +63,12 @@ class FakeAudioContext {
 }
 
 const streams = [];
+const acquireFakeStream = async () => {
+  const stream = new FakeStream();
+  streams.push(stream);
+  return stream;
+};
+let getUserMediaImpl = acquireFakeStream;
 before(() => {
   Object.assign(globalThis, {
     AudioContext: FakeAudioContext,
@@ -76,11 +82,7 @@ before(() => {
   Object.defineProperty(dom.window.navigator, "mediaDevices", {
     configurable: true,
     value: {
-      async getUserMedia() {
-        const stream = new FakeStream();
-        streams.push(stream);
-        return stream;
-      },
+      getUserMedia: (...args) => getUserMediaImpl(...args),
     },
   });
   Object.defineProperty(globalThis, "navigator", {
@@ -92,6 +94,40 @@ before(() => {
 });
 
 after(() => dom.window.close());
+
+test("permission acquisition is visible, cancellable, and releases a late stream", async () => {
+  const { act, cleanup, renderHook } = await import("@testing-library/react");
+  const { useVoiceNoteRecorder } = await import("./useVoiceNoteRecorder.ts");
+  const { result, unmount } = renderHook(() => useVoiceNoteRecorder());
+  const stream = new FakeStream();
+  let resolvePermission;
+  getUserMediaImpl = () =>
+    new Promise((resolve) => {
+      resolvePermission = resolve;
+    });
+
+  try {
+    let startPromise;
+    act(() => {
+      startPromise = result.current.start();
+    });
+    assert.equal(result.current.status, "requesting");
+
+    act(() => result.current.cancel());
+    assert.equal(result.current.status, "idle");
+
+    await act(async () => {
+      resolvePermission(stream);
+      await startPromise;
+    });
+    assert.equal(stream.track.stopped, true);
+    assert.equal(result.current.status, "idle");
+  } finally {
+    getUserMediaImpl = acquireFakeStream;
+    unmount();
+    cleanup();
+  }
+});
 
 test("remains usable after Strict Mode replays the mount effect", async () => {
   const { StrictMode, createElement } = await import("react");

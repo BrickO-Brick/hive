@@ -23,12 +23,14 @@ export function VoiceNoteRecorder({
   maxDurationSeconds,
   onCancel,
   processing,
+  requesting,
 }: {
   elapsedSeconds: number;
   levels: number[];
   maxDurationSeconds: number;
   onCancel: () => void;
   processing: boolean;
+  requesting: boolean;
 }) {
   const waveformRef = React.useRef<HTMLDivElement | null>(null);
   const trackRef = React.useRef<HTMLDivElement | null>(null);
@@ -99,7 +101,9 @@ export function VoiceNoteRecorder({
       className="flex min-w-0 flex-1 items-center gap-1"
       data-testid="voice-note-recorder"
     >
-      <legend className="sr-only">Recording voice note</legend>
+      <legend className="sr-only">
+        {requesting ? "Waiting for microphone access" : "Recording voice note"}
+      </legend>
       <Tooltip disableHoverableContent>
         <TooltipTrigger asChild>
           <Button
@@ -117,12 +121,20 @@ export function VoiceNoteRecorder({
         <TooltipContent>Discard voice note</TooltipContent>
       </Tooltip>
       <div className="mx-1 h-5 w-px shrink-0 bg-border/60" />
-      <span className="shrink-0 whitespace-nowrap text-xs font-medium tabular-nums text-foreground">
-        {formatVoiceNoteDuration(Math.min(elapsedSeconds, maxDurationSeconds))}
-        <span className="text-muted-foreground">
-          {` / ${formatVoiceNoteDuration(maxDurationSeconds)}`}
+      {requesting ? (
+        <span className="shrink-0 whitespace-nowrap text-xs font-medium text-muted-foreground">
+          Waiting for microphone…
         </span>
-      </span>
+      ) : (
+        <span className="shrink-0 whitespace-nowrap text-xs font-medium tabular-nums text-foreground">
+          {formatVoiceNoteDuration(
+            Math.min(elapsedSeconds, maxDurationSeconds),
+          )}
+          <span className="text-muted-foreground">
+            {` / ${formatVoiceNoteDuration(maxDurationSeconds)}`}
+          </span>
+        </span>
+      )}
       <div
         aria-hidden="true"
         className="h-6 min-w-0 flex-1 overflow-hidden"

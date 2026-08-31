@@ -139,6 +139,7 @@ export function useComposerVoiceNote({
           maxDurationSeconds={VOICE_NOTE_MAX_DURATION_SECONDS}
           onCancel={cancel}
           processing={recorder.status === "processing"}
+          requesting={recorder.status === "requesting"}
         />
       ),
     statusRef,

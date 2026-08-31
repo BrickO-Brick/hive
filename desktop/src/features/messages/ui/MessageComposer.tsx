@@ -965,7 +965,7 @@ function MessageComposerImpl({
               isFormattingOpen={isFormattingOpen}
               isSending={isSending || mentionSendFlow.isPreparingMentionSend}
               isUploading={media.isUploading}
-              isVoiceNoteProcessing={voiceNote.status === "processing"}
+              isVoiceNoteProcessing={voiceNote.status !== "recording"}
               isVoiceNoteRecording={voiceNote.status !== "idle"}
               hasVoiceNoteAttachment={voiceNote.hasAttachment}
               voiceNoteRecorder={voiceNote.recorderElement}
