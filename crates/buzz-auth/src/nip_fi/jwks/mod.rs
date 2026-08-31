@@ -47,15 +47,15 @@ pub const MAX_JWKS_RESPONSE_BYTES: usize = 512 * 1024; // 512 KiB
 /// range panics when computing snapshot deadlines.
 pub const MAX_JWKS_TIMING_SECONDS: u64 = 365 * 24 * 3600; // 1 year
 
-/// Per-request deadline for the complete JWKS fetch (connect + headers + body).
-/// This constant documents the timeout set on the default `HttpJwksFetcher::new()`
-/// client; it cannot be removed via `with_client`.
+/// Per-request deadline for the complete JWKS fetch (connect + headers + body),
+/// enforced inside `fetch_jwks` independently of any client-level timeout.
 pub const JWKS_REQUEST_TIMEOUT_SECS: u64 = 10;
 
 /// Validate that a JWKS URI is safe to fetch: HTTPS scheme, no credentials,
-/// no fragment, and the host (if a bare IP) is not private/reserved. Hostnames
-/// are not resolved here — runtime SSRF for hostname targets is limited by
-/// redirect denial and the intrinsic request deadline.
+/// no fragment, and the host (if a bare IP) is not private/reserved.
+/// Hostname targets are resolved and checked at every fetch in `fetch_jwks`
+/// to prevent DNS rebinding — this check catches the most common
+/// misconfiguration at construction time.
 pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
     let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
     if parsed.scheme() != "https" {
@@ -70,8 +70,7 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
     if parsed.fragment().is_some() {
         return Err(JwksFetchError::InvalidUri);
     }
-    // Reject bare private/reserved IP targets at construction time. Hostname
-    // targets are additionally constrained at runtime by redirect denial.
+    // Reject bare private/reserved IP targets at construction time.
     if let Some(url::Host::Ipv4(addr)) = parsed.host() {
         if is_private_ip(&std::net::IpAddr::V4(addr)) {
             return Err(JwksFetchError::InvalidUri);
@@ -83,6 +82,37 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
         }
     }
     Ok(())
+}
+
+/// Resolve `host:port` to IP addresses and reject if any are private/reserved.
+///
+/// Returns the first safe address for DNS pinning. Blocks on the OS resolver
+/// via `spawn_blocking` to avoid blocking the async runtime.
+///
+/// Rejecting *any* resolved address (not just the first) closes split-horizon
+/// DNS attacks: if an attacker can cause one DNS record to resolve to a private
+/// address, the entire request is blocked even when other records are public.
+async fn resolve_and_check_ssrf(host: &str, port: u16) -> Result<std::net::IpAddr, JwksFetchError> {
+    let addr_str = format!("{host}:{port}");
+    let addrs: Vec<std::net::IpAddr> = tokio::task::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        addr_str
+            .to_socket_addrs()
+            .map(|iter| iter.map(|sa| sa.ip()).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|_| JwksFetchError::NetworkError)?
+    .map_err(|_| JwksFetchError::NetworkError)?;
+
+    if addrs.is_empty() {
+        return Err(JwksFetchError::NetworkError);
+    }
+    for ip in &addrs {
+        if is_private_ip(ip) {
+            return Err(JwksFetchError::InvalidUri);
+        }
+    }
+    Ok(addrs[0])
 }
 
 #[derive(Clone)]
@@ -139,8 +169,8 @@ pub struct IssuerJwksConfig {
 /// URLs, or raw response content appear in these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum JwksFetchError {
-    /// Non-HTTPS scheme, embedded credentials, fragment, or bare
-    /// private/reserved IP host.
+    /// Non-HTTPS scheme, embedded credentials, fragment, bare
+    /// private/reserved IP host, or DNS resolved to a private/reserved address.
     #[error("JWKS URI failed safety validation")]
     InvalidUri,
     /// Response body exceeded [`MAX_JWKS_RESPONSE_BYTES`].
@@ -160,8 +190,12 @@ pub enum JwksFetchError {
 /// Sealed injection seam for JWKS HTTP fetching. Only types inside `buzz_auth`
 /// may implement it — external types cannot name the private supertrait.
 ///
-/// Implementations MUST enforce [`MAX_JWKS_RESPONSE_BYTES`] and MUST reject
-/// non-2xx responses.
+/// Implementations MUST:
+/// - resolve hostname targets and reject any private/reserved resolved address;
+/// - deny redirects (3xx responses rejected as `NetworkError`);
+/// - enforce a finite per-fetch deadline ([`JWKS_REQUEST_TIMEOUT_SECS`]);
+/// - enforce [`MAX_JWKS_RESPONSE_BYTES`] via incremental streaming;
+/// - reject non-2xx responses.
 pub trait JwksFetcher: super::verifier::sealed::Sealed + Send + Sync + 'static {
     /// Fetch and return the raw JSON body from the given JWKS URI.
     fn fetch_jwks<'a>(
@@ -170,35 +204,27 @@ pub trait JwksFetcher: super::verifier::sealed::Sealed + Send + Sync + 'static {
     ) -> impl std::future::Future<Output = Result<String, JwksFetchError>> + Send + 'a;
 }
 
-/// Production [`JwksFetcher`] backed by `reqwest`. The default client enforces:
-/// - no redirects (`Policy::none()`) — a redirect to an internal host would
-///   bypass the URI safety check performed at startup;
-/// - a finite per-request deadline ([`JWKS_REQUEST_TIMEOUT_SECS`]).
+/// Production [`JwksFetcher`] backed by `reqwest`. Each call to `fetch_jwks`
+/// builds a dedicated pinned client — no shared connection state between fetches.
 ///
-/// `with_client` accepts a caller-supplied client; the caller must preserve
-/// the no-redirect and finite-timeout invariants. The JWKS URI safety check
-/// is still enforced by [`ProductionJwksSource::new`] regardless.
-#[derive(Clone)]
-pub struct HttpJwksFetcher {
-    client: reqwest::Client,
-}
+/// Per-fetch boundary enforcement:
+/// - hostname DNS is resolved and every address checked against
+///   `buzz_core::network::is_private_ip` before the request is sent;
+/// - the request is pinned to the validated address to prevent DNS rebinding
+///   TOCTOU (the OS resolver is called once per fetch, not once per URL);
+/// - a per-request timeout of [`JWKS_REQUEST_TIMEOUT_SECS`] is applied via
+///   `RequestBuilder::timeout`;
+/// - 3xx responses are rejected as `NetworkError` — redirects are never followed;
+/// - the body is streamed incrementally and stopped at
+///   [`MAX_JWKS_RESPONSE_BYTES`] + 1.
+#[derive(Clone, Debug)]
+pub struct HttpJwksFetcher;
 
 impl HttpJwksFetcher {
-    /// Builds a hardened client: no redirects (`Policy::none()`), finite
-    /// request deadline ([`JWKS_REQUEST_TIMEOUT_SECS`]).
+    /// Builds a new fetcher. Security invariants are enforced per-request in
+    /// `fetch_jwks` — each call constructs a dedicated pinned client.
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(JWKS_REQUEST_TIMEOUT_SECS))
-            .build()
-            .expect("HttpJwksFetcher default client build failed");
-        Self { client }
-    }
-
-    /// The caller is responsible for preserving the no-redirect and
-    /// finite-timeout invariants documented on this type.
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
+        Self
     }
 }
 
@@ -208,26 +234,40 @@ impl Default for HttpJwksFetcher {
     }
 }
 
-impl std::fmt::Debug for HttpJwksFetcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("HttpJwksFetcher")
-    }
-}
-
 impl super::verifier::sealed::Sealed for HttpJwksFetcher {}
 
 impl JwksFetcher for HttpJwksFetcher {
     async fn fetch_jwks<'a>(&'a self, uri: &'a str) -> Result<String, JwksFetchError> {
-        let response = self
-            .client
+        let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
+        let host = parsed.host_str().ok_or(JwksFetchError::InvalidUri)?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
+
+        // Resolve and check every IP before sending. Pins DNS to the validated
+        // address to prevent rebinding TOCTOU between check and connect.
+        let safe_ip = resolve_and_check_ssrf(host, port).await?;
+
+        // Build a per-request client that:
+        // - denies redirects (a 3xx to an internal host bypasses the URI check);
+        // - has no system proxy (proxy would resolve the original hostname itself);
+        // - pins this request to the validated IP.
+        // The connection pool from self.client is not reused here by design —
+        // DNS pinning requires a fresh client for each pinned address.
+        let pinned_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve(host, std::net::SocketAddr::new(safe_ip, port))
+            .build()
+            .map_err(|_| JwksFetchError::NetworkError)?;
+
+        let response = pinned_client
             .get(uri)
+            .timeout(std::time::Duration::from_secs(JWKS_REQUEST_TIMEOUT_SECS))
             .send()
             .await
             .map_err(|_| JwksFetchError::NetworkError)?;
 
-        // Non-2xx rejected before reading the body. A 3xx here means the
-        // client followed a redirect (default client disallows this); 4xx/5xx
-        // means the endpoint is not serving JWKS.
+        // Reject non-2xx. A 3xx here means our no-redirect policy was somehow
+        // bypassed — treat as a network error.
         if !response.status().is_success() {
             return Err(JwksFetchError::NetworkError);
         }
