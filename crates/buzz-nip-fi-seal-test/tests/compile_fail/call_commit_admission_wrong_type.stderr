@@ -1,0 +1,35 @@
+error[E0603]: module `nip_fi` is private
+ --> tests/compile_fail/call_commit_admission_wrong_type.rs:9:25
+  |
+9 |     let _ = buzz_relay::nip_fi::admission::commit_admission;
+  |                         ^^^^^^             ---------------- function `commit_admission` is not publicly re-exported
+  |                         |
+  |                         private module
+  |
+note: the module `nip_fi` is defined here
+ --> $WORKSPACE/crates/buzz-relay/src/lib.rs
+  |
+  | mod nip_fi;
+  | ^^^^^^^^^^
+
+error[E0283]: type annotations needed
+ --> tests/compile_fail/call_commit_admission_wrong_type.rs:9:13
+  |
+9 |     let _ = buzz_relay::nip_fi::admission::commit_admission;
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type of the type parameter `S` declared on the function `commit_admission`
+  |
+  = note: cannot satisfy `_: buzz_auth::nip_fi::verifier::IssuerKeySource`
+help: the trait `buzz_auth::nip_fi::verifier::IssuerKeySource` is implemented for `buzz_auth::nip_fi::jwks::ProductionJwksSource<F>`
+ --> $WORKSPACE/crates/buzz-auth/src/nip_fi/jwks/mod.rs
+  |
+  | impl<F: JwksFetcher> IssuerKeySource for ProductionJwksSource<F> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `buzz_relay::nip_fi::admission::commit_admission`
+ --> $WORKSPACE/crates/buzz-relay/src/nip_fi/admission.rs
+  |
+  | pub(crate) async fn commit_admission<S: IssuerKeySource + Sync>(
+  |                                         ^^^^^^^^^^^^^^^ required by this bound in `commit_admission`
+help: consider specifying the generic argument
+  |
+9 |     let _ = buzz_relay::nip_fi::admission::commit_admission::<S>;
+  |                                                            +++++
