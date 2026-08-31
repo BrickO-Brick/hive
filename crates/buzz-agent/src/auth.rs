@@ -923,6 +923,14 @@ impl PkceOAuthTokenSource {
         let snapshot_gen = read_attempt(&attempt_path)
             .map(|r| r.generation)
             .unwrap_or(0);
+        // Observability hook: cross-process tests install a tracing layer that
+        // watches for this event to establish deterministic ordering — it fires
+        // after the snapshot is taken and before the process queues on the lock.
+        tracing::trace!(
+            target: "buzz_agent::auth::acquire_leader_snapshot",
+            snapshot_gen,
+            "snapshot taken"
+        );
 
         // Slow path: one flow at a time per cache key. The waiter's deadline
         // exceeds a healthy holder's attempt deadline, so it never gives up on
@@ -2213,7 +2221,10 @@ mod tests {
         let key: InflightKey = (source.lock_path(), AuthIntent::Headless);
         let slot = Arc::new(InflightSlot::new());
         inflight_registry().insert(key.clone(), slot.clone());
-        slot.publish(None, Err(AuthError::RefreshRejected));
+        slot.publish(
+            digest_of(Some("rejected-bytes")),
+            Err(AuthError::RefreshRejected),
+        );
 
         // Hold `state` for the whole acquisition: the fast-path `try_lock` and
         // the old recheck's `try_lock` both fail, forcing the contended branch.

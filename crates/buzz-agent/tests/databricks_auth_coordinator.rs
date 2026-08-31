@@ -146,14 +146,26 @@ enum RefreshMode {
     Reject,
     /// `500` — a provider-side fault, transient rather than a credential
     /// decision.
+    ///
+    /// Used only by Unix-only tests (refresh-error classification).
+    /// Gated to suppress dead-code warnings on Windows.
+    #[cfg(unix)]
     ServerError,
     /// A 4xx with the given OAuth `error` code in the body. Lets a test assert
     /// the coordinator treats `invalid_grant` (any 4xx) as a dead grant, but
     /// every other error code — and any non-`invalid_grant` status like `429`
     /// — as infrastructural rather than a credential rejection.
+    ///
+    /// Used only by Unix-only tests (refresh-error classification).
+    /// Gated to suppress dead-code warnings on Windows.
+    #[cfg(unix)]
     ClientError(axum::http::StatusCode, &'static str),
     /// Sleep `d` before answering, so the caller's per-request HTTP timeout
     /// elapses first (a transport timeout, not a verdict from the provider).
+    ///
+    /// Used only by Unix-only tests (refresh-timeout classification).
+    /// Gated to suppress dead-code warnings on Windows.
+    #[cfg(unix)]
     Hang(Duration),
     /// `200` returning the same fixed access token on every grant, regardless
     /// of how many are served. Models a provider that re-issues an identical
@@ -164,15 +176,6 @@ enum RefreshMode {
     /// reissuance). Gated to suppress dead-code warnings on Windows.
     #[cfg(unix)]
     SucceedSticky(&'static str),
-    /// Hang for `d`, then behave like `SucceedSticky(tok)` for all grants.
-    /// Lets the test guarantee a second process can queue on the lock before
-    /// A completes its refresh — the hang duration exceeds process-spawn
-    /// latency, making the ordering deterministic.
-    ///
-    /// Used only by the cross-process digest test. Gated the same as
-    /// `SucceedSticky` to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
-    HangThenSucceedSticky(Duration, &'static str),
 }
 
 /// How the stub's token endpoint answers an `authorization_code` grant (the
@@ -271,6 +274,7 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                         // A hang delays the answer so the caller's per-request
                         // HTTP timeout can elapse first (transport timeout, not
                         // a credential decision).
+                        #[cfg(unix)]
                         if let RefreshMode::Hang(d) = refresh {
                             tokio::time::sleep(d).await;
                         }
@@ -279,14 +283,25 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                                 axum::http::StatusCode::UNAUTHORIZED,
                                 Json(json!({ "error": "invalid_grant" })),
                             ),
+                            #[cfg(unix)]
                             RefreshMode::ServerError => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                                 Json(json!({ "error": "temporarily_unavailable" })),
                             ),
+                            #[cfg(unix)]
                             RefreshMode::ClientError(status, error) => {
                                 (status, Json(json!({ "error": error })))
                             }
-                            RefreshMode::Succeed | RefreshMode::Hang(_) => (
+                            RefreshMode::Succeed => (
+                                axum::http::StatusCode::OK,
+                                Json(json!({
+                                    "access_token": format!("refreshed-token-{n}"),
+                                    "refresh_token": "rotated-refresh",
+                                    "expires_in": 3600,
+                                })),
+                            ),
+                            #[cfg(unix)]
+                            RefreshMode::Hang(_) => (
                                 axum::http::StatusCode::OK,
                                 Json(json!({
                                     "access_token": format!("refreshed-token-{n}"),
@@ -303,18 +318,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                                     "expires_in": 3600,
                                 })),
                             ),
-                            #[cfg(unix)]
-                            RefreshMode::HangThenSucceedSticky(d, tok) => {
-                                tokio::time::sleep(d).await;
-                                (
-                                    axum::http::StatusCode::OK,
-                                    Json(json!({
-                                        "access_token": tok,
-                                        "refresh_token": "rotated-refresh",
-                                        "expires_in": 3600,
-                                    })),
-                                )
-                            }
                         };
                     }
                     let n = code_grants.fetch_add(1, Ordering::SeqCst) + 1;
@@ -373,6 +376,126 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
         code_grants,
         refresh_grants,
     }
+}
+
+/// Control handle for a stub whose refresh response is held until the parent
+/// explicitly releases it. Used by the cross-process digest test to establish
+/// deterministic ordering: the parent waits for `request_received` (proves A
+/// holds the lock and is mid-refresh), then spawns B, waits for B's snapshot
+/// marker, and finally calls `release()` before joining both workers.
+#[cfg(unix)]
+struct RefreshGate {
+    /// Notified by the stub once it has received the first refresh request.
+    request_received: Arc<tokio::sync::Notify>,
+    /// Parent signals this to let the stub return the response.
+    proceed: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(unix)]
+impl RefreshGate {
+    /// Asynchronously wait until the stub has received A's refresh request.
+    async fn wait_for_request(&self) {
+        self.request_received.notified().await;
+    }
+
+    /// Release the held refresh response so the stub replies to A.
+    fn release(&self) {
+        self.proceed.notify_one();
+    }
+}
+
+/// Spawn a stub that answers every refresh grant stickily with `tok`, but
+/// holds the FIRST response until the parent calls `RefreshGate::release()`.
+/// Subsequent refresh requests are answered immediately. Returns the stub (for
+/// `refresh_grants` assertions) and the control gate. Used only by the
+/// cross-process digest test.
+#[cfg(unix)]
+async fn spawn_stub_with_held_sticky_refresh(tok: &'static str) -> (Stub, RefreshGate) {
+    let code_grants = Arc::new(AtomicU64::new(0));
+    let refresh_grants = Arc::new(AtomicU64::new(0));
+    let request_received = Arc::new(tokio::sync::Notify::new());
+    let proceed = Arc::new(tokio::sync::Notify::new());
+
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let disco_base = base.clone();
+
+    let discovery = move || {
+        let base = disco_base.clone();
+        async move {
+            Json(json!({
+                "authorization_endpoint": format!("{base}/authorize"),
+                "token_endpoint": format!("{base}/token"),
+            }))
+        }
+    };
+
+    let code_for_token = code_grants.clone();
+    let refresh_for_token = refresh_grants.clone();
+    let received_for_handler = request_received.clone();
+    let proceed_for_handler = proceed.clone();
+    // Track whether the first refresh has been released yet. Once the first
+    // grant is released, subsequent grants return immediately.
+    let first_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let app = Router::new()
+        .route("/disco/a", get(discovery.clone()))
+        .route("/disco/b", get(discovery))
+        .route(
+            "/token",
+            post(move |Form(form): Form<TokenForm>| {
+                let code_grants = code_for_token.clone();
+                let refresh_grants = refresh_for_token.clone();
+                let received = received_for_handler.clone();
+                let proceed = proceed_for_handler.clone();
+                let first_released = first_released.clone();
+                async move {
+                    if form.grant_type == "refresh_token" {
+                        refresh_grants.fetch_add(1, Ordering::SeqCst);
+                        // Hold only the first refresh request; once released,
+                        // all subsequent requests return immediately.
+                        if !first_released.swap(true, Ordering::SeqCst) {
+                            received.notify_one();
+                            proceed.notified().await;
+                        }
+                        return (
+                            axum::http::StatusCode::OK,
+                            Json(json!({
+                                "access_token": tok,
+                                "refresh_token": "rotated-refresh",
+                                "expires_in": 3600,
+                            })),
+                        );
+                    }
+                    let n = code_grants.fetch_add(1, Ordering::SeqCst) + 1;
+                    (
+                        axum::http::StatusCode::OK,
+                        Json(json!({
+                            "access_token": format!("browser-token-{n}"),
+                            "refresh_token": "browser-refresh",
+                            "expires_in": 3600,
+                        })),
+                    )
+                }
+            }),
+        );
+
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let stub = Stub {
+        base,
+        code_grants,
+        refresh_grants,
+    };
+    let gate = RefreshGate {
+        request_received,
+        proceed,
+    };
+    (stub, gate)
 }
 
 fn config(stub: &Stub, disco_path: &str, cache_dir: &std::path::Path) -> PkceOAuthConfig {
@@ -2646,11 +2769,12 @@ async fn test_crossprocess_post_failure_userinitiated_runs_own_attempt() {
 // generation, so a third process C — which arrives AFTER A's failure but sees
 // no generation advance (B didn't re-write) — correctly runs its own attempt.
 //
-// Protocol ordering:
+// Protocol ordering (deterministic via markers, no timing):
 //   1. A (UserInitiated, deny-scripted) holds the lock mid-browser via
 //      LAUNCHED_MARKER + PROCEED_MARKER.
 //   2. B (UserInitiated, deny-scripted) starts while A holds the lock.
-//      B queues with snapshot gen=0. After 300 ms we signal A's proceed.
+//      B emits SNAPSHOT_MARKER after snapshotting gen=0 and before queueing
+//      on the lock. Parent observes the marker, then signals A's proceed.
 //   3. A: denial recorded, writes gen=1 to the attempt sidecar, releases lock.
 //   4. B: acquires lock, sees gen=1 > snap=0, intent matches → adopts A's
 //      denial. With the fix B does NOT re-write the sidecar. With the mutation
@@ -2667,7 +2791,7 @@ async fn test_crossprocess_post_failure_userinitiated_runs_own_attempt() {
 // on Windows as well as Unix.
 
 #[tokio::test]
-async fn test_crossprocess_adopter_does_not_relay_failure_to_third_process() {
+async fn test_crossprocess_adopter_does_not_advance_generation() {
     let stub = spawn_stub(false).await; // deny does not hit any endpoint
     let cache = TempDir::new().unwrap();
     let cfg = config(&stub, "/disco/a", cache.path());
@@ -2691,12 +2815,24 @@ async fn test_crossprocess_adopter_does_not_relay_failure_to_third_process() {
     // Wait until A holds the lock and its browser is open.
     wait_for_marker(&launched_a, "worker A browser launch").await;
 
-    // ---- Phase 2: B queues behind A ---------------------------------------
+    // ---- Phase 2: B queues behind A, snapshot barrier ---------------------
     // B is UserInitiated + deny-scripted, but B will adopt A's denial rather
     // than opening its own browser (B was queued while A held the lock).
-    let worker_b = spawn_worker(&cfg, cache.path(), "userinitiated", "deny", "b", &[]);
-    // Give B time to acquire the lock position before releasing A.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // SNAPSHOT_MARKER is emitted by the tracing layer in B's process after B
+    // snapshots gen=0 and before it queues on the lock — so observing it
+    // proves B has committed to gen=0 and is waiting behind A.
+    let snapshot_b = cache.path().join("b.snapshot");
+    let worker_b = spawn_worker(
+        &cfg,
+        cache.path(),
+        "userinitiated",
+        "deny",
+        "b",
+        &[("AUTH_WORKER_SNAPSHOT_MARKER", snapshot_b.as_path())],
+    );
+
+    // Wait until B has snapshotted gen=0, then release A.
+    wait_for_marker(&snapshot_b, "worker B snapshot").await;
 
     // ---- Phase 3: release A, let A fail and write gen=1 -------------------
     std::fs::write(&proceed_a, b"go").unwrap();
@@ -2760,28 +2896,28 @@ async fn test_crossprocess_adopter_does_not_relay_failure_to_third_process() {
 // own attempt rather than adopt A's failure — B's refresh gets "X", which is
 // valid for B, so B succeeds.
 //
-// Ordering: the stub hangs each refresh grant by 300 ms before returning "X".
-// A is spawned first; B is spawned after A's READY_MARKER fires (A has built
-// its source and is about to acquire the lock). Because A starts acquiring
-// immediately on its READY marker and the hang guarantees A holds the lock for
-// ≥300 ms, B is certain to be queued before A releases. This makes the
-// ordering deterministic: B always arrives with snapshot gen=0, sees A's
-// advance to gen=1, and the digest check is exercised.
+// Ordering is established with deterministic markers and the in-process stub
+// gate, not timing:
+//   1. A spawns (headless, rejected="X"). The stub holds A's refresh response
+//      until the parent calls `gate.release()`.
+//   2. Parent waits for `gate.wait_for_request()` — proves A has acquired the
+//      lock and is mid-refresh (the request arrived at the stub).
+//   3. Parent spawns B (headless, rejected="Y", SNAPSHOT_MARKER=b.snapshot).
+//   4. Parent waits for B's snapshot marker — proves B has snapshotted gen=0
+//      and is queued on the lock.
+//   5. Parent calls `gate.release()`: stub returns "X" to A. A finishes with
+//      RefreshRejected(digest(X)), writes sidecar gen=1, releases lock.
+//   6. B acquires: gen=1 > snap=0, digest(Y) ≠ digest(X) → B runs its own
+//      refresh → gets "X" → Ok("X").
 //
-// Mutation check: on the r8 shape (no digest gating) B adopts A's failure →
-// refresh_grants stays at 1 (B never hits the refresh endpoint). The assertion
-// `refresh_grants == 2` then FAILS. With the fix the assertion passes.
+// Mutation check (no digest gating): B adopts A's RefreshRejected →
+// refresh_grants stays at 1 → `refresh_grants == 2` assertion FAILS.
 
 #[cfg(unix)]
 #[tokio::test]
 async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders_failure() {
-    // Hang 300 ms per refresh, then stickily return "X". A holds the lock
-    // for ≥300 ms, giving B time to queue with snap=0.
-    let stub = spawn_stub_with(RefreshMode::HangThenSucceedSticky(
-        Duration::from_millis(300),
-        "X",
-    ))
-    .await;
+    // Stub stickily returns "X" but holds each response until released.
+    let (stub, gate) = spawn_stub_with_held_sticky_refresh("X").await;
     let cache = TempDir::new().unwrap();
     let cfg = config(&stub, "/disco/a", cache.path());
 
@@ -2798,10 +2934,10 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
 
     let result_a = cache.path().join("a.result.json");
     let result_b = cache.path().join("b.result.json");
-    let ready_a = cache.path().join("a.ready");
+    let snapshot_b = cache.path().join("b.snapshot");
 
-    // Worker A (rejected="X"): headless, no start barrier. A fires READY_MARKER
-    // (source built) and immediately begins acquiring the lock.
+    // ---- Phase 1: spawn A. A will acquire the lock and immediately call the
+    //              stub's refresh endpoint; the stub holds the response.
     let mut cmd_a = tokio::process::Command::new(env!("CARGO_BIN_EXE_auth-worker"));
     cmd_a
         .env("AUTH_WORKER_DISCOVERY_URL", &cfg.discovery_url)
@@ -2813,22 +2949,16 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
         .env("AUTH_WORKER_SCRIPT", "failopen") // headless never browses
         .env("AUTH_WORKER_REJECTED", "X")
         .env("AUTH_WORKER_RESULT", &result_a)
-        .env("AUTH_WORKER_READY_MARKER", &ready_a)
         .kill_on_drop(true);
 
     let child_a = cmd_a.spawn().expect("spawn worker A");
 
-    // Wait for A's ready marker (A has built its source and is about to
-    // acquire the lock). Spawn B immediately after; since A is already
-    // entering the lock and the stub will hang A for 300 ms, B is guaranteed
-    // to queue behind A before A finishes.
-    wait_for_marker(&ready_a, "worker A ready").await;
+    // ---- Phase 2: wait until the stub has received A's refresh request.
+    //              This is an in-process await — no polling or timing needed.
+    //              Once the stub is holding A's request, A owns the lock.
+    gate.wait_for_request().await;
 
-    // Worker B (rejected="Y"): headless, no barriers. B starts, acquires lock
-    // after A releases, sees gen=1>snap=0 (B's snapshot was taken before A
-    // wrote the sidecar), and checks digests:
-    //   sha256("Y") ≠ sha256("X") → digest mismatch → B runs its own refresh.
-    // On r8 (no digest check): B adopts A's RefreshRejected → no refresh hit.
+    // ---- Phase 3: spawn B with SNAPSHOT_MARKER.
     let mut cmd_b = tokio::process::Command::new(env!("CARGO_BIN_EXE_auth-worker"));
     cmd_b
         .env("AUTH_WORKER_DISCOVERY_URL", &cfg.discovery_url)
@@ -2840,9 +2970,19 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
         .env("AUTH_WORKER_SCRIPT", "failopen")
         .env("AUTH_WORKER_REJECTED", "Y")
         .env("AUTH_WORKER_RESULT", &result_b)
+        .env("AUTH_WORKER_SNAPSHOT_MARKER", &snapshot_b)
         .kill_on_drop(true);
 
     let child_b = cmd_b.spawn().expect("spawn worker B");
+
+    // ---- Phase 4: wait for B's snapshot marker. The tracing layer in B fires
+    //              this after B snapshots gen=0 and before it waits for the
+    //              lock — proves B holds snap=0 and is queued behind A.
+    wait_for_marker(&snapshot_b, "worker B snapshot").await;
+
+    // ---- Phase 5: release A. Stub returns "X"; A records RefreshRejected
+    //              with digest(X), advances gen to 1, releases the lock.
+    gate.release();
 
     let worker_a = Worker {
         child: child_a,
@@ -2854,20 +2994,20 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
     };
     let (out_a, out_b) = tokio::join!(worker_a.join(), worker_b.join());
 
-    // A (rejected=X): refresh returns "X" stickily, finish(rejected=X) → RefreshRejected.
-    // Writes sidecar: gen=1, result=refresh_rejected, rejected_digest=sha256("X").
+    // A (rejected=X): refresh returns "X" → RefreshRejected.
+    // Sidecar: gen=1, result=refresh_rejected, rejected_digest=sha256("X").
     assert_eq!(
         out_a.result, "refresh_rejected",
         "worker A (rejected=X) must get RefreshRejected"
     );
-    // B (rejected=Y): digest(Y) ≠ digest(X) → B runs its own refresh.
-    // B's refresh also returns "X", finish(rejected=Y, token=X) → Ok(X).
+    // B (rejected=Y): gen=1 > snap=0, digest(Y) ≠ digest(X) → B runs its
+    // own refresh. B's refresh returns "X"; finish(rejected=Y, token=X) → Ok.
     assert_eq!(
         out_b.result, "ok",
         "worker B (rejected=Y) must succeed after rerunning — not adopt A's RefreshRejected"
     );
-    // Mutation check (r8 shape): B adopts → refresh_grants stays 1.
-    // With the digest fix: B reruns → refresh_grants = 2.
+    // Mutation check (r8 shape, no digest gate): B adopts → refresh_grants
+    // stays 1. With the digest fix: B reruns → refresh_grants = 2.
     assert_eq!(
         stub.refresh_grants.load(Ordering::SeqCst),
         2,

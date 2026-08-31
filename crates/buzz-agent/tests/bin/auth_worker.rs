@@ -37,17 +37,14 @@
 //!                                 until this file exists, so the parent can
 //!                                 confirm another process is already waiting on
 //!                                 the lock before this one resolves.
-//!   AUTH_WORKER_ACQUIRED_MARKER — (optional) written immediately after the
-//!                                 cross-process lock is acquired, before any
-//!                                 attempt logic runs. Lets the test observe that
-//!                                 this process now holds the lock.
-//!   AUTH_WORKER_PROCEED_ACQUIRE — (optional) when set together with
-//!                                 AUTH_WORKER_ACQUIRED_MARKER, the worker
-//!                                 blocks after writing the acquired marker until
-//!                                 this file exists. This lets the test inject
-//!                                 other processes (e.g. a third worker that must
-//!                                 snapshot the attempt sidecar while THIS worker
-//!                                 holds the lock) before the attempt logic runs.
+//!   AUTH_WORKER_SNAPSHOT_MARKER — (optional) a file path; when set, a tracing
+//!                                 layer intercepts the `acquire_leader_snapshot`
+//!                                 event emitted by `auth.rs` after the attempt-
+//!                                 generation snapshot is taken (and before the
+//!                                 cross-process lock is acquired) and writes this
+//!                                 file once. Lets the parent observe that this
+//!                                 process has committed its snapshot-gen and is
+//!                                 about to queue on the lock.
 //!
 //! Result JSON: `{ "result": "ok"|"<error_code>", "bearer": <string|null>,
 //! "launches": <u64> }`.
@@ -56,11 +53,37 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use buzz_agent::auth::{AuthIntent, BrowserOpener, PkceOAuthConfig, PkceOAuthTokenSource};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// Tracing layer that writes a file once when it sees the
+/// `buzz_agent::auth::acquire_leader_snapshot` event emitted by
+/// `acquire_leader` immediately after the attempt-generation snapshot is fixed
+/// and before the cross-process lock is acquired.  Installed only when
+/// `AUTH_WORKER_SNAPSHOT_MARKER` is set, so normal test runs incur no overhead.
+struct SnapshotMarkerLayer {
+    path: PathBuf,
+    written: AtomicBool,
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SnapshotMarkerLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() == "buzz_agent::auth::acquire_leader_snapshot"
+            && !self.written.swap(true, Ordering::SeqCst)
+        {
+            let _ = fs::write(&self.path, b"snapshotted");
+        }
+    }
+}
 
 /// What the scripted "user" does when the coordinator opens a browser.
 #[derive(Clone, Copy)]
@@ -140,6 +163,18 @@ fn env(key: &str) -> String {
 
 #[tokio::main]
 async fn main() {
+    // If the parent test set AUTH_WORKER_SNAPSHOT_MARKER, install a tracing
+    // subscriber layer that fires when the coordinator emits its pre-lock
+    // snapshot event and writes the marker file.
+    if let Ok(marker_path) = std::env::var("AUTH_WORKER_SNAPSHOT_MARKER") {
+        tracing_subscriber::registry()
+            .with(SnapshotMarkerLayer {
+                path: PathBuf::from(marker_path),
+                written: AtomicBool::new(false),
+            })
+            .init();
+    }
+
     let intent = match env("AUTH_WORKER_INTENT").as_str() {
         "auto" => AuthIntent::Auto,
         "userinitiated" => AuthIntent::UserInitiated,
