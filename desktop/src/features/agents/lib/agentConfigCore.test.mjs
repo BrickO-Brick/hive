@@ -79,10 +79,7 @@ test("Goose exposes provider, model, and its real effort application key", () =>
     scope: "global",
   });
 
-  assert.equal(
-    field(model, "effort").optionSource,
-    "legacyProviderModelCatalog",
-  );
+  assert.equal(field(model, "effort").optionSource, "harnessNative");
   assert.deepEqual(field(model, "effort").currentPersistence, {
     kind: "envVar",
     key: "GOOSE_THINKING_EFFORT",
@@ -636,4 +633,91 @@ test("NUMERIC_KIND_MIN_contextLimit_is_1", () => {
 
 test("NUMERIC_KIND_MIN_maxRounds_is_0", () => {
   assert.equal(NUMERIC_KIND_MIN.maxRounds, 0);
+});
+
+// ── P2 regression: Goose optionSource + isHarnessNativeEffort guard ───────────
+//
+// Source-level reproduction of the P2 blocker: save global Goose defaults with
+// GOOSE_THINKING_EFFORT=off, then open AI defaults. Previously, optionSource
+// was "legacyProviderModelCatalog" → AgentConfigFields passed the persisted key
+// to useEffortAutoClear with buzz-agent provider/model vocab → "off" not in
+// that list → hook deleted the valid native value on mount. Fix: emit
+// "harnessNative" so AgentConfigFields can detect isHarnessNativeEffort and
+// make the hook a no-op.
+
+test("Goose_optionSource_is_harnessNative_not_legacyProviderModelCatalog", () => {
+  // The sole optionSource change (P2 fix): Goose must NOT be
+  // "legacyProviderModelCatalog" because that routes effort into the
+  // buzz-agent provider/model catalog, deleting valid Goose values on mount.
+  const model = deriveAgentConfigFieldModel({
+    config,
+    runtime: runtime("goose", { thinkingEnvVar: "GOOSE_THINKING_EFFORT" }),
+    scope: "global",
+  });
+  const effortField = field(model, "effort");
+  assert.equal(
+    effortField.optionSource,
+    "harnessNative",
+    'Goose global optionSource must be "harnessNative" — "legacyProviderModelCatalog" routes to buzz-agent vocab and deletes valid `off` on mount',
+  );
+});
+
+test("Goose_global_off_value_is_preserved_by_harnessNative_optionSource", () => {
+  // A saved GOOSE_THINKING_EFFORT=off must round-trip through the field model
+  // without deletion. The field value reflects the config value, and
+  // optionSource="harnessNative" signals to AgentConfigFields that the
+  // auto-clear hook should be a no-op (no buzz-agent vocab gate).
+  const savedConfig = {
+    ...config,
+    env_vars: { GOOSE_THINKING_EFFORT: "off" },
+  };
+  const model = deriveAgentConfigFieldModel({
+    config: savedConfig,
+    runtime: runtime("goose", { thinkingEnvVar: "GOOSE_THINKING_EFFORT" }),
+    scope: "global",
+  });
+  const effortField = field(model, "effort");
+  assert.equal(
+    effortField.optionSource,
+    "harnessNative",
+    "Goose effort field must use harnessNative optionSource",
+  );
+  assert.equal(
+    effortField.value,
+    "off",
+    "saved GOOSE_THINKING_EFFORT=off must survive round-trip through field model (not deleted by buzz-agent vocab check)",
+  );
+});
+
+test("Goose_onboarding_optionSource_is_harnessNative", () => {
+  // Same contract at onboarding scope — the persistence key is the native key
+  // at both global and onboarding, so both must guard against buzz-agent vocab.
+  const model = deriveAgentConfigFieldModel({
+    config,
+    runtime: runtime("goose", { thinkingEnvVar: "GOOSE_THINKING_EFFORT" }),
+    scope: "onboarding",
+  });
+  assert.equal(
+    field(model, "effort").optionSource,
+    "harnessNative",
+    "Goose onboarding optionSource must also be harnessNative",
+  );
+});
+
+test("buzz_agent_optionSource_unchanged_still_buzzAgentCatalog", () => {
+  // Ensure the fix did not accidentally change buzz-agent's optionSource.
+  // buzz-agent's effort MUST go through the provider/model catalog for the
+  // per-provider effort validation to work (e.g. "none" vs "off").
+  const model = deriveAgentConfigFieldModel({
+    config,
+    runtime: runtime("buzz-agent", {
+      thinkingEnvVar: "BUZZ_AGENT_THINKING_EFFORT",
+    }),
+    scope: "global",
+  });
+  assert.equal(
+    field(model, "effort").optionSource,
+    "buzzAgentCatalog",
+    "buzz-agent optionSource must remain buzzAgentCatalog",
+  );
 });

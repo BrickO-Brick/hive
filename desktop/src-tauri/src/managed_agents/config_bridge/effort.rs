@@ -237,6 +237,37 @@ pub(crate) fn effort_suppress_keys() -> Vec<&'static str> {
     keys
 }
 
+/// Strip every known effort key from a [`std::process::Command`] before the
+/// descriptor overlay is written.
+///
+/// `Command` inherits the parent process environment implicitly: an ambient
+/// `BUZZ_ACP_EFFORT_LEVEL` (e.g. exported from the shell that launched Desktop)
+/// or a raw baked-env write (`build_buzz_agent_provider_defaults`) would
+/// survive into the child even after `descriptor.env` writes the correct
+/// projected key, leaving two active effort authorities. buzz-acp reads the
+/// surviving sentinel and applies it via `session/set_config_option` at session
+/// creation, so the user's selected effort loses to the ambient value.
+///
+/// Strips the full [`effort_suppress_keys`] set (canonical upper-snake-case
+/// and lowercase variant) from the `Command`. The descriptor overlay that
+/// follows immediately emits the single correct projected key.
+///
+/// Called in `runtime.rs` after `build_buzz_agent_provider_defaults` (raw
+/// baked env) and before the `descriptor.env` loop (projected key).
+pub(crate) fn strip_effort_keys_from_command(cmd: &mut std::process::Command) {
+    for key in effort_suppress_keys() {
+        cmd.env_remove(key);
+        // Belt-and-suspenders for Unix inherited env with non-canonical casing
+        // (e.g. a shell export of `goose_thinking_effort`). Our own cmd.env()
+        // calls always use UPPER_SNAKE_CASE; only ambient inherited keys can
+        // arrive in non-standard case on Unix.
+        let lower = key.to_ascii_lowercase();
+        if lower != key {
+            cmd.env_remove(&lower);
+        }
+    }
+}
+
 /// The effort keys the restart snapshot must strip from its captured launch env
 /// so effort keeps exactly ONE representation (`effort_level`), mirroring what
 /// [`effort_launch_projection`] actually suppressed for `runtime`:

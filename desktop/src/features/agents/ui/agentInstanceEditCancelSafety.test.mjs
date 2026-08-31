@@ -20,16 +20,15 @@
  * the REAL Save button and asserts the same boundary receives exactly one call
  * carrying the `agentCommand: ""` inherit sentinel.
  *
- * The effort-write tests (Carl r8 P1) pin the SUBMIT wiring the pure
+ * The effort-write tests (Carl r8 P1 / P3) pin the SUBMIT wiring the pure
  * `resolveEffortSubmission` unit tests cannot reach: they mount the dialog with
  * an effort-capable config surface, drive the REAL effort dropdown, and assert
- * the `persist_agent_effort_level` IPC boundary against controlled deferred
- * `update_managed_agent` promises. Selection alone and Cancel dispatch no effort
- * call (a selection-time write would fail these); a failed main update dispatches
- * none; the pin→inherit Save resolves the locked update and still dispatches no
- * effort setter (dropping the inherit-transition guard fails it); and an ordinary
- * effort Save proves the setter fires only AFTER `update_managed_agent` resolves
- * (moving the write before the await fails the ordering assertion).
+ * the `update_managed_agent` IPC boundary carries `effortLevel` in its payload.
+ * Selection alone and Cancel dispatch no effort write (a selection-time write
+ * would fail these); a pin→inherit Save suppresses effortLevel (dropping the
+ * inherit-transition guard fails it); and an ordinary effort Save proves
+ * `effortLevel` is in the locked update payload so an access-change-triggered
+ * restart snapshots the new effort atomically (P3: no separate setter race).
  */
 
 import assert from "node:assert/strict";
@@ -244,12 +243,12 @@ function effortConfigSurface() {
 }
 
 // Installs the effort-capable surface plus a CONTROLLABLE update boundary: the
-// tests can prove the effort setter fires strictly AFTER the locked update —
-// never on selection, never before the update settles, never on a failed
-// update. `failUpdate` makes `update_managed_agent` reject immediately;
-// `deferUpdate` holds it pending until the returned `resolveUpdate()` is called.
-// `failSetter` makes `persist_agent_effort_level` reject so the new setterError
-// surface and retryable-dialog behavior can be verified.
+// tests can prove effort is included in the locked update payload — never on
+// selection, never before the update settles. `failUpdate` makes
+// `update_managed_agent` reject immediately; `deferUpdate` holds it pending
+// until the returned `resolveUpdate()` is called. `failSetter` is now a no-op
+// (persist_agent_effort_level is no longer called from the Save path — effort
+// is embedded in the locked update); it is kept for forward compatibility.
 function installEffortIpc({
   deferUpdate = false,
   failUpdate = false,
@@ -533,10 +532,18 @@ async function selectEffort(label) {
 }
 
 function effortCalls() {
-  return ipcCalls.filter((c) => c.cmd === "persist_agent_effort_level");
+  // After P3 fix: effort is persisted inside the locked update_managed_agent
+  // payload (input.effortLevel) rather than a separate persist_agent_effort_level
+  // IPC call. This helper returns update_managed_agent calls that carry an
+  // effortLevel in their args.input — the canonical evidence that effort was persisted.
+  return ipcCalls.filter(
+    (c) =>
+      c.cmd === "update_managed_agent" &&
+      c.args.input?.effortLevel !== undefined,
+  );
 }
 
-test("effort selection alone dispatches no persist_agent_effort_level", async () => {
+test("effort selection alone dispatches no effort in update_managed_agent", async () => {
   installEffortIpc();
   await act(async () => {
     renderDialog(() => {});
@@ -551,7 +558,7 @@ test("effort selection alone dispatches no persist_agent_effort_level", async ()
   );
 });
 
-test("effort selected then Cancel dispatches no persist_agent_effort_level", async () => {
+test("effort selected then Cancel dispatches no effort in update_managed_agent", async () => {
   installEffortIpc();
   let openChange;
   await act(async () => {
@@ -577,7 +584,11 @@ test("effort selected then Cancel dispatches no persist_agent_effort_level", asy
   );
 });
 
-test("effort Save with a rejected update dispatches no persist_agent_effort_level", async () => {
+test("effort Save with a rejected update results in no persisted effort", async () => {
+  // With P3, effort is embedded in the locked update payload. A failed update
+  // means both the update AND the effort write fail atomically — nothing committed.
+  // Assert exactly one update was attempted (no double-dispatch) and no second
+  // IPC was fired on failure.
   installEffortIpc({ failUpdate: true });
   await act(async () => {
     renderDialog(() => {});
@@ -588,19 +599,22 @@ test("effort Save with a rejected update dispatches no persist_agent_effort_leve
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   });
 
+  // The locked update was dispatched (with effortLevel in the payload)...
   assert.equal(
     ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
     1,
-    "Save must attempt the locked update",
+    "Save must attempt the locked update exactly once",
   );
+  // ...but the update rejected, so no persistence occurred and no second
+  // IPC was dispatched (no separate effortLevel write to recover from).
   assert.equal(
-    effortCalls().length,
+    ipcCalls.filter((c) => c.cmd !== "update_managed_agent").length,
     0,
-    "a failed update_managed_agent must abort before the sequenced effort setter",
+    "a failed update must not trigger any secondary IPC calls",
   );
 });
 
-test("effort Save fires persist_agent_effort_level only AFTER update_managed_agent resolves", async () => {
+test("effort Save includes effortLevel inside update_managed_agent payload", async () => {
   const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
   await act(async () => {
     renderDialog(() => {});
@@ -611,17 +625,20 @@ test("effort Save fires persist_agent_effort_level only AFTER update_managed_age
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   });
 
-  // The locked update is still pending: the effort setter must not have fired,
-  // proving the write is sequenced strictly after the awaited update.
+  // The locked update is still pending: no update_managed_agent has resolved yet.
   assert.equal(
     ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
     1,
     "the locked update is dispatched",
   );
+  // The update call carries effortLevel in the payload — not a separate IPC.
+  const updateArgs = ipcCalls.find(
+    (c) => c.cmd === "update_managed_agent",
+  )?.args;
   assert.equal(
-    effortCalls().length,
-    0,
-    "the effort setter must not fire while the locked update is still pending",
+    updateArgs?.input?.effortLevel,
+    "high",
+    "effortLevel must be in the locked update payload (P3: restart sees new effort)",
   );
 
   await act(async () => {
@@ -629,32 +646,26 @@ test("effort Save fires persist_agent_effort_level only AFTER update_managed_age
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
+  // Only one update call total — effort was NOT a second standalone IPC.
+  assert.equal(
+    ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
+    1,
+    "effort persisted in one locked update; no separate call",
+  );
   const effort = effortCalls();
   assert.equal(
     effort.length,
     1,
-    "the effort setter fires exactly once after the update resolves",
+    "the update that carries effortLevel was dispatched exactly once",
   );
   assert.equal(
-    effort[0].args.effortLevel,
+    effort[0].args.input.effortLevel,
     "high",
     "the persisted value is the picked effort level",
   );
-  // Ordering: the update was recorded before the effort write in the same
-  // call log, so a setter moved ahead of the await would fail this.
-  const updateIndex = ipcCalls.findIndex(
-    (c) => c.cmd === "update_managed_agent",
-  );
-  const effortIndex = ipcCalls.findIndex(
-    (c) => c.cmd === "persist_agent_effort_level",
-  );
-  assert.ok(
-    updateIndex >= 0 && effortIndex > updateIndex,
-    "persist_agent_effort_level must be dispatched after update_managed_agent",
-  );
 });
 
-test("pin→inherit Save with a picked effort dispatches no persist_agent_effort_level", async () => {
+test("pin→inherit Save with a picked effort does not write effortLevel", async () => {
   installEffortIpc();
   await act(async () => {
     renderDialog(() => {});
@@ -726,22 +737,11 @@ test("Cancel and Save are disabled while the locked update is in flight", async 
   );
 });
 
-test("Cancel and Save are disabled while the effort setter is in flight", async () => {
-  // Defer the effort setter itself by intercepting after the update resolves.
-  installIpc();
-  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
-  set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
-  set("update_managed_agent", (args) => {
-    ipcCalls.push({ cmd: "update_managed_agent", args });
-    return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
-  });
-  let resolveEffort = () => {};
-  set("persist_agent_effort_level", (args) => {
-    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
-    return new Promise((resolve) => {
-      resolveEffort = () => resolve();
-    });
-  });
+test("Cancel and Save are disabled while the locked update with effort is in flight", async () => {
+  // With P3, effort is embedded inside the locked update_managed_agent payload.
+  // The isSaving gate must hold Cancel and Save disabled for the ENTIRE locked
+  // update duration — there is no separate effort-setter phase after the update.
+  const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
 
   let openChange;
   await act(async () => {
@@ -756,51 +756,37 @@ test("Cancel and Save are disabled while the effort setter is in flight", async 
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
-  // update_managed_agent has resolved but persist_agent_effort_level is still
-  // pending — the dialog must stay gated the whole time (isSaving still true).
+  // The locked update is still pending — both buttons must be gated.
   const cancelBtn = screen.getByRole("button", { name: "Cancel" });
   const saveBtn = screen.getByRole("button", { name: "Saving..." });
   assert.ok(
     cancelBtn.disabled,
-    "Cancel must remain disabled until the effort setter resolves — a gate keyed only on updateMutation.isPending would re-enable it here",
+    "Cancel must be disabled while the locked update (which carries effort) is pending",
   );
   assert.ok(
     saveBtn.disabled,
-    "Save must remain disabled (Saving...) until the effort setter resolves",
+    "Save must remain disabled (Saving...) while the locked update is pending",
   );
   assert.equal(openChange, undefined, "dialog must not have closed yet");
 
   await act(async () => {
-    resolveEffort();
+    resolveUpdate();
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
   assert.equal(
     openChange,
     false,
-    "dialog closes after the effort setter resolves",
+    "dialog closes after the locked update with effort resolves",
   );
 });
 
-test("duplicate Save is impossible while the effort setter is in flight", async () => {
-  // Defer the effort setter (not the update) so we can test the window AFTER
-  // the main update resolves — the old updateMutation.isPending gate already
-  // blocked during the update, so duplicates during the setter phase are the
-  // actual new regression this test pins.
-  installIpc();
-  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
-  set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
-  set("update_managed_agent", (args) => {
-    ipcCalls.push({ cmd: "update_managed_agent", args });
-    return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
-  });
-  let resolveEffort2 = () => {};
-  set("persist_agent_effort_level", (args) => {
-    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
-    return new Promise((resolve) => {
-      resolveEffort2 = () => resolve();
-    });
-  });
+test("duplicate Save is impossible while the locked update with effort is in flight", async () => {
+  // With P3, effort is embedded inside the locked update_managed_agent payload,
+  // so the only window where a duplicate Save could fire is DURING the locked
+  // update itself. The isSaving gate (set at the top of handleSubmit) must
+  // remain true for the entire update duration, preventing re-entry.
+  const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
 
   await act(async () => {
     renderDialog(() => {});
@@ -809,13 +795,12 @@ test("duplicate Save is impossible while the effort setter is in flight", async 
   await selectEffort("High");
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    // Allow the immediate update promise to settle so we are now in the
-    // effort-setter-pending window (update resolved, setter still in flight).
+    // Let React process the state transition (isSaving=true → Save button gated).
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
-  // At this point update_managed_agent has resolved and persist_agent_effort_level
-  // is still pending. The old isPending-only gate would have re-enabled Save here.
+  // The locked update is still pending. Try to click Save again — it must
+  // be disabled, preventing a duplicate dispatch.
   const saveBtn = screen.getByRole("button", { name: "Saving..." });
   await act(async () => {
     fireEvent.click(saveBtn);
@@ -824,64 +809,76 @@ test("duplicate Save is impossible while the effort setter is in flight", async 
   assert.equal(
     ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
     1,
-    "exactly one update_managed_agent must have been dispatched even after the first update resolves — a duplicate during the setter window races duplicate standalone writes",
+    "exactly one update_managed_agent must have been dispatched — the isSaving gate prevents a duplicate while the first is pending",
   );
 
   await act(async () => {
-    resolveEffort2();
+    resolveUpdate();
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 });
 
-test("effort setter rejection renders a retryable error with dialog still open", async () => {
-  installEffortIpc({ failSetter: true });
-  let openChange;
+test("access and effort changed together both appear in the locked update_managed_agent call", async () => {
+  // P3 regression: when both respondTo (access) and effort change, the
+  // update_managed_agent call that stops/restarts the running pairs must carry
+  // BOTH fields. Previously effortLevel was written after the update via a
+  // separate persistAgentEffortLevel call; the restart therefore snapshotted
+  // and launched the old effort. With P3, effort is embedded in the locked
+  // update so the restart sees the new value atomically.
+  installEffortIpc();
+
   await act(async () => {
-    renderDialog((next) => {
-      openChange = next;
-    });
+    renderDialog(() => {});
   });
 
+  // Change access mode from initial "mentions" to "owner-only".
+  const respondToTrigger =
+    dom.window.document.getElementById("agent-respond-to");
+  assert.ok(respondToTrigger, "respond-to trigger must be present");
+  await act(async () => {
+    fireEvent.pointerDown(
+      respondToTrigger,
+      new dom.window.MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    fireEvent.click(respondToTrigger);
+  });
+  const ownerOnlyItem = [
+    ...dom.window.document.querySelectorAll('[role="menuitemradio"]'),
+  ].find((node) => node.textContent?.trim() === "Only me (default)");
+  assert.ok(ownerOnlyItem, '"Only me (default)" option must be offered');
+  await act(async () => {
+    fireEvent.click(ownerOnlyItem);
+  });
+
+  // Also pick an effort level.
   await selectEffort("High");
+
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
-  // The update committed but the effort setter rejected.
+  const updates = ipcCalls.filter((c) => c.cmd === "update_managed_agent");
+  assert.equal(updates.length, 1, "exactly one update_managed_agent must fire");
+
+  // Access change must be in the locked update (restart sees new access).
   assert.equal(
-    ipcCalls.filter((c) => c.cmd === "update_managed_agent").length,
-    1,
-    "the locked update was dispatched",
-  );
-  assert.equal(
-    effortCalls().length,
-    1,
-    "persist_agent_effort_level was attempted",
-  );
-  assert.equal(
-    openChange,
-    undefined,
-    "dialog must stay open on setter failure",
+    updates[0].args.input.respondTo,
+    "owner-only",
+    "respondTo must be included in the locked update",
   );
 
-  // A visible, non-empty error must be rendered so the user knows Save failed.
-  const errorEl = dom.window.document.querySelector(".text-destructive");
-  assert.ok(errorEl, "a destructive-styled error must be rendered");
-  assert.ok(
-    errorEl.textContent?.trim().length > 0,
-    "error element must have non-empty text",
-  );
-
-  // Save must be re-enabled so the user can retry (isSaving is false now).
-  const saveBtn = screen.getByRole("button", { name: "Save changes" });
-  assert.ok(
-    !saveBtn.disabled,
-    "Save must be re-enabled after a setter failure so the user can retry",
+  // Effort must also be in the same locked update — not a separate IPC call.
+  // This is the P3 invariant: the restart that update_managed_agent triggers
+  // for the access change must snapshot and launch the NEW effort value.
+  assert.equal(
+    updates[0].args.input.effortLevel,
+    "high",
+    "effortLevel must be in the SAME locked update as the access change (P3: restart sees new effort atomically)",
   );
 });
 
-test("runtime switch clears touched effort — no persist_agent_effort_level dispatched after switching runtimes", async () => {
+test("runtime switch clears touched effort — no effortLevel dispatched after switching runtimes", async () => {
   // Repro for Carl r10: effort selected for the running runtime → runtime
   // switched → Save → stale effort value committed to the new runtime's store,
   // which rejects vocab it never advertised.
@@ -958,51 +955,40 @@ test("runtime switch clears touched effort — no persist_agent_effort_level dis
   });
 
   assert.equal(
-    ipcCalls.filter((c) => c.cmd === "persist_agent_effort_level").length,
+    effortCalls().length,
     0,
-    "no persist_agent_effort_level must fire after a runtime switch — the config surface vocab belongs to the running session, not the prospective one",
+    "no effortLevel must appear in update_managed_agent after a runtime switch — the config surface vocab belongs to the running session, not the prospective one",
   );
 });
 
 // ── Dismissal paths are blocked while isSaving (Escape, close-X, checkboxes) ────
 
-// Sets up a deferred effort setter and clicks Save, then suspends with the effort
-// setter still pending. Returns the resolver and the captured onOpenChange value.
-// Pass onOpenChange to observe whether the dialog was asked to close.
-async function startSaveWithDeferredSetter(onOpenChange = () => {}) {
-  installIpc();
-  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
-  set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
-  set("update_managed_agent", (args) => {
-    ipcCalls.push({ cmd: "update_managed_agent", args });
-    return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
-  });
-  let resolveEffortFn = () => {};
-  set("persist_agent_effort_level", (args) => {
-    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
-    return new Promise((resolve) => {
-      resolveEffortFn = () => resolve();
-    });
-  });
+// Sets up a deferred locked update (with effort in the payload) and clicks Save,
+// then suspends with the update still pending. Returns the resolver so the caller
+// can let the dialog settle. Pass onOpenChange to observe whether the dialog closed.
+// With P3, effort is embedded in the locked update — there is no separate
+// effort-setter phase. The "setter is in flight" window IS the update window.
+async function startSaveWithDeferredUpdate(onOpenChange = () => {}) {
+  const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
   await act(async () => {
     renderDialog(onOpenChange);
   });
   await selectEffort("High");
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    // Let the update promise settle so we are in the effort-setter-pending window.
+    // Let React process the isSaving=true transition before checks.
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
-  return { resolveEffort: () => resolveEffortFn() };
+  return { resolveUpdate };
 }
 
-test("Escape dismissal is blocked while the effort setter is in flight", async () => {
+test("Escape dismissal is blocked while the locked update with effort is in flight", async () => {
   let openChange;
-  const { resolveEffort } = await startSaveWithDeferredSetter((next) => {
+  const { resolveUpdate } = await startSaveWithDeferredUpdate((next) => {
     openChange = next;
   });
 
-  // Effort setter is still pending — simulate Escape on the document.
+  // Locked update is still pending — simulate Escape on the document.
   await act(async () => {
     fireEvent.keyDown(dom.window.document, {
       key: "Escape",
@@ -1014,23 +1000,27 @@ test("Escape dismissal is blocked while the effort setter is in flight", async (
   assert.equal(
     openChange,
     undefined,
-    "Escape must be suppressed while a Save is in flight — the in-flight setter must not commit to a closed dialog",
+    "Escape must be suppressed while a Save is in flight — the in-flight update must complete before the dialog may close",
   );
 
   await act(async () => {
-    resolveEffort();
+    resolveUpdate();
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
-  assert.equal(openChange, false, "dialog closes after the setter resolves");
+  assert.equal(
+    openChange,
+    false,
+    "dialog closes after the locked update resolves",
+  );
 });
 
-test("close-X dismissal is blocked while the effort setter is in flight", async () => {
+test("close-X dismissal is blocked while the locked update with effort is in flight", async () => {
   let openChange;
-  const { resolveEffort } = await startSaveWithDeferredSetter((next) => {
+  const { resolveUpdate } = await startSaveWithDeferredUpdate((next) => {
     openChange = next;
   });
 
-  // Effort setter still pending — click the dialog's close-X button.
+  // Locked update still pending — click the dialog's close-X button.
   const closeX = screen.getByRole("button", { name: /^close$/i });
   assert.ok(closeX, "close-X button must be present in the rendered dialog");
   await act(async () => {
@@ -1040,31 +1030,22 @@ test("close-X dismissal is blocked while the effort setter is in flight", async 
   assert.equal(
     openChange,
     undefined,
-    "close-X must be suppressed while a Save is in flight — the in-flight setter must not commit to a closed dialog",
+    "close-X must be suppressed while a Save is in flight — the in-flight update must complete before the dialog may close",
   );
 
   await act(async () => {
-    resolveEffort();
+    resolveUpdate();
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
-  assert.equal(openChange, false, "dialog closes after the setter resolves");
+  assert.equal(
+    openChange,
+    false,
+    "dialog closes after the locked update resolves",
+  );
 });
 
-test("auto-restart and inherit checkboxes are disabled while the effort setter is in flight", async () => {
-  installIpc();
-  const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
-  set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
-  set("update_managed_agent", (args) => {
-    ipcCalls.push({ cmd: "update_managed_agent", args });
-    return Promise.resolve({ agent: rawAgent(), profile_sync_error: null });
-  });
-  let resolveChkEffort = () => {};
-  set("persist_agent_effort_level", (args) => {
-    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
-    return new Promise((resolve) => {
-      resolveChkEffort = () => resolve();
-    });
-  });
+test("auto-restart and inherit checkboxes are disabled while the locked update with effort is in flight", async () => {
+  const { resolveUpdate } = installEffortIpc({ deferUpdate: true });
   await act(async () => {
     renderDialog(() => {});
   });
@@ -1080,7 +1061,7 @@ test("auto-restart and inherit checkboxes are disabled while the effort setter i
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 
-  // Effort setter is still pending. Both checkboxes must be disabled so a
+  // Locked update is still pending. Both checkboxes must be disabled so a
   // post-snapshot state mutation cannot silently be discarded on close.
   const autoRestart = dom.window.document.getElementById(
     "edit-agent-auto-restart",
@@ -1103,7 +1084,7 @@ test("auto-restart and inherit checkboxes are disabled while the effort setter i
   );
 
   await act(async () => {
-    resolveChkEffort();
+    resolveUpdate();
     await new Promise((resolve) => setTimeout(resolve, 5));
   });
 });

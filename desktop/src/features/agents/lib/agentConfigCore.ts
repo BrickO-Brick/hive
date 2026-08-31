@@ -221,9 +221,7 @@ export function deriveAgentConfigFieldModel({
     fields.push({
       kind: "effort",
       optionSource:
-        runtime.id === "buzz-agent"
-          ? "buzzAgentCatalog"
-          : "legacyProviderModelCatalog",
+        runtime.id === "buzz-agent" ? "buzzAgentCatalog" : "harnessNative",
       currentPersistence: {
         kind: "envVar",
         key: persistenceKey,

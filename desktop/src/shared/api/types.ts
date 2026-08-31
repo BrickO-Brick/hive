@@ -697,11 +697,10 @@ export type UpdateManagedAgentInput = {
   mcpCommand?: string;
   /** Absent = don't touch. Present = set the mode. */
   respondTo?: RespondToMode;
-  /**
-   * Absent = don't touch. Present = replace the allowlist with this list
-   * (validated & normalized server-side).
-   */
+  /** Absent = keep. Present = replace the allowlist (server-validated). */
   respondToAllowlist?: string[];
+  /** Tri-state: absent = don't touch; `null` = clear; `string` = set. Persisted in the locked update so access-change restarts snapshot the new effort. Send only when `effortTouched`. */
+  effortLevel?: string | null;
 };
 export type AgentPersona = {
   id: string;

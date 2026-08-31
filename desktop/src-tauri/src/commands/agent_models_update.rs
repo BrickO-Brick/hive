@@ -225,6 +225,16 @@ pub async fn update_managed_agent(
             record.respond_to_allowlist = prospective_allowlist;
         }
 
+        // Effort: persist inside the locked transaction so an access-policy
+        // restart (above) snapshots and launches the new effort value, not the
+        // old one. Present + Some(value) = set; Present + None = clear.
+        // Absent = don't touch (the dialog sends it only when effortTouched).
+        // Uses the same alias-sweep as persist_agent_effort_level so no
+        // stale record-scope alias outranks the just-written column.
+        if let Some(effort_override) = input.effort_level {
+            crate::commands::agent_config::apply_picker_effort_level(record, effort_override);
+        }
+
         record.updated_at = now_iso();
 
         save_managed_agents(&app, &records)?;

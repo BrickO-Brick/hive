@@ -743,6 +743,11 @@ pub fn spawn_agent_child(
         resolve_session_title(record.display_name.as_deref(), &record.name),
     );
     build_buzz_agent_provider_defaults(&mut command);
+    // Strip every known/legacy/transport effort key from the Command before the
+    // descriptor overlay. `Command` inherits the parent process env implicitly —
+    // an ambient effort key would survive into `descriptor.env` and leave two
+    // active effort authorities. The overlay emits exactly one projected key.
+    super::config_bridge::effort::strip_effort_keys_from_command(&mut command);
     if let Some(meta) = runtime_meta {
         for (key, value) in runtime_metadata_env_vars(
             meta.model_env_var,
@@ -810,13 +815,8 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    // Effort authority is already resolved: the single harness-agnostic effort
-    // projection ran inside `resolve_effective_agent_env_with_def`, so
-    // `descriptor.env` (written above) carries exactly one effort key holding the
-    // effective value — every foreign/legacy/transport effort key was stripped
-    // there. Re-applying `apply_effort_env` here would double-write the ACP
-    // sentinel and, on a Goose descriptor, launch a second effort key alongside
-    // `GOOSE_THINKING_EFFORT`. No post-loop effort write is needed.
+    // Effort authority is fully resolved: `descriptor.env` carries the single
+    // projected key. No further write is needed — adding one would double-write.
 
     // A1: for local claude agents, ANTHROPIC_MODEL is the single startup model authority.
     // BUZZ_ACP_MODEL is removed (live ACP switches only; two authorities in the same env

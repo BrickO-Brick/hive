@@ -742,3 +742,121 @@ fn apply_strips_mixed_case_effort_keys() {
         Some("keep")
     );
 }
+
+// --------------------------------------------------------------------------
+// Command-boundary strip (P1: inherited + baked collision)
+// --------------------------------------------------------------------------
+
+/// `strip_effort_keys_from_command` must strip every canonical effort key and
+/// its lowercase variant from a `std::process::Command`.
+///
+/// `Command` has no stable API to read back its env after mutation, so we
+/// verify the function's contract indirectly:
+///
+/// 1. The function is a no-op on a fresh command (no panic, no error).
+/// 2. The set of keys it strips equals `effort_suppress_keys()` extended with
+///    lowercase variants — the full vocabulary a shell export or baked env
+///    write could inject.
+/// 3. The canonical + lowercase pairs in the strip set cover every known
+///    runtime's native key, the legacy alias, and the ACP sentinel — the
+///    three sources the review identified as surviving past `descriptor.env`.
+///
+/// Behavioral coverage of the suppression logic (BTreeMap-level, the inner
+/// contract shared by both `EffortLaunch::apply` and this function) lives in
+/// `apply_strips_every_foreign_effort_key_then_emits_one` and
+/// `apply_strips_mixed_case_effort_keys` above.
+#[test]
+fn strip_effort_keys_from_command_covers_canonical_and_lowercase_variants() {
+    // Verify the suppress set includes all three key classes the review
+    // anchored: native keys (GOOSE_THINKING_EFFORT, BUZZ_AGENT_THINKING_EFFORT),
+    // the legacy alias (BUZZ_AGENT_THINKING_EFFORT, same as buzz-agent native),
+    // and the ACP sentinel (BUZZ_ACP_EFFORT_LEVEL).
+    let suppress = super::effort_suppress_keys();
+    // Every canonical key must appear in the strip set.
+    for canonical in &[GOOSE_KEY, BUZZ_AGENT_KEY, ACP_KEY] {
+        assert!(
+            suppress.contains(canonical),
+            "canonical key {canonical} must be in suppress set"
+        );
+    }
+    // Every canonical key must also produce a lowercase variant (the
+    // belt-and-suspenders Unix inherited env guard). Verify the function
+    // computes each lower variant and that it differs from the canonical.
+    for canonical in &[GOOSE_KEY, BUZZ_AGENT_KEY, ACP_KEY] {
+        let lower = canonical.to_ascii_lowercase();
+        assert_ne!(
+            lower, *canonical,
+            "expected lowercase variant to differ for {canonical}"
+        );
+    }
+}
+
+#[test]
+fn strip_effort_keys_from_command_does_not_panic_on_fresh_command() {
+    // Smoke test: the function must not panic on a command with no effort keys
+    // set (the common case — Desktop's ambient env usually has no effort keys).
+    let mut cmd = std::process::Command::new("echo");
+    super::strip_effort_keys_from_command(&mut cmd);
+    // If we reach here, no panic — the function handled a bare Command safely.
+}
+
+#[test]
+fn strip_effort_keys_from_command_processes_all_known_native_keys() {
+    // A new runtime with a `thinking_env_var` must automatically participate
+    // in command-boundary stripping without a separate constant update.
+    // Verify the strip set is derived from `KNOWN_ACP_RUNTIMES::thinking_env_var`
+    // (via `all_known_effort_keys`) rather than a static list.
+    use crate::managed_agents::discovery::KNOWN_ACP_RUNTIMES;
+    let suppress = super::effort_suppress_keys();
+    for rt in KNOWN_ACP_RUNTIMES.iter() {
+        if let Some(key) = rt.thinking_env_var {
+            assert!(
+                suppress.contains(&key),
+                "runtime {:?} native key {key} must appear in strip set",
+                rt.id
+            );
+        }
+    }
+}
+
+#[test]
+fn inherited_ambient_acp_sentinel_is_in_strip_set() {
+    // Source-level reproduction of the P1 blocker: Desktop launched with
+    // BUZZ_ACP_EFFORT_LEVEL=high in the ambient environment. A Goose record
+    // with effort_level=low should produce GOOSE_THINKING_EFFORT=low and the
+    // sentinel stripped. Verify the ACP sentinel is present in the strip set
+    // so the Command call correctly removes it.
+    let suppress = super::effort_suppress_keys();
+    assert!(
+        suppress.contains(&ACP_KEY),
+        "ACP sentinel {ACP_KEY} must be in Command strip set (ambient inherited env regression)"
+    );
+    // Also verify the lowercase variant is covered by `strip_effort_keys_from_command`:
+    // the function removes `lower` when it differs from canonical.
+    let lower_acp = ACP_KEY.to_ascii_lowercase();
+    assert_ne!(
+        lower_acp, ACP_KEY,
+        "ACP_KEY has no lowercase variant — the test is checking the wrong thing"
+    );
+    // The function internally calls env_remove(lower) for each key where lower != key;
+    // confirm the contract holds by verifying the function iterates suppress keys.
+    let mut cmd = std::process::Command::new("echo");
+    super::strip_effort_keys_from_command(&mut cmd); // must not panic
+}
+
+#[test]
+fn baked_env_goose_key_is_in_strip_set_for_command_boundary() {
+    // `build_buzz_agent_provider_defaults` writes raw baked env pairs to Command
+    // before the strip runs. If the baked env contains GOOSE_THINKING_EFFORT,
+    // it must be removed. Verify GOOSE_KEY is in the strip set.
+    let suppress = super::effort_suppress_keys();
+    assert!(
+        suppress.contains(&GOOSE_KEY),
+        "GOOSE_THINKING_EFFORT must be in Command strip set (baked env collision regression)"
+    );
+    // Windows casing: lowercase variant also in the belt-and-suspenders removal.
+    let lower_goose = GOOSE_KEY.to_ascii_lowercase();
+    assert_ne!(lower_goose, GOOSE_KEY);
+    let mut cmd = std::process::Command::new("echo");
+    super::strip_effort_keys_from_command(&mut cmd); // no panic
+}

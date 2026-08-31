@@ -26,10 +26,7 @@ import { Button } from "@/shared/ui/button";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
-import {
-  persistAgentEffortLevel,
-  setManagedAgentAutoRestart,
-} from "@/shared/api/tauriManagedAgents";
+import { setManagedAgentAutoRestart } from "@/shared/api/tauriManagedAgents";
 import { EffortPickerField } from "./EffortPickerField";
 import { EditAgentAdvancedFields } from "./EditAgentAdvancedFields";
 import {
@@ -119,9 +116,8 @@ export function AgentInstanceEditDialog({
   const updateMutation = useUpdateManagedAgentMutation();
   const startMutation = useStartManagedAgentMutation();
   const queryClient = useQueryClient();
-  // Spans the COMPLETE Save sequence: locked update + standalone setters. Every
-  // pending/disabled gate must key off this, not updateMutation.isPending alone,
-  // so the dialog stays fully gated until all persistence steps settle.
+  // Spans the COMPLETE Save sequence (locked update + standalone setters).
+  // Every gate must key off this, not updateMutation.isPending alone.
   const [isSaving, setIsSaving] = React.useState(false);
   // Surfaces a standalone-setter failure (auto-restart or effort) that React
   // Query does not track — keeps the dialog open so the user can retry Save.
@@ -751,6 +747,20 @@ export function AgentInstanceEditDialog({
             : undefined,
       };
 
+      // Resolve effort before the update so access-change restarts can
+      // snapshot and launch the NEW effort value atomically.
+      const effortSubmission = resolveEffortSubmission({
+        effortLevel,
+        originalEffortLevel:
+          configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
+        inheritTransition: agentCommandUpdate === "",
+      });
+      // Include effort in the locked update when touched (tri-state: absent =
+      // don't touch; null = clear; string = set). Only when effortSubmission.persist.
+      if (effortTouched.current && effortSubmission.persist) {
+        input.effortLevel = effortSubmission.level;
+      }
+
       const result = await updateMutation.mutateAsync(input);
 
       // Standalone setters — sequenced after the locked update resolves so the
@@ -766,21 +776,11 @@ export function AgentInstanceEditDialog({
             autoRestartOnConfigChange,
           );
         }
-        // Effort is a Save-gated standalone setter, sequenced AFTER the update
-        // resolves. The pin→inherit transition (agentCommandUpdate === "") already
-        // cleared effort inside the locked save, so resolveEffortSubmission
-        // suppresses the write there — re-persisting would restore the cleared pin.
-        const effortSubmission = resolveEffortSubmission({
-          effortLevel,
-          originalEffortLevel:
-            configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
-          inheritTransition: agentCommandUpdate === "",
-        });
+        // Effort disk write happened inside the locked update. Only need to
+        // invalidate the cache here (when effortTouched && effortSubmission.persist).
+        // If effort was not included (!effortSubmission.persist), nothing to do.
         if (effortTouched.current && effortSubmission.persist) {
-          await persistAgentEffortLevel(agent.pubkey, effortSubmission.level);
-          // The picker owns no mutation now, so refresh the config surface here
-          // (what its own onSuccess used to do) — the panel's canonical tier must
-          // reflect the new next-spawn value.
+          // Disk write already done; invalidate so the panel tier reflects it.
           await queryClient.invalidateQueries({
             queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
           });
