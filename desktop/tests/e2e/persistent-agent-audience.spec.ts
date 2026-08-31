@@ -1,197 +1,35 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import { waitForAnimations } from "../helpers/animations";
-import { installMockBridge } from "../helpers/bridge";
+import {
+  AGENT_A,
+  AGENT_B,
+  KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY,
+  RANDOM_CHANNEL_ID,
+  addMention,
+  automaticallyMention,
+  channelComposer,
+  emitMockMessage,
+  focusComposerEnd,
+  installAudienceFixtures,
+  keepMentionedAgentsPinned,
+  openGeneral,
+  openThread,
+  pressPrimaryShiftM,
+  readComposerCaret,
+  readOutgoingMentionPubkeys,
+  readPersistedDraft,
+  seedTheme,
+  threadComposer,
+} from "../helpers/persistentAgentAudience";
 
 const SHOTS = "test-results/persistent-agent-audience";
-const CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
-const RANDOM_CHANNEL_ID = "9dae0116-799b-5071-a0a8-fdd30a91a35d";
-const AGENT_A = "a".repeat(64);
-const AGENT_B = "b".repeat(64);
-const THREAD_ROOT_ID = "mock-general-welcome";
-const KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY =
-  "buzz.messages.keepMentionedAgentsPinned";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript((storageKey) => {
     window.localStorage.removeItem(storageKey);
   }, KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY);
 });
-
-async function keepMentionedAgentsPinned(page: Page) {
-  await page.addInitScript((storageKey) => {
-    window.localStorage.setItem(storageKey, "true");
-  }, KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY);
-}
-
-async function seedTheme(page: Page, theme: string, accent = "#c0a2f1") {
-  await page.addInitScript(
-    ({ selectedTheme, selectedAccent }) => {
-      window.localStorage.setItem("buzz-theme", selectedTheme);
-      window.localStorage.setItem("buzz-accent-color", selectedAccent);
-    },
-    { selectedTheme: theme, selectedAccent: accent },
-  );
-}
-
-async function automaticallyMention(
-  composer: ReturnType<typeof channelComposer>,
-  displayName: string,
-) {
-  await composer.locator("[data-mention-picker-trigger]").click();
-  await composer
-    .getByTestId("mention-autocomplete")
-    .getByRole("button", { name: `Automatically mention ${displayName}` })
-    .click();
-  await expect(composer.getByTestId("message-input")).toContainText(
-    `@${displayName}`,
-  );
-  await composer.locator("[data-mention-picker-trigger]").click();
-}
-
-async function openGeneral(page: Page) {
-  await page.goto(`/#/channels/${CHANNEL_ID}`, {
-    waitUntil: "domcontentloaded",
-  });
-  await expect(page.getByTestId("chat-title")).toHaveText("general");
-}
-
-async function openThread(page: Page, threadRootId = THREAD_ROOT_ID) {
-  await page.goto(
-    `/#/channels/${CHANNEL_ID}?messageId=${threadRootId}&thread=${threadRootId}`,
-    { waitUntil: "domcontentloaded" },
-  );
-  await expect(page.getByTestId("message-thread-panel")).toBeVisible();
-}
-
-function channelComposer(page: Page) {
-  return page.getByTestId("channel-composer-overlay");
-}
-
-function threadComposer(page: Page) {
-  return page.getByTestId("thread-composer-overlay");
-}
-
-async function readComposerCaret(input: Locator) {
-  return input.evaluate((element) => {
-    const selection = window.getSelection();
-    if (!selection?.anchorNode || !element.contains(selection.anchorNode)) {
-      return null;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    range.setEnd(selection.anchorNode, selection.anchorOffset);
-    return range.toString().length;
-  });
-}
-
-async function pressPrimaryShiftM(page: Page) {
-  const isMac = await page.evaluate(() =>
-    /mac|iphone|ipad|ipod/i.test(navigator.platform),
-  );
-  await page.keyboard.press(`${isMac ? "Meta" : "Control"}+Shift+M`);
-}
-
-async function readOutgoingMentionPubkeys(page: Page, content: string) {
-  return page.evaluate((expectedContent) => {
-    const signedEvent = window.__BUZZ_E2E_SIGNED_EVENTS__?.find(
-      (event) => event.content === expectedContent,
-    );
-    if (signedEvent) {
-      return (signedEvent.tags ?? [])
-        .filter((tag) => tag[0] === "p" && tag[1])
-        .map((tag) => tag[1]);
-    }
-
-    for (const entry of window.__BUZZ_E2E_COMMAND_LOG__ ?? []) {
-      if (entry.command === "send_channel_message") {
-        const payload = entry.payload as
-          | { content?: string; mentionPubkeys?: string[] }
-          | undefined;
-        if (payload?.content === expectedContent) {
-          return payload.mentionPubkeys ?? [];
-        }
-      }
-
-      if (entry.command !== "plugin:websocket|send") continue;
-      const data = (
-        entry.payload as { message?: { data?: string } } | undefined
-      )?.message?.data;
-      if (!data) continue;
-
-      try {
-        const frame = JSON.parse(data) as [
-          string,
-          { content?: string; tags?: string[][] },
-        ];
-        if (frame[0] !== "EVENT" || frame[1]?.content !== expectedContent) {
-          continue;
-        }
-        return (frame[1].tags ?? [])
-          .filter((tag) => tag[0] === "p" && tag[1])
-          .map((tag) => tag[1]);
-      } catch {}
-    }
-
-    return null;
-  }, content);
-}
-
-async function emitMockMessage(
-  page: Page,
-  content: string,
-  mentionPubkeys: string[],
-) {
-  await page.evaluate(
-    ({ body, mentions }) => {
-      window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
-        channelName: "general",
-        content: body,
-        mentionPubkeys: mentions,
-      });
-    },
-    { body: content, mentions: mentionPubkeys },
-  );
-}
-
-async function installAudienceFixtures(
-  page: Page,
-  options: {
-    agentAName?: string;
-    deferredComposerUploads?: boolean;
-    sendMessageDelayMs?: number;
-    sendMessageErrors?: string[];
-    uploadDelayMs?: number;
-    uploadDescriptors?: Array<{
-      filename: string;
-      sha256: string;
-      size: number;
-      type: string;
-      uploaded: number;
-      url: string;
-    }>;
-    usersBatchDelayMs?: number;
-  } = {},
-) {
-  const { agentAName = "Morgarita", ...bridgeOptions } = options;
-  await installMockBridge(page, {
-    ...bridgeOptions,
-    managedAgents: [
-      {
-        pubkey: AGENT_A,
-        name: agentAName,
-        status: "running",
-        channelNames: ["general"],
-      },
-      {
-        pubkey: AGENT_B,
-        name: "Vogue",
-        status: "running",
-        channelNames: ["general"],
-      },
-    ],
-  });
-}
 
 test("keeps a queued-attachment send locked through upload and send settlement", async ({
   page,
@@ -267,6 +105,218 @@ test("keeps a queued-attachment send locked through upload and send settlement",
   await expect(composerForm).toHaveAttribute("data-submit-locked", "false");
 });
 
+for (const surface of ["channel", "thread"] as const) {
+  for (const automatic of [false, true]) {
+    for (const mode of ["toolbar", "typed"] as const) {
+      test(`${surface}: ${mode} mentions respect auto=${automatic} and second-avatar removal`, async ({
+        page,
+      }) => {
+        if (automatic) await keepMentionedAgentsPinned(page);
+        await installAudienceFixtures(page);
+        await (surface === "channel" ? openGeneral(page) : openThread(page));
+        const composer =
+          surface === "channel" ? channelComposer(page) : threadComposer(page);
+        const input = composer.getByTestId("message-input");
+        await addMention(composer, "Morgarita", mode);
+        await addMention(composer, "Vogue", mode);
+        await input.pressSequentially("review ");
+        await addMention(composer, "Vogue", mode);
+        await input.pressSequentially("now");
+        await expect(input).toHaveText("@Morgarita @Vogue review @Vogue now");
+        await expect(
+          composer.getByTestId("composer-address-lock-avatar"),
+        ).toHaveCount(2);
+        await expect(
+          composer.getByTestId(`composer-address-lock-${AGENT_A}`),
+        ).toBeVisible();
+        await expect(
+          composer.getByTestId(`composer-address-lock-${AGENT_B}`),
+        ).toBeVisible();
+        expect(
+          await page.evaluate(
+            (key) => localStorage.getItem(key) === "true",
+            KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY,
+          ),
+        ).toBe(automatic);
+        await composer
+          .getByRole("button", {
+            name: "Remove Vogue from this and future messages",
+            exact: true,
+          })
+          .click();
+        await expect(input).toHaveText("@Morgarita review now");
+        await expect(
+          composer.getByTestId("composer-address-lock-avatar"),
+        ).toHaveCount(1);
+        await expect(
+          composer.getByTestId(`composer-address-lock-${AGENT_B}`),
+        ).toHaveCount(0);
+        await input.press("Enter");
+        await expect
+          .poll(() => readOutgoingMentionPubkeys(page, "@Morgarita review now"))
+          .toEqual([AGENT_A]);
+        await expect(composer.getByTestId("message-composer")).toHaveAttribute(
+          "data-submit-locked",
+          "false",
+        );
+        await expect(input).toHaveText(automatic ? "@Morgarita " : "");
+        await expect(
+          composer.getByTestId("composer-address-lock-avatar"),
+        ).toHaveCount(automatic ? 1 : 0);
+        await input.pressSequentially("follow-up");
+        await input.press("Enter");
+        await expect
+          .poll(() =>
+            readOutgoingMentionPubkeys(
+              page,
+              automatic ? "@Morgarita follow-up" : "follow-up",
+            ),
+          )
+          .toEqual(automatic ? [AGENT_A] : []);
+        await expect(
+          composer.getByTestId(`composer-address-lock-${AGENT_B}`),
+        ).toHaveCount(0);
+      });
+    }
+  }
+}
+
+test("an upload finishing cannot restore an agent removed from the next draft", async ({
+  page,
+}) => {
+  await keepMentionedAgentsPinned(page);
+  await installAudienceFixtures(page, {
+    deferredComposerUploads: true,
+    uploadDelayMs: 3_500,
+    uploadDescriptors: [
+      {
+        filename: "audience.mp4",
+        sha256: "c".repeat(64),
+        size: 16,
+        type: "video/mp4",
+        uploaded: 1,
+        url: `https://mock.relay/media/${"c".repeat(64)}.mp4`,
+      },
+    ],
+  });
+  await openThread(page);
+  const composer = threadComposer(page);
+  const input = composer.getByTestId("message-input");
+  await addMention(composer, "Morgarita", "typed");
+  await addMention(composer, "Vogue", "typed");
+  await input.pressSequentially("queued review");
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    composer.getByRole("button", { name: "Attach file" }).click(),
+  ]);
+  await chooser.setFiles({
+    buffer: Buffer.from("queued video"),
+    mimeType: "video/mp4",
+    name: "audience.mp4",
+  });
+  await input.press("Enter");
+  await expect(composer.getByTestId("composer-upload-progress")).toBeVisible();
+  await expect(input).toHaveText("@Morgarita @Vogue ");
+  // Remove the leading mention so this catches stale restoration independently
+  // of the second-avatar removal bug covered by the matrix above.
+  await composer.getByTestId(`composer-address-lock-remove-${AGENT_A}`).click();
+  await expect(input).toHaveText("@Vogue ");
+  await expect(composer.getByTestId("message-composer")).toHaveAttribute(
+    "data-submit-locked",
+    "true",
+  );
+  await expect(
+    composer.getByTestId(`composer-address-lock-${AGENT_A}`),
+  ).toHaveCount(0);
+  await expect(composer.getByTestId("message-composer")).toHaveAttribute(
+    "data-submit-locked",
+    "false",
+    { timeout: 10_000 },
+  );
+  await expect(
+    page.getByTestId("message-row").filter({ hasText: "queued review" }).last(),
+  ).toBeVisible();
+  await expect(input).toHaveText("@Vogue ");
+  await focusComposerEnd(input);
+  await input.pressSequentially("follow-up after upload");
+  await expect(input).toHaveText("@Vogue follow-up after upload");
+  await input.press("Enter");
+  await expect
+    .poll(() =>
+      readOutgoingMentionPubkeys(page, "@Vogue follow-up after upload"),
+    )
+    .toEqual([AGENT_B]);
+  await expect(
+    composer.getByTestId(`composer-address-lock-${AGENT_A}`),
+  ).toHaveCount(0);
+});
+
+test("keyboard users can inspect and remove an overflow recipient", async ({
+  page,
+}) => {
+  const agentC = "c".repeat(64);
+  const agentD = "d".repeat(64);
+  await keepMentionedAgentsPinned(page);
+  await installAudienceFixtures(page, {
+    additionalAgents: [
+      { pubkey: agentC, name: "Orchid" },
+      { pubkey: agentD, name: "Zinnia" },
+    ],
+  });
+  await openGeneral(page);
+  const composer = channelComposer(page);
+  const input = composer.getByTestId("message-input");
+  for (const name of ["Morgarita", "Vogue", "Orchid", "Zinnia"]) {
+    await addMention(composer, name, "typed");
+  }
+  await expect(input).toHaveText("@Morgarita @Vogue @Orchid @Zinnia ");
+  await expect(
+    composer.getByTestId("composer-address-lock-avatar"),
+  ).toHaveCount(3);
+  const overflow = composer.getByRole("button", {
+    name: "Show 1 more mentioned agents",
+    exact: true,
+  });
+  await expect(overflow).toHaveText("+1");
+  await composer.getByRole("button", { name: "Mention someone" }).focus();
+  for (let index = 0; index < 4; index += 1) await page.keyboard.press("Tab");
+  await expect(overflow).toBeFocused();
+  await page.keyboard.press("Enter");
+  const removeHidden = page.getByRole("button", {
+    name: "Remove Zinnia from this and future messages",
+    exact: true,
+  });
+  await expect(removeHidden).toBeVisible();
+  await expect(removeHidden).toContainText("Zinnia");
+  await expect(removeHidden).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(removeHidden).toHaveCount(0);
+  await expect(overflow).toHaveCount(0);
+  await expect(input).toHaveText("@Morgarita @Vogue @Orchid ");
+  for (const pubkey of [AGENT_A, AGENT_B, agentC]) {
+    await expect(
+      composer.getByTestId(`composer-address-lock-${pubkey}`),
+    ).toBeVisible();
+  }
+  await focusComposerEnd(input);
+  await input.pressSequentially("overflow review");
+  await input.press("Enter");
+  await expect
+    .poll(() =>
+      readOutgoingMentionPubkeys(
+        page,
+        "@Morgarita @Vogue @Orchid overflow review",
+      ),
+    )
+    .toEqual([AGENT_A, AGENT_B, agentC]);
+  await expect(composer.getByTestId("message-composer")).toHaveAttribute(
+    "data-submit-locked",
+    "false",
+  );
+  await expect(input).toHaveText("@Morgarita @Vogue @Orchid ");
+  await expect(overflow).toHaveCount(0);
+});
+
 test("automatically mentions multiple agents from the mention picker", async ({
   page,
 }) => {
@@ -284,7 +334,7 @@ test("automatically mentions multiple agents from the mention picker", async ({
     composer.getByTestId(`composer-address-lock-${AGENT_B}`),
   ).toBeVisible();
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
 });
 
@@ -401,7 +451,7 @@ test("Tab inserts a one-time agent mention by default", async ({ page }) => {
   await expect(composer.getByTestId("mention-autocomplete")).toHaveCount(0);
   await expect(
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
+  ).toBeVisible();
   const selectAllShortcut = await page.evaluate(() =>
     /mac|iphone|ipad|ipod/i.test(navigator.platform) ? "Meta+A" : "Control+A",
   );
@@ -469,9 +519,9 @@ test("primary+Shift+M addresses the default agent, then toggles the highlighted 
   await pressPrimaryShiftM(page);
   await expect(input).toHaveText("@alice draft text");
   await expect(
-    composer
-      .getByTestId("composer-address-locks")
-      .getByRole("button", { name: /^Don't automatically mention / }),
+    composer.getByTestId("composer-address-locks").getByRole("button", {
+      name: /^Remove .+ from this and future messages$/,
+    }),
   ).toHaveCount(1);
 
   await input.fill("@Vog");
@@ -490,9 +540,9 @@ test("primary+Shift+M addresses the default agent, then toggles the highlighted 
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
   ).toHaveCount(0);
   await expect(
-    composer
-      .getByTestId("composer-address-locks")
-      .getByRole("button", { name: /^Don't automatically mention / }),
+    composer.getByTestId("composer-address-locks").getByRole("button", {
+      name: /^Remove .+ from this and future messages$/,
+    }),
   ).toHaveCount(1);
 });
 
@@ -521,6 +571,7 @@ test("primary+Shift+M favors the most recently mentioned eligible agent", async 
 test("the mention button opens settings and can undo an address", async ({
   page,
 }) => {
+  await keepMentionedAgentsPinned(page);
   await installAudienceFixtures(page);
   await openGeneral(page);
 
@@ -528,7 +579,7 @@ test("the mention button opens settings and can undo an address", async ({
   await automaticallyMention(composer, "Morgarita");
   const input = composer.getByTestId("message-input");
   const ingress = composer.getByRole("button", {
-    name: "Manage automatic agent mentions",
+    name: "Mention someone",
   });
 
   await input.type("draft text");
@@ -537,9 +588,8 @@ test("the mention button opens settings and can undo an address", async ({
   await expect(menu).toBeVisible();
   await expect(input).toHaveText("@Morgarita draft text");
   await page.getByTestId("mention-options-trigger").click();
-  await expect(
-    page.getByTestId("mention-keep-agents-pinned-toggle"),
-  ).toBeVisible();
+  const preference = page.getByTestId("mention-keep-agents-pinned-toggle");
+  await expect(preference).toHaveAttribute("data-state", "checked");
   const layerBox = await composer
     .getByTestId("mention-autocomplete-layer")
     .boundingBox();
@@ -579,6 +629,10 @@ test("the mention button opens settings and can undo an address", async ({
     })
     .click();
   await expect(input).toHaveText("draft text");
+  await page.getByTestId("mention-options-trigger").click();
+  await expect(preference).toHaveAttribute("data-state", "checked");
+  await preference.click();
+  await expect(preference).toHaveAttribute("data-state", "unchecked");
   await expect(
     composer.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
@@ -594,13 +648,19 @@ test("the mention button opens settings and can undo an address", async ({
 
   await input.type("later");
   await input.press("Enter");
-  await expect(input).toHaveText("");
   await expect
     .poll(() => readOutgoingMentionPubkeys(page, "@Morgarita later"))
-    .toContain(AGENT_A);
+    .toEqual([AGENT_A]);
+  await expect(input).toHaveText("");
   await expect(
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
   ).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      (key) => localStorage.getItem(key) === "true",
+      KEEP_MENTIONED_AGENTS_PINNED_STORAGE_KEY,
+    ),
+  ).toBe(false);
 });
 
 test("always-mentioned agents remain selected without replaying their animation while Enter-send resolves", async ({
@@ -656,7 +716,7 @@ test("always-mentioned agents remain selected without replaying their animation 
     { timeout: 500 },
   );
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
   await expect(input).toBeFocused();
   await expect(composer.getByTestId("mention-autocomplete")).toHaveCount(0);
@@ -835,9 +895,10 @@ test("the auto-pin popover can turn off automatic agent mentions", async ({
   await expect(
     composer.getByTestId("mention-keep-agents-pinned-toggle"),
   ).toHaveAttribute("data-state", "unchecked");
+  await expect(input).toHaveText("@Morgarita ");
   await expect(
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(autoPinConfirmation).toHaveCount(0);
 
   await input.press("Escape");
@@ -929,7 +990,7 @@ test("automatic mentions are scoped to their channel or thread composer", async 
   ).toHaveCount(0);
 });
 
-test("a thread automatic mention preserves an explicitly unpinned root agent", async ({
+test("a thread does not restore a removed root agent; explicit re-add follows automation", async ({
   page,
 }) => {
   await keepMentionedAgentsPinned(page);
@@ -945,16 +1006,6 @@ test("a thread automatic mention preserves an explicitly unpinned root agent", a
   await rootComposer
     .getByTestId(`composer-address-lock-remove-${AGENT_A}`)
     .click();
-  await expect(rootInput).toHaveText("");
-  await expect(
-    rootComposer.getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
-
-  await rootInput.fill("@cla");
-  await expect(rootComposer.getByTestId("mention-autocomplete")).toBeVisible();
-  await rootInput.press("Tab");
-  await rootInput.type("one time");
-  await rootInput.press("Enter");
   await expect(rootInput).toHaveText("");
   await expect(
     rootComposer.getByTestId(`composer-address-lock-${AGENT_A}`),
@@ -987,39 +1038,47 @@ test("a thread automatic mention preserves an explicitly unpinned root agent", a
   await restoredRootInput.press("Tab");
   await expect(
     channelComposer(page).getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
-  await restoredRootInput.type("one time");
+  ).toBeVisible();
+  await restoredRootInput.type("explicit re-add");
   await restoredRootInput.press("Enter");
 
-  await expect(restoredRootInput).toHaveText("");
+  await expect
+    .poll(() =>
+      readOutgoingMentionPubkeys(page, "@claude code explicit re-add"),
+    )
+    .toEqual([AGENT_A]);
+  await expect(restoredRootInput).toHaveText("@claude code ");
   await expect(
     channelComposer(page).getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
+  ).toBeVisible();
 });
 
-test("an unchecked agent remains excluded while automatic mentions stay enabled", async ({
-  page,
-}) => {
-  await keepMentionedAgentsPinned(page);
-  await installAudienceFixtures(page);
-  await openGeneral(page);
-  await automaticallyMention(channelComposer(page), "Morgarita");
-
-  const composer = channelComposer(page);
-  const input = composer.getByTestId("message-input");
-  await composer.getByTestId(`composer-address-lock-remove-${AGENT_A}`).click();
-  await expect(input).toHaveText("");
-  await input.fill("@Mor");
-  await expect(composer.getByTestId("mention-autocomplete")).toBeVisible();
-  await input.press("Tab");
-  await input.type("one time");
-  await input.press("Enter");
-
-  await expect(input).toHaveText("");
-  await expect(
-    composer.getByTestId(`composer-address-lock-${AGENT_A}`),
-  ).toHaveCount(0);
-});
+for (const mode of ["toolbar", "typed"] as const) {
+  test(`explicit ${mode} re-add after X follows the enabled automatic setting`, async ({
+    page,
+  }) => {
+    await keepMentionedAgentsPinned(page);
+    await installAudienceFixtures(page);
+    await openGeneral(page);
+    const composer = channelComposer(page);
+    const input = composer.getByTestId("message-input");
+    await automaticallyMention(composer, "Morgarita");
+    await composer
+      .getByTestId(`composer-address-lock-remove-${AGENT_A}`)
+      .click();
+    await expect(input).toHaveText("");
+    await addMention(composer, "Morgarita", mode);
+    await input.pressSequentially("re-added");
+    await input.press("Enter");
+    await expect
+      .poll(() => readOutgoingMentionPubkeys(page, "@Morgarita re-added"))
+      .toEqual([AGENT_A]);
+    await expect(input).toHaveText("@Morgarita ");
+    await expect(
+      composer.getByTestId(`composer-address-lock-${AGENT_A}`),
+    ).toBeVisible();
+  });
+}
 
 test("re-adding a deleted automatic mention restores its automatic mention state immediately", async ({
   page,
@@ -1084,19 +1143,7 @@ test("implicit automatic mentions stay out of persisted drafts", async ({
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 
   await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const drafts = JSON.parse(
-            window.localStorage.getItem(storageKey) ?? "{}",
-          ) as Record<string, { channelId?: string; content?: string }>;
-          const draft = drafts[channelId];
-          if (draft?.channelId === channelId) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
+    .poll(() => readPersistedDraft(page))
     .toBe("draft text continues");
 });
 
@@ -1122,19 +1169,7 @@ test("an authored duplicate leading mention survives draft restoration", async (
   });
   await expect(page.getByTestId("chat-title")).toHaveText("random");
   await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const drafts = JSON.parse(
-            window.localStorage.getItem(storageKey) ?? "{}",
-          ) as Record<string, { channelId?: string; content?: string }>;
-          const draft = drafts[channelId];
-          if (draft?.channelId === channelId) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
+    .poll(() => readPersistedDraft(page))
     .toBe("@Morgarita authored duplicate");
 });
 
@@ -1162,20 +1197,7 @@ test("typed deletion preserves an identical authored mention in drafts", async (
     waitUntil: "domcontentloaded",
   });
   await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const draft = (
-            JSON.parse(
-              window.localStorage.getItem(storageKey) ?? "{}",
-            ) as Record<string, { content?: string }>
-          )[channelId];
-          if (draft) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
+    .poll(() => readPersistedDraft(page))
     .toBe("@Morgarita manual after typed deletion");
 });
 
@@ -1195,20 +1217,7 @@ test("removing an automatic mention preserves an identical authored mention in d
   });
 
   await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const draft = (
-            JSON.parse(
-              window.localStorage.getItem(storageKey) ?? "{}",
-            ) as Record<string, { content?: string }>
-          )[channelId];
-          if (draft) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
+    .poll(() => readPersistedDraft(page))
     .toBe("@Morgarita manual after removal");
 });
 
@@ -1230,22 +1239,7 @@ test("multiple automatic mentions stay out of persisted drafts", async ({
   await page.goto(`/#/channels/${RANDOM_CHANNEL_ID}`, {
     waitUntil: "domcontentloaded",
   });
-  await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const draft = (
-            JSON.parse(
-              window.localStorage.getItem(storageKey) ?? "{}",
-            ) as Record<string, { content?: string }>
-          )[channelId];
-          if (draft) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
-    .toBe("draft text");
+  await expect.poll(() => readPersistedDraft(page)).toBe("draft text");
 });
 
 test("re-enabling an automatic mention preserves an authored duplicate after draft restoration", async ({
@@ -1273,19 +1267,7 @@ test("re-enabling an automatic mention preserves an authored duplicate after dra
   });
   await expect(page.getByTestId("chat-title")).toHaveText("random");
   await expect
-    .poll(() =>
-      page.evaluate((channelId) => {
-        for (const storageKey of Object.keys(window.localStorage)) {
-          if (!storageKey.startsWith("buzz-drafts.v2:")) continue;
-          const drafts = JSON.parse(
-            window.localStorage.getItem(storageKey) ?? "{}",
-          ) as Record<string, { channelId?: string; content?: string }>;
-          const draft = drafts[channelId];
-          if (draft?.channelId === channelId) return draft.content ?? "";
-        }
-        return "";
-      }, CHANNEL_ID),
-    )
+    .poll(() => readPersistedDraft(page))
     .toBe("@Morgarita authored duplicate");
 });
 
@@ -1319,7 +1301,7 @@ test("a restored multi-word automatic mention remains a chip with the caret afte
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
   ).toBeVisible();
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
   await page.waitForTimeout(500);
   await expect(input.locator(".agent-mention-highlight")).toHaveCount(1);
@@ -1390,7 +1372,7 @@ test("the mention-button placement fits the narrow composer", async ({
   await automaticallyMention(overlay, "Vogue");
   await expect(overlay.getByTestId("composer-address-locks")).toBeVisible();
   await expect(
-    overlay.getByRole("button", { name: "Manage automatic agent mentions" }),
+    overlay.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
   await waitForAnimations(page);
   await composer.screenshot({ path: `${SHOTS}/narrow-mention-button.png` });

@@ -41,7 +41,7 @@ const thirdAgent = {
   pubkey: "third-agent-pubkey",
 };
 
-test("mention control expands with automatically mentioned agents", async () => {
+test("mention control expands with current message recipients", async () => {
   const React = await import("react");
   const { fireEvent, render } = await import("@testing-library/react");
   const { TooltipProvider } = await import("@/shared/ui/tooltip");
@@ -72,7 +72,7 @@ test("mention control expands with automatically mentioned agents", async () => 
   const avatar = view.getByTestId("composer-address-lock-agent-pubkey");
   assert.ok(avatar);
   const manage = view.getByRole("button", {
-    name: "Manage automatic agent mentions",
+    name: "Mention someone",
   });
   assert.match(manage.className, /(?:^|\s)-ml-2(?:\s|$)/);
   assert.match(manage.className, /(?:^|\s)pl-2(?:\s|$)/);
@@ -82,18 +82,18 @@ test("mention control expands with automatically mentioned agents", async () => 
     /(?:^|\s)pr-1\.5(?:\s|$)/,
   );
   assert.match(
-    view.getByRole("button", { name: "Manage automatic agent mentions" })
-      .parentElement?.className ?? "",
+    view.getByRole("button", { name: "Mention someone" }).parentElement
+      ?.className ?? "",
     /(?:^|\s)bg-primary\/15(?:\s|$)/,
   );
   assert.match(
-    view.getByRole("button", { name: "Manage automatic agent mentions" })
-      .parentElement?.className ?? "",
+    view.getByRole("button", { name: "Mention someone" }).parentElement
+      ?.className ?? "",
     /(?:^|\s)text-primary(?:\s|$)/,
   );
   assert.doesNotMatch(
-    view.getByRole("button", { name: "Manage automatic agent mentions" })
-      .parentElement?.className ?? "",
+    view.getByRole("button", { name: "Mention someone" }).parentElement
+      ?.className ?? "",
     /(?:^|\s)bg-accent\/70(?:\s|$)/,
   );
   assert.doesNotMatch(

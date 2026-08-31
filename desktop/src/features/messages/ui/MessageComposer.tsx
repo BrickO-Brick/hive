@@ -56,6 +56,7 @@ import { ComposerUploadProgressPill } from "./ComposerUploadProgressPill";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
 import { useMentionSendFlow } from "./useMentionSendFlow";
 import { useAgentAddressLockPicker } from "./useAgentAddressLockPicker";
+import { useComposerAgentRecipients } from "./useComposerAgentRecipients";
 import { useAddressMentionPulse } from "./useAddressMentionPulse";
 import { useAlwaysAddressShortcut } from "./useAlwaysAddressShortcut";
 import { useComposerMentionPicker } from "./useComposerMentionPicker";
@@ -129,7 +130,7 @@ function MessageComposerImpl({
   const effectiveDraftKey = draftKey ?? channelId;
   const ownerPubkey = identityQuery.data?.pubkey ?? null;
   const audienceScope =
-    audienceContext && channelId && ownerPubkey
+    audienceContext && channelId && ownerPubkey && editTarget == null
       ? getPersistentAgentAudienceScope({
           ownerPubkey,
           channelId,
@@ -333,7 +334,7 @@ function MessageComposerImpl({
     onTurnOn: () => setKeepMentionedAgentsPinned(true),
   });
   const addressedMentionRestore = useAddressedAgentMentionRestore({
-    audiencePubkeys: persistentAudience.pubkeys,
+    audienceScope,
     channelId,
     enabled: keepMentionedAgentsPinned,
   });
@@ -461,6 +462,12 @@ function MessageComposerImpl({
     onImplicitPrefixInserted: implicitAgentMentionProvenance.add,
     onImplicitPrefixRemoved: implicitAgentMentionProvenance.remove,
     onPulseAddressLock: addressPulse.pulseOne,
+    profiles,
+    richText,
+  });
+  const addressedAgents = useComposerAgentRecipients({
+    audiencePubkeys: persistentAudience.pubkeys,
+    mentions,
     profiles,
     richText,
   });
@@ -936,7 +943,7 @@ function MessageComposerImpl({
             </div>
             <ComposerDockToolbar
               addressedAgents={
-                editTarget == null && !composerDisabled ? lockedAgents : []
+                audienceScope && !composerDisabled ? addressedAgents : []
               }
               autoPinConfirmationTitle={autoPinConfirmationTitle}
               layoutMode={layoutMode}

@@ -617,12 +617,14 @@ test("deleting human mentions is ignored while deleting a restored automatic age
   assert.deepEqual(removedPubkeys, []);
 });
 
-test("selecting an agent from the explicit picker auto-addresses it", async () => {
+test("selecting an agent from the toolbar respects the same auto-pin callback as a typed query", async () => {
   const { act, renderHook } = await import("@testing-library/react");
   const { useAgentAddressLockPicker } = await import(
     "./useAgentAddressLockPicker.ts"
   );
   const appliedEdits = [];
+  const autoPinnedSuggestions = [];
+  const explicitlyAddressed = [];
   const addedPubkeys = [];
   const pulsedPubkeys = [];
   const mentions = {
@@ -651,6 +653,10 @@ test("selecting an agent from the explicit picker auto-addresses it", async () =
       audience,
       audienceScope: "channel-scope",
       mentions,
+      onAutoPinAgentMention: (suggestion, options) =>
+        autoPinnedSuggestions.push([suggestion, options]),
+      onAddressAgentMention: (suggestion) =>
+        explicitlyAddressed.push(suggestion),
       onPulseAddressLock: (pubkey) => pulsedPubkeys.push(pubkey),
       richText,
     }),
@@ -671,15 +677,23 @@ test("selecting an agent from the explicit picker auto-addresses it", async () =
       insertText: "@Agent Ada ",
     },
   ]);
-  assert.deepEqual(addedPubkeys, ["agent-pubkey"]);
-  assert.deepEqual(pulsedPubkeys, ["agent-pubkey"]);
-  assert.equal(
-    result.current.announcement,
-    "Automatically mentioning Agent Ada",
-  );
+  assert.deepEqual(addedPubkeys, []);
+  assert.deepEqual(pulsedPubkeys, []);
+  assert.deepEqual(explicitlyAddressed, []);
+  assert.deepEqual(autoPinnedSuggestions, [
+    [
+      {
+        pubkey: "agent-pubkey",
+        displayName: "Agent Ada",
+        isAgent: true,
+      },
+      { reinstateExcluded: true },
+    ],
+  ]);
+  assert.equal(result.current.announcement, "");
 });
 
-test("repeatedly selecting an explicitly unpinned agent keeps its mentions manual", async () => {
+test("explicitly re-adding a removed agent follows the current automation preference", async () => {
   const { act, renderHook } = await import("@testing-library/react");
   const { useAgentAddressLockPicker } = await import(
     "./useAgentAddressLockPicker.ts"
@@ -775,7 +789,7 @@ test("repeatedly selecting an explicitly unpinned agent keeps its mentions manua
         displayName: "Agent Ada",
         isAgent: true,
       },
-      { reinstateExcluded: false },
+      { reinstateExcluded: true },
     ],
     [
       {
@@ -783,7 +797,7 @@ test("repeatedly selecting an explicitly unpinned agent keeps its mentions manua
         displayName: "Agent Ada",
         isAgent: true,
       },
-      { reinstateExcluded: false },
+      { reinstateExcluded: true },
     ],
   ]);
   assert.deepEqual(pulsedPubkeys, []);
@@ -865,3 +879,61 @@ test("an addressed agent keeps its resolved name while mention state clears duri
 
   assert.equal(result.current.lockedAgents[0].displayName, "Agent Ada");
 });
+
+for (const text of [
+  "@Agent Ada @Agent Bea hello",
+  "hello @Agent Bea and @Agent Ada then @Agent Bea",
+]) {
+  test(`avatar removal strips every occurrence, not only a prefix: ${text}`, async () => {
+    const { act, renderHook } = await import("@testing-library/react");
+    const { useAgentAddressLockPicker } = await import(
+      "./useAgentAddressLockPicker.ts"
+    );
+    const { getMentionOffsets } = await import("../lib/hasMention.ts");
+    let currentText = text;
+    const excluded = [];
+    const refs = [
+      { displayName: "Agent Ada", pubkey: "agent-a", isAgent: true },
+      { displayName: "Agent Bea", pubkey: "agent-b", isAgent: true },
+    ];
+    const { result } = renderHook(() =>
+      useAgentAddressLockPicker({
+        applyAutocompleteEdit: ({
+          replaceFromOffset,
+          replaceToOffset,
+          insertText,
+        }) => {
+          currentText =
+            currentText.slice(0, replaceFromOffset) +
+            insertText +
+            currentText.slice(replaceToOffset);
+        },
+        audience: {
+          pubkeys: ["agent-a", "agent-b"],
+          excludePubkey: (key) => excluded.push(key),
+        },
+        audienceScope: "channel",
+        mentions: {
+          getMentionDisplayName: (key) =>
+            refs.find((ref) => ref.pubkey === key)?.displayName,
+          getDraftMentionRefs: (value) =>
+            refs.filter(
+              (ref) => getMentionOffsets(value, ref.displayName).length > 0,
+            ),
+        },
+        onPulseAddressLock: () => {},
+        richText: {
+          getPlainTextAndCursor: () => ({
+            text: currentText,
+            cursor: currentText.length,
+          }),
+        },
+      }),
+    );
+    act(() => result.current.removeAddressedAgent("agent-b"));
+    assert.deepEqual(excluded, ["agent-b"]);
+    assert.equal(getMentionOffsets(currentText, "Agent Bea").length, 0);
+    assert.equal(getMentionOffsets(currentText, "Agent Ada").length, 1);
+    assert.ok(currentText.includes("hello"));
+  });
+}
