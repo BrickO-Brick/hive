@@ -1,3 +1,4 @@
+import { useHostStartReceiver } from "./useHostStart";
 import { useHostPresence } from "./useHostPresence";
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,6 +50,7 @@ export function useHostRegistration(
     (row) => row.host === snapshot.local?.host,
   )?.registration;
   useHostPresence(owner, relayUrl, localRegistration);
+  useHostStartReceiver(owner, relayUrl, !!localRegistration);
   useEffect(() => {
     if (!owner || !relayUrl) return;
     const key = hostQueryKey(relayUrl, owner);

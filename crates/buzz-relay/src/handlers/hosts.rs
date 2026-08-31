@@ -94,6 +94,51 @@ pub(super) async fn authorize_presence(
     Ok(())
 }
 
+pub(super) async fn authorize_execution(
+    tenant: &TenantContext,
+    state: &AppState,
+    event: &Event,
+    auth: &IngestAuth,
+) -> Result<(), IngestError> {
+    // Reject foreign/scoped callers before looking up private registration IDs.
+    let owner = auth.pubkey().to_hex();
+    if auth.channel_ids().is_some()
+        || event
+            .tags
+            .iter()
+            .filter(|t| t.as_slice() == ["p", owner.as_str()])
+            .count()
+            != 1
+    {
+        return Err(IngestError::AuthFailed(
+            "restricted: execution requires owner transport".into(),
+        ));
+    }
+    let ids: Vec<_> = event
+        .tags
+        .iter()
+        .filter(|t| t.as_slice().first().is_some_and(|s| s == "e"))
+        .collect();
+    let [id] = ids.as_slice() else {
+        return Err(invalid("invalid execution registration".into()));
+    };
+    let tag = id.as_slice();
+    if tag.len() != 2 || !buzz_core::host_execution::hex_id(&tag[1], 64) {
+        return Err(invalid("invalid execution registration".into()));
+    }
+    let stored = state
+        .db
+        .get_event_by_id(
+            tenant.community(),
+            &hex::decode(&tag[1]).map_err(|_| invalid("invalid registration".into()))?,
+        )
+        .await
+        .map_err(|_| IngestError::Internal("registration lookup failed".into()))?
+        .ok_or_else(|| invalid("execution registration absent or revoked".into()))?;
+    buzz_core::host_execution::validate_transport(event, &stored.event, *auth.pubkey())
+        .map_err(invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +172,7 @@ mod tests {
                 launcher_version: "test".into(),
                 runtimes: vec![],
                 accepts_start: false,
+                provisioned: vec![],
             },
             101,
         )

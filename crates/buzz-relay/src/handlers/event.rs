@@ -1712,6 +1712,7 @@ mod tests {
                     launcher_version: "test".into(),
                     runtimes: vec![],
                     accepts_start: false,
+                    provisioned: vec![],
                 },
                 101,
             )

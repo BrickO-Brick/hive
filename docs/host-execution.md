@@ -1,10 +1,20 @@
 # Host execution foundations (not yet an enabled remote feature)
 
-The native transition seam exists, but host discovery still advertises
-`accepts_start: false`. There is no Start/Move host-picker wiring or relay command
-receiver/publication yet. Kinds 50001/50002 are reserved protocol constants, **not
-admitted relay operations**. Do not enable the advertisement merely because a
-command can be signed or a native IPC call returns.
+The owner-operated native Start outbox, receiver and Hosts picker are implemented
+behind the **non-default `remote-start-preview` Cargo feature**. Default builds
+advertise `accepts_start: false` and reject queuing. Even a preview build advertises
+Start only with a successful same-owner/community receiver pump in the last 15s
+and at least one destination-local provisioned, compatible configuration. A
+runtime catalog entry alone is not launch capability. This is not a release or
+physical-host/provider certification.
+
+Kinds 50001/50002 are admitted only through the owner's global transport with an
+exact nondeleted registration. Commands are owner-signed, receipts host-signed;
+host keys receive no general login privilege. Query/result gates remain owner-only
+and additive migration 0042 excludes both ciphertext kinds from FTS (heap rewrite;
+plan deployment maintenance). Private profile v3 carries only agent public key,
+runtime catalog ID and opaque configuration revision. No source keys, environment,
+workspace or files are transferred.
 
 ## Native seams
 
@@ -48,9 +58,27 @@ or conversational presence. The protocol reserves listening/ready observations;
 the native executor currently records spawn only, not asynchronous receipt updates.
 Results are host-signed, encrypted to the owner, and correlated to the exact signed
 command, request, host registration and generation. Expired presence is never an
-execution result. Authorization and command lifetime are rechecked even on retry;
-after expiry the future receiver needs an authenticated history/reconciliation
-path, not a replay with a new operation ID.
+execution result. Authorization is rechecked even on retry. Historical bytes authenticate at their
+signed timestamp, but the native transition checks actual wall-clock expiry after
+immutable ledger replay and before creating any new intent or side effect. Future
+timestamps are rejected. Expiration never creates a replacement operation.
+
+The native outbox uses restricted atomic writes, directory fsync and OS file locks.
+It retains signed commands and receipts through ACK loss/reconnect/restart.
+Publication errors are recorded per entry, remain visible and retry independently;
+a revoked old registration does not starve another operation. Corrupt bindings,
+missing receipts and invalid/cyclic supersession chains fail closed. Transport ACK
+means only relay acceptance. The app-scoped pump runs independently of the Hosts
+page, and generation-matched public run presence supplies the actual location.
+
+`queue_host_start` without `new_attempt_after` always reuses the saved current
+intent, even if completed or rejected. A genuinely new user intent supplies that
+exact previous operation ID. It requires either its signed rejected outcome or a
+host-signed `stopped` receipt correlated to an owner-signed Stop of that exact run.
+Neither `root_exited`, missing presence nor expiry qualifies. A persisted
+supersession chain selects the current intent without timestamp tie ambiguity.
+Destination placement fences still revalidate admission; this does not implement
+Stop or Move, and never bypasses a successor/unknown placement fence.
 
 ## Exact Stop: important containment limit
 
@@ -90,17 +118,28 @@ unobserved cleanup or unsupported runtime must remain unknown, not stopped.
 There is no universal containment promise for arbitrary programs that detach from
 managed groups.
 
-## Remaining integration gates
+## Validation and integration gates
 
-1. Admit the private command/receipt kinds through existing relay authorization,
-   registration revocation, owner-only result gates/queries and FTS exclusion.
-   Add tenant, malicious payload and revocation integration tests before admission.
-2. Owner-operated Desktop receiver/outbox, durable receipt retry/history and actual
-   authenticated lifecycle receipt updates. Do not grant host keys general access.
-3. Destination provisioning/minimal encrypted handoff if the agent is absent;
-   explicit destination-local credentials and config, not exported source files.
-4. Workload-owner teardown and confirmed selected-run Stop, then the approved
-   fresh-runtime/no-file-transfer Move. No workspace migration.
-5. Native two-executor tracer bullet and UI, second-host/provider prerequisites,
-   real workload verification, final mesh-enabled packaging and matching captures.
-   Two local processes prove routing, not two physical machines.
+The opt-in debug-only `remote-start-tracer` feature builds a separate
+`host-start-tracer` executable. It uses two local native Wry executors, fresh
+synthetic keys, independent keyring/HOME/app-data scopes, the actual native
+queue/pump/transition, and real buzz-acp/buzz-agent binaries. It requires an
+isolated loopback relay and a newly initialized fixture directory. See source
+`desktop/src-tauri/src/host_start_tracer.rs`; never use live credentials or a
+shared production profile. Fixture provider configuration is explicitly synthetic;
+a spawned process and public live run label are not an inference-turn proof or
+two physical machines. On macOS the tracer pins each executor to a native keychain
+file under its fixture HOME; it does not change the user's default keychain or
+search list.
+
+The local two-executor tracer was exercised on 2026-08-31: native destination
+spawn, a verified host-signed `spawned` receipt, and matching public run/host label
+were observed. A restarted source reused the same immutable operation. The
+fixture initialized real buzz-agent ACP sessions but did not request inference.
+Cleanup reaped only the fixture's tracked root, not a certified Stop.
+
+Remaining gates include real-provider and second-physical-host validation,
+actual Hosts native UI capture, authenticated asynchronous lifecycle receipt
+updates beyond spawned, destination provisioning UX, and independent confirmed
+selected-run Stop integration before Move. No final mesh-enabled DMG or combined
+feature certification is implied by this slice.

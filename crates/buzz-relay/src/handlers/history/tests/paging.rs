@@ -69,6 +69,7 @@ async fn host_http_pages_exhaust_timestamp_ties_and_never_leak_other_owners() {
         launcher_version: "test".into(),
         runtimes: vec![],
         accepts_start: false,
+        provisioned: vec![],
     };
     // All records tie on timestamp. No event_mentions are populated. The
     // profile query must not lose its rows to a registration candidate page.
@@ -139,4 +140,97 @@ async fn host_http_pages_exhaust_timestamp_ties_and_never_leak_other_owners() {
     let bad = query_http(state, &hostname, &owner, json!({"kinds":[50000], "#p":[owner.public_key().to_hex()], "before_id":"bad", "until":timestamp})).await.unwrap_err();
     assert_eq!(bad.0, StatusCode::BAD_REQUEST);
     pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated Postgres MULTIVERSE_TEST_DATABASE_URL and Redis REDIS_URL"]
+async fn start_http_signed_queries_are_owner_only_without_mentions_or_search_leaks() {
+    use buzz_core::{
+        host,
+        host_execution::{self, Action, Command, Outcome, Receipt},
+    };
+    let url = std::env::var("MULTIVERSE_TEST_DATABASE_URL").expect("isolated DB required");
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let db = Db::from_pool(pool.clone());
+    let community = db
+        .ensure_configured_community(&format!("start-query-{}.test", Uuid::new_v4()))
+        .await
+        .unwrap();
+    let owner = Keys::generate();
+    let host = Keys::generate();
+    let stranger = Keys::generate();
+    let now = nostr::Timestamp::now().as_secs();
+    let reg = host::registration(&owner, host.public_key(), now).unwrap();
+    let req = Command {
+        v: 1,
+        operation: "ab".repeat(16),
+        agent: Keys::generate().public_key().to_hex(),
+        relay: "wss://fixture.test".into(),
+        expires_at: now + 300,
+        action: Action::Start {
+            runtime: "goose".into(),
+            revision: "cd".repeat(32),
+        },
+    };
+    let cmd = host_execution::command(&owner, &reg, &req, now).unwrap();
+    let receipt = host_execution::receipt(
+        &host,
+        &reg,
+        &Receipt {
+            v: 1,
+            command: cmd.id.to_hex(),
+            run: req.run().into(),
+            request: req,
+            outcome: Outcome::Spawned,
+            observed_at: now,
+        },
+        now,
+    )
+    .unwrap();
+    for e in [&reg, &cmd, &receipt] {
+        buzz_db::event::insert_event(&pool, community.id, e, None)
+            .await
+            .unwrap();
+    }
+    let state = state_with_redis(db, pool.clone(), std::env::var("REDIS_URL").unwrap()).await;
+    for event in [&cmd, &receipt] {
+        let filter = json!({"kinds":[event.kind.as_u16()], "#p":[owner.public_key().to_hex()], "#e":[reg.id.to_hex()], "limit":1000});
+        let Json(value) = query_http(state.clone(), &community.host, &owner, filter.clone())
+            .await
+            .unwrap();
+        let rows: Vec<Event> = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            rows,
+            vec![event.clone()],
+            "no event_mentions index required"
+        );
+        for signer in [&stranger, &host] {
+            assert_eq!(
+                query_http(state.clone(), &community.host, signer, filter.clone())
+                    .await
+                    .unwrap_err()
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            let Json(value) = query_http(
+                state.clone(),
+                &community.host,
+                signer,
+                json!({"ids":[event.id.to_hex()]}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                value,
+                json!([]),
+                "kindless IDs must not bypass result gates"
+            );
+        }
+        let error = query_http(state.clone(), &community.host, &owner, json!({"kinds":[event.kind.as_u16()], "#p":[owner.public_key().to_hex()], "search":"fixture"})).await.unwrap_err();
+        assert_eq!(
+            error.0,
+            StatusCode::BAD_REQUEST,
+            "private host history rejects search rather than invoking FTS"
+        );
+    }
 }

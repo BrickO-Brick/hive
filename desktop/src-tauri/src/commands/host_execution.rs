@@ -24,12 +24,14 @@ pub async fn inspect_local_execution_config(
         Some(&expected_relay),
         &crate::relay::relay_api_base_url_with_override(&state),
     )?;
+    let captured_owner = expected_owner.clone();
     let result = tokio::task::spawn_blocking(move || {
         let records = managed_agents::load_managed_agents(&app)?;
         let record = records
             .iter()
             .find(|r| r.pubkey == agent)
             .ok_or("agent is not provisioned on this executor")?;
+        managed_agents::execution_agent_owner(record, &captured_owner)?;
         serde_json::to_value(managed_agents::local_execution_config(&app, record)?)
             .map_err(|_| "cannot serialize execution config".into())
     })
@@ -102,8 +104,14 @@ pub async fn execute_host_command(
         registration,
         &event,
         &relay,
-        Timestamp::now().as_secs(),
+        // Authenticate historical bytes for read-only journal recovery. The
+        // native transition checks the actual wall clock AFTER immutable replay
+        // and BEFORE any new intent/side effect.
+        event.created_at.as_secs(),
     )?;
+    if event.created_at.as_secs() > Timestamp::now().as_secs().saturating_add(30) {
+        return Err("execution command timestamp is in the future".into());
+    }
     let compatible_runtime = match &request.action {
         Action::Start { runtime, .. } => catalog.iter().any(|entry| {
             entry.id == *runtime

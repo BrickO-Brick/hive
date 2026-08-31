@@ -136,6 +136,18 @@ pub struct Runtime {
     pub auth_status: String,
 }
 
+/// Opaque reference to an already-provisioned destination configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionedAgent {
+    /// Agent public identity, never its key.
+    pub agent: String,
+    /// Destination Rust catalog runtime ID.
+    pub runtime: String,
+    /// Digest rechecked at the actual spawn boundary.
+    pub revision: String,
+}
+
 /// Encrypted machine report. Registration alone does not enable remote launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,13 +166,34 @@ pub struct Report {
     pub runtimes: Vec<Runtime>,
     /// False until the host implements launch request handling.
     pub accepts_start: bool,
+    /// Owner-private ready configurations; absence requires destination setup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisioned: Vec<ProvisionedAgent>,
 }
 
 impl Report {
     /// Check bounded data before encryption and after authenticated decryption.
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.v, 1 | 2) || self.accepts_start || self.runtimes.len() > 128 {
+        if !matches!(self.v, 1..=3)
+            || (self.v != 3 && (self.accepts_start || !self.provisioned.is_empty()))
+            || self.runtimes.len() > 128
+            || self.provisioned.len() > 256
+        {
             return Err("unsupported host report".into());
+        }
+        let mut agents = std::collections::HashSet::new();
+        for config in &self.provisioned {
+            if !crate::host_execution::hex_id(&config.agent, 64)
+                || !crate::host_execution::hex_id(&config.revision, 64)
+                || !agents.insert(&config.agent)
+                || !self.runtimes.iter().any(|r| {
+                    r.id == config.runtime
+                        && r.availability == "available"
+                        && matches!(r.auth_status.as_str(), "logged_in" | "not_applicable")
+                })
+            {
+                return Err("invalid provisioned configuration".into());
+            }
         }
         let strings = [&self.name, &self.os, &self.arch, &self.launcher_version];
         if strings
@@ -261,7 +294,7 @@ pub fn profile(
     now: u64,
 ) -> Result<Event, String> {
     let env = validate(registration)?;
-    if env.label != "registration" || env.host != host.public_key() || payload.v != 2 {
+    if env.label != "registration" || env.host != host.public_key() || !matches!(payload.v, 2 | 3) {
         return Err("invalid host profile binding or version".into());
     }
     payload.validate()?;
@@ -297,7 +330,7 @@ pub fn decrypt_report(
         .map_err(|e| e.to_string())?;
     let result: Report = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     result.validate()?;
-    if (env.label == "profile") != (result.v == 2) {
+    if (env.label == "profile") != matches!(result.v, 2 | 3) {
         return Err("host payload/envelope version mismatch".into());
     }
     Ok(result)
@@ -315,6 +348,7 @@ mod tests {
             launcher_version: "test".into(),
             runtimes: vec![],
             accepts_start: false,
+            provisioned: vec![],
         }
     }
     #[test]

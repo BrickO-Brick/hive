@@ -163,7 +163,7 @@ const invalidPayloads = [
   [
     "unsupported version",
     (r) => {
-      r.v = 3;
+      r.v = 4;
     },
   ],
   [

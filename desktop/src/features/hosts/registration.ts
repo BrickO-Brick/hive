@@ -21,6 +21,7 @@ export type HostReport = {
     auth_status: string;
   }[];
   accepts_start: boolean;
+  provisioned?: { agent: string; runtime: string; revision: string }[];
 };
 export type LocalHost = { host: string; report: HostReport };
 export type HostRow = {
@@ -97,6 +98,9 @@ export function needsReport(
       r.arch,
       r.launcher_version,
       r.accepts_start,
+      [...(r.provisioned ?? [])]
+        .sort((a, b) => a.agent.localeCompare(b.agent))
+        .map((c) => [c.agent, c.runtime, c.revision]),
       [...r.runtimes]
         .sort((a, b) => a.id.localeCompare(b.id))
         .map((x) => [x.id, x.label, x.availability, x.auth_status]),

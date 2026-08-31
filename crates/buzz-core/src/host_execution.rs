@@ -334,6 +334,23 @@ pub fn decrypt_receipt(
     Ok(result)
 }
 
+/// Validate the public routing envelope without decrypting execution payloads.
+/// The caller must fetch this exact nondeleted registration in its community.
+/// This grants only owner transport, never host login privileges.
+pub fn validate_transport(event: &Event, reg: &Event, owner: PublicKey) -> Result<(), String> {
+    let binding = registration(reg)?;
+    if binding.owner != owner {
+        return Err("foreign execution transport owner".into());
+    }
+    let kind = event.kind.as_u16() as u32;
+    let signer = match kind {
+        KIND_HOST_COMMAND => binding.owner,
+        KIND_HOST_RECEIPT => binding.host,
+        _ => return Err("invalid execution kind".into()),
+    };
+    envelope(event, reg, kind, signer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,5 +453,65 @@ mod tests {
         assert!(receipt(&host, &reg, &result, 201).is_err());
         req.expires_at = 401;
         assert!(command(&owner, &reg, &req, 100).is_err());
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    #[test]
+    fn private_transport_requires_exact_owner_registration_and_host_signature() {
+        let owner = Keys::generate();
+        let host = Keys::generate();
+        let stranger = Keys::generate();
+        let reg = host::registration(&owner, host.public_key(), 100).unwrap();
+        let request = Command {
+            v: 1,
+            operation: "ab".repeat(16),
+            relay: "wss://relay.example".into(),
+            agent: Keys::generate().public_key().to_hex(),
+            expires_at: 400,
+            action: Action::Start {
+                runtime: "goose".into(),
+                revision: "cd".repeat(32),
+            },
+        };
+        let command = command(&owner, &reg, &request, 100).unwrap();
+        let result = Receipt {
+            v: 1,
+            command: command.id.to_hex(),
+            run: request.run().into(),
+            request: request.clone(),
+            observed_at: 101,
+            outcome: Outcome::Spawned,
+        };
+        let receipt = receipt(&host, &reg, &result, 101).unwrap();
+        for event in [&command, &receipt] {
+            assert!(validate_transport(event, &reg, owner.public_key()).is_ok());
+            assert!(validate_transport(event, &reg, host.public_key()).is_err());
+            assert!(validate_transport(event, &reg, stranger.public_key()).is_err());
+            assert!(validate_transport(
+                event,
+                &host::registration(&owner, host.public_key(), 99).unwrap(),
+                owner.public_key()
+            )
+            .is_err());
+            assert!(!crate::filter::reader_authorized_for_event(
+                event,
+                &stranger.public_key().to_hex()
+            ));
+            assert!(crate::filter::reader_authorized_for_event(
+                event,
+                &owner.public_key().to_hex()
+            ));
+            let forged = EventBuilder::new(event.kind, event.content.clone())
+                .tags(event.tags.clone())
+                .allow_self_tagging()
+                .sign_with_keys(&stranger)
+                .unwrap();
+            assert!(validate_transport(&forged, &reg, owner.public_key()).is_err());
+        }
+        assert!(decrypt_command(&host, &reg, &command, &request.relay, 400).is_err());
+        assert!(decrypt_receipt(&owner, &reg, &receipt, &command, &request).is_ok());
     }
 }

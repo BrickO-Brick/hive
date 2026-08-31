@@ -22,9 +22,12 @@ impl HistoryError {
 
 pub(crate) fn explicitly_requests_hosts(filter: &Filter) -> bool {
     filter.kinds.as_ref().is_some_and(|kinds| {
-        kinds
-            .iter()
-            .any(|kind| u32::from(kind.as_u16()) == KIND_HOST)
+        kinds.iter().any(|kind| {
+            matches!(
+                u32::from(kind.as_u16()),
+                KIND_HOST | buzz_core::kind::KIND_HOST_COMMAND | buzz_core::kind::KIND_HOST_RECEIPT
+            )
+        })
     })
 }
 

@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import { HostStartButton } from "./HostStartButton";
 import { Laptop, LockKeyhole, RefreshCw } from "lucide-react";
 import { Button } from "@/shared/ui/button";
 import { activeRuns } from "@/features/presence/runPresence";
@@ -6,6 +9,8 @@ import { HOST_REFRESH, useHostSnapshot } from "./useHostRegistration";
 
 export function HostsSection() {
   const snapshot = useHostSnapshot();
+  const { data: agents } = useManagedAgentsQuery();
+  const [selectedAgent, setSelectedAgent] = useState("");
   const presence = usePresenceRuns(snapshot.rows.map((row) => row.host));
   return (
     <section aria-labelledby="hosts-heading" className="flex flex-col gap-3">
@@ -45,6 +50,25 @@ export function HostsSection() {
             : "No relay-confirmed hosts to show."}
         </p>
       ) : null}
+      <label className="flex flex-col gap-1 text-sm">
+        Start an existing agent on a selected host
+        <select
+          className="rounded-md border bg-background p-2"
+          value={selectedAgent}
+          onChange={(event) => setSelectedAgent(event.target.value)}
+        >
+          <option value="">Choose an agent</option>
+          {(agents ?? []).map((agent) => (
+            <option key={agent.pubkey} value={agent.pubkey}>
+              {agent.name}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-muted-foreground">
+          Fresh session, same identity. No workspace, configuration, keys, or
+          files are transferred. Other hosts keep running.
+        </span>
+      </label>
       <div className="grid gap-3 md:grid-cols-2">
         {snapshot.rows.map((row) => (
           <article key={row.host} className="rounded-lg border bg-card p-4">
@@ -88,8 +112,19 @@ export function HostsSection() {
               {row.event
                 ? `Profile updated ${new Date(row.event.created_at * 1000).toLocaleTimeString()}. `
                 : ""}
-              Registration only; remote Start is not enabled.
+              {row.report?.accepts_start
+                ? "Start receiver advertised; destination rechecks configuration at launch."
+                : "Remote Start is unavailable on this host."}
             </p>
+            <HostStartButton
+              row={row}
+              agent={selectedAgent}
+              online={
+                presence.isError || !presence.data
+                  ? undefined
+                  : activeRuns(presence.data[row.host], presence.now).length > 0
+              }
+            />
           </article>
         ))}
       </div>

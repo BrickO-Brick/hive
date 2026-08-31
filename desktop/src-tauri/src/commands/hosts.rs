@@ -63,7 +63,11 @@ pub async fn get_local_host(
     expected_owner: String,
 ) -> Result<LocalHost, String> {
     let owner = owner_keys(&state, &expected_owner)?;
-    let catalog = super::discover_acp_providers(app, Some(false)).await?;
+    let relay = buzz_core_pkg::relay::normalize_relay_url(
+        &crate::relay::relay_api_base_url_with_override(&state),
+    )
+    .map_err(|_| "invalid host community")?;
+    let catalog = super::discover_acp_providers(app.clone(), Some(false)).await?;
     let result = tokio::task::spawn_blocking(move || {
         let host = host_keys(&owner)?;
         let mut runtimes = catalog
@@ -78,14 +82,43 @@ pub async fn get_local_host(
             })
             .collect::<Result<Vec<_>, String>>()?;
         runtimes.sort_by(|a, b| a.id.cmp(&b.id));
+        let provisioned: Vec<_> = crate::managed_agents::load_managed_agents(&app)?
+            .iter()
+            .filter(|r| {
+                buzz_core_pkg::relay::normalize_relay_url(&r.relay_url)
+                    .ok()
+                    .as_deref()
+                    == Some(relay.as_str())
+                    && crate::managed_agents::execution_agent_owner(r, &owner.public_key().to_hex())
+                        .is_ok()
+            })
+            .filter_map(|r| {
+                crate::managed_agents::local_execution_config(&app, r)
+                    .ok()
+                    .map(|c| host::ProvisionedAgent {
+                        agent: r.pubkey.clone(),
+                        runtime: c.runtime,
+                        revision: c.revision,
+                    })
+            })
+            .filter(|c| {
+                runtimes.iter().any(|r| {
+                    r.id == c.runtime
+                        && r.availability == "available"
+                        && matches!(r.auth_status.as_str(), "logged_in" | "not_applicable")
+                })
+            })
+            .collect();
         let report = Report {
-            v: 2,
+            v: 3,
             name: gethostname::gethostname().to_string_lossy().into_owned(),
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
             launcher_version: env!("CARGO_PKG_VERSION").into(),
+            accepts_start: !provisioned.is_empty()
+                && super::host_start::receiver_healthy(&app, &owner.public_key().to_hex(), &relay),
             runtimes,
-            accepts_start: false,
+            provisioned,
         };
         report.validate()?;
         Ok(LocalHost {

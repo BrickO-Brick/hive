@@ -97,6 +97,7 @@ async fn host_report_owner_ws_handler_ack_and_strict_negatives() {
             launcher_version: "test".into(),
             runtimes: vec![],
             accepts_start: false,
+            provisioned: vec![],
         },
         now,
     )
@@ -354,4 +355,114 @@ async fn host_and_agent_runs_require_authority_and_preserve_other_placements() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires isolated MULTIVERSE_TEST_DATABASE_URL and REDIS_URL; no skip fallback"]
+async fn start_command_receipt_signed_admission_revocation_tenant_and_fts() {
+    use buzz_core::host_execution::{self, Action, Command, Outcome, Receipt};
+    let url = std::env::var("MULTIVERSE_TEST_DATABASE_URL").expect("isolated PG required");
+    assert_eq!(std::env::var("DATABASE_URL").unwrap(), url);
+    let state =
+        super::fanout_access::test_state_with_redis_url(&std::env::var("REDIS_URL").unwrap()).await;
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let mut tenants = Vec::new();
+    for _ in 0..2 {
+        let community = state
+            .db
+            .ensure_configured_community(&format!("start-{}.test", Uuid::new_v4()))
+            .await
+            .unwrap();
+        tenants.push(TenantContext::resolved(community.id, community.host));
+    }
+    let owner = Keys::generate();
+    let host = Keys::generate();
+    let outsider = Keys::generate();
+    let (conn, mut rx) = connection(tenants[0].clone(), &owner);
+    let now = Timestamp::now().as_secs();
+    let reg = host::registration(&owner, host.public_key(), now).unwrap();
+    assert_eq!(publish(&state, &conn, &mut rx, &reg).await[2], true);
+    let request = Command {
+        v: 1,
+        operation: "ab".repeat(16),
+        relay: "wss://start.test".into(),
+        agent: Keys::generate().public_key().to_hex(),
+        expires_at: now + 300,
+        action: Action::Start {
+            runtime: "goose".into(),
+            revision: "cd".repeat(32),
+        },
+    };
+    let command = host_execution::command(&owner, &reg, &request, now).unwrap();
+    let receipt = host_execution::receipt(
+        &host,
+        &reg,
+        &Receipt {
+            v: 1,
+            command: command.id.to_hex(),
+            run: request.run().into(),
+            request,
+            outcome: Outcome::Spawned,
+            observed_at: now,
+        },
+        now,
+    )
+    .unwrap();
+    for event in [&command, &receipt] {
+        for _ in 0..2 {
+            // exact resend after lost ACK is admitted, never a second event
+            let ack = publish(&state, &conn, &mut rx, event).await;
+            assert_eq!(ack[2], true, "{ack}");
+        }
+        let indexed: bool = sqlx::query_scalar(
+            "SELECT search_tsv IS NOT NULL FROM events WHERE community_id=$1 AND id=$2",
+        )
+        .bind(tenants[0].community().as_uuid())
+        .bind(event.id.to_bytes().to_vec())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            !indexed,
+            "private command/receipt ciphertext is excluded from FTS"
+        );
+        for (tenant, signer) in [
+            (tenants[0].clone(), &outsider),
+            (tenants[0].clone(), &host),
+            (tenants[1].clone(), &owner),
+        ] {
+            let (foreign, mut foreign_rx) = connection(tenant, signer);
+            assert_eq!(
+                publish(&state, &foreign, &mut foreign_rx, event).await[2],
+                false
+            );
+        }
+        let (scoped, mut scoped_rx) = connection(tenants[0].clone(), &owner);
+        if let crate::connection::AuthState::Authenticated(ctx) =
+            &mut *scoped.auth_state.write().await
+        {
+            ctx.channel_ids = Some(vec![]);
+        }
+        assert_eq!(
+            publish(&state, &scoped, &mut scoped_rx, event).await[2],
+            false
+        );
+        let forged = resign(
+            event,
+            &outsider,
+            event.tags.iter().cloned().collect(),
+            event.kind,
+        );
+        assert_eq!(publish(&state, &conn, &mut rx, &forged).await[2], false);
+    }
+    // Delete only this fixture's exact registration. Authorization must run
+    // before duplicate detection, including replay of already stored ciphertext.
+    assert!(
+        buzz_db::event::soft_delete_event(&pool, tenants[0].community(), &reg.id.to_bytes())
+            .await
+            .unwrap()
+    );
+    for event in [&command, &receipt] {
+        assert_eq!(publish(&state, &conn, &mut rx, event).await[2], false);
+    }
 }

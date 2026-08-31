@@ -76,6 +76,26 @@ pub(crate) fn local_execution_config(
     })
 }
 
+/// Remote execution requires an explicit verified owner attestation, even for
+/// legacy local records. A local key in the store is not a remote launch grant.
+pub(crate) fn execution_agent_owner(
+    record: &ManagedAgentRecord,
+    owner: &str,
+) -> Result<(), String> {
+    let agent =
+        nostr::PublicKey::from_hex(&record.pubkey).map_err(|_| "invalid provisioned agent")?;
+    let tag = record
+        .auth_tag
+        .as_deref()
+        .ok_or("destination agent needs owner setup")?;
+    let issuer = buzz_sdk_pkg::nip_oa::verify_auth_tag(tag, &agent)
+        .map_err(|_| "invalid destination ownership")?;
+    if issuer.to_hex() != owner {
+        return Err("destination agent belongs to another owner".into());
+    }
+    Ok(())
+}
+
 fn ledger(app: &AppHandle, key: &ManagedAgentRuntimeKey, owner: &str) -> Result<Ledger, String> {
     if !buzz_core_pkg::host_execution::hex_id(owner, 64) {
         return Err("invalid execution owner".into());
@@ -136,9 +156,6 @@ pub(crate) fn execute_host_operation(
         Some(&request.relay),
         &crate::relay::relay_api_base_url_with_override(&state),
     )?;
-    if request.expires_at <= nostr::Timestamp::now().as_secs() {
-        return Err("execution command expired".into());
-    }
     let key = ManagedAgentRuntimeKey::new(&request.agent, &request.relay)?;
     let mut ledger = ledger(app, &key, owner)?;
     // Retry is resolved before inspecting current config/process state. Config
@@ -146,7 +163,25 @@ pub(crate) fn execute_host_operation(
     if let Some(entry) = ledger.replay(command_id, request)? {
         return Ok(entry);
     }
+    // Historical commands may only read the immutable ledger. An expired
+    // request without prior intent never reaches launch or Stop.
+    if request.expires_at <= nostr::Timestamp::now().as_secs() {
+        return Err("execution command expired without a recorded outcome".into());
+    }
     let mut records = load_managed_agents(app)?;
+    if matches!(request.action, Action::Start { .. })
+        && !records.iter().any(|r| {
+            r.pubkey == request.agent
+                && buzz_core_pkg::relay::normalize_relay_url(&r.relay_url)
+                    .ok()
+                    .as_deref()
+                    == Some(request.relay.as_str())
+                && execution_agent_owner(r, owner).is_ok()
+        })
+    {
+        ledger.begin(command_id, request)?;
+        return ledger.finish(&request.operation, Outcome::Rejected);
+    }
     let record = find_managed_agent_mut(&mut records, &request.agent)?;
     let mut runtimes = state
         .managed_agent_processes

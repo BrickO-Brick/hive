@@ -1,4 +1,9 @@
 #![recursion_limit = "256"] // Deep Tauri command futures exceed the default layout query depth.
+#[cfg(feature = "remote-start-tracer")]
+mod host_start_tracer;
+#[cfg(feature = "remote-start-tracer")]
+#[doc(hidden)]
+pub use host_start_tracer::run as run_host_start_tracer;
 mod app_menu;
 mod app_state;
 mod archive;
@@ -698,6 +703,8 @@ pub fn run() {
             start_managed_agent_runtime,
             stop_managed_agent_runtime,
             commands::execute_host_command,
+            commands::queue_host_start,
+            commands::pump_host_start,
             commands::inspect_local_execution_config,
             restart_managed_agent_runtime,
             reconcile_managed_agent_runtimes,
@@ -871,7 +878,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tray_menu::update_tray_agent_activity,
         ])
-        .build(tauri::generate_context!())
+        .build(native_context())
         .expect("error while building tauri application");
     let shutdown_done = Arc::new(AtomicBool::new(false));
 
@@ -944,4 +951,9 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+// One macro expansion per binary: macOS embeds a single Info.plist symbol.
+fn native_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }

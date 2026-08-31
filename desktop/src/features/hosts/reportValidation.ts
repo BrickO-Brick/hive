@@ -47,9 +47,13 @@ export function validateHostReport(
       "launcher_version",
       "runtimes",
       "accepts_start",
+      "provisioned",
     ]) ||
-    (value.v !== 1 && value.v !== 2) ||
-    value.accepts_start !== false ||
+    (value.v !== 1 && value.v !== 2 && value.v !== 3) ||
+    typeof value.accepts_start !== "boolean" ||
+    (value.v !== 3 &&
+      (value.accepts_start ||
+        (Array.isArray(value.provisioned) && value.provisioned.length > 0))) ||
     ![value.name, value.os, value.arch, value.launcher_version].every(text) ||
     !Array.isArray(value.runtimes) ||
     value.runtimes.length > 128
@@ -70,5 +74,29 @@ export function validateHostReport(
     )
       throw new Error("Invalid host runtime payload");
     ids.add(runtime.id);
+  }
+  if (value.provisioned !== undefined) {
+    if (!Array.isArray(value.provisioned) || value.provisioned.length > 256)
+      throw new Error("Invalid host provisioning payload");
+    const agents = new Set<string>();
+    for (const config of value.provisioned) {
+      if (
+        !object(config) ||
+        !fields(config, ["agent", "runtime", "revision"]) ||
+        typeof config.agent !== "string" ||
+        !/^[a-f0-9]{64}$/.test(config.agent) ||
+        typeof config.revision !== "string" ||
+        !/^[a-f0-9]{64}$/.test(config.revision) ||
+        agents.has(config.agent) ||
+        !value.runtimes.some(
+          (r) =>
+            r.id === config.runtime &&
+            r.availability === "available" &&
+            ["logged_in", "not_applicable"].includes(r.auth_status),
+        )
+      )
+        throw new Error("Invalid host provisioning payload");
+      agents.add(config.agent);
+    }
   }
 }
