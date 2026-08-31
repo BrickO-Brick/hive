@@ -99,6 +99,7 @@ check: fmt-check clippy desktop-check desktop-tauri-fmt-check desktop-tauri-clip
 security-review-check:
     node --check .github/scripts/codex-security-review.js
     node --test .github/scripts/codex-security-review.test.js
+    actionlint .github/workflows/codex-security-review.yml
 
 # Run the repository-wide differential file-size ratchet and its policy tests.
 # The ratchet inspects only files changed from the merge base, so this stays
@@ -326,9 +327,10 @@ test-unit:
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).
-        # They guard the embedded-migrator invariant (exactly the consolidated
-        # 0001; cutover/backfill stays an operator script, not startup state)
-        # and the tenant-scoping lints. The Postgres-backed buzz-db tests are
+        # They guard the embedded-migrator invariant (the complete checked-in
+        # additive migration set; legacy cutover/backfill remains an operator
+        # script, not startup state) and the tenant-scoping lints. The
+        # Postgres-backed buzz-db tests are
         # #[ignore]d, so --lib runs only the infra-free set. Without this gate a
         # stray file in migrations/ or a broken lint ships green.
         cargo nextest run -p buzz-db --lib
