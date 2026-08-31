@@ -636,7 +636,8 @@ export function useMentionSendFlow({
           }
           if (
             draft.sentDraftKey &&
-            draft.sourceOwner.getComposerRevision() === clearedRevision &&
+            draft.sourceOwner.getComposerRevision() ===
+              draft.composerRevision &&
             JSON.stringify(
               drafts.loadDraft(draft.sentDraftKey)?.mentionRefs ?? [],
             ) === JSON.stringify(draft.savedMentionRefs)
