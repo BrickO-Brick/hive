@@ -91,6 +91,10 @@ pub fn run() -> Result<(), String> {
         .map_err(|_| "native app build failed")?;
     let handle = app.handle().clone();
     let relay = args[3].clone();
+    // Use run_return: Wry's non-returning run can discard AppHandle::exit's
+    // requested code. Success also requires that the trace actually completed.
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task_completed = completed.clone();
     tauri::async_runtime::spawn(async move {
         let result = if role.starts_with("move-") {
             move_trace::trace(&handle, &role, &root, &relay).await
@@ -98,15 +102,22 @@ pub fn run() -> Result<(), String> {
             trace(&handle, &role, &root, &relay).await
         };
         match result {
-            Ok(()) => handle.exit(0),
+            Ok(()) => {
+                task_completed.store(true, std::sync::atomic::Ordering::Release);
+                handle.exit(0);
+            }
             Err(error) => {
                 eprintln!("Start tracer failed: {error}");
                 handle.exit(1);
             }
         }
     });
-    app.run(|_, _| {});
-    Ok(())
+    let exit_code = app.run_return(|_, _| {});
+    if exit_code == 0 && completed.load(std::sync::atomic::Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err("tracer did not complete successfully; inspect result files and logs".into())
+    }
 }
 
 fn keys(root: &Path, name: &str) -> Result<Keys, String> {

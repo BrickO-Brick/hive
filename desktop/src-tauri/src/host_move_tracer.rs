@@ -347,7 +347,7 @@ pub(super) async fn trace(
                     "ordinary-stop-success.json",
                     &serde_json::to_value(peer_stop).map_err(|_| "Stop status")?,
                 )?;
-                exercise_ordinary_restart(app, root, &peer, relay_url, &peer_run)?;
+                exercise_ordinary_restart(app, root, &peer, relay_url, &peer_run).await?;
                 save(root, "move-finish", &json!({"done":true}))?;
                 cleanup(app)?;
                 return Ok(());
@@ -361,7 +361,7 @@ pub(super) async fn trace(
 
 // Exercise the existing pair Start/Restart entry points, not a fixture-only
 // ledger shortcut. A stale Stop retry must not label a live successor stopped.
-fn exercise_ordinary_restart(
+async fn exercise_ordinary_restart(
     app: &tauri::AppHandle,
     root: &Path,
     peer: &str,
@@ -387,6 +387,12 @@ fn exercise_ordinary_restart(
     {
         return Err("old successful Stop retry misreported successor as stopped".into());
     }
+    save(
+        root,
+        "ordinary-start-success.json",
+        &serde_json::to_value(&started).map_err(|_| "Start status")?,
+    )?;
+    wait_live_run(app, peer, relay_url, &started_run).await?;
     let restarted = managed_agents::restart_managed_agent_runtime(
         peer.into(),
         relay_url.into(),
@@ -400,6 +406,7 @@ fn exercise_ordinary_restart(
     if restarted_run == started_run || restarted.pid.is_none() {
         return Err("ordinary Restart did not create a fresh runtime".into());
     }
+    wait_live_run(app, peer, relay_url, &restarted_run).await?;
     let stopped = managed_agents::stop_managed_agent_runtime(
         peer.into(),
         relay_url.into(),
@@ -414,6 +421,36 @@ fn exercise_ordinary_restart(
             "stale_successful_stop_retry_rejected": true, "final_stop": stopped,
         }),
     )
+}
+
+// Spawn is explicitly not Ready. Exercise the happy path only after observing
+// this exact new runtime on the relay; an immediate startup Stop may fail closed.
+async fn wait_live_run(
+    app: &tauri::AppHandle,
+    agent: &str,
+    relay_url: &str,
+    run: &str,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let owner = state.signing_keys()?.public_key().to_hex();
+    for _ in 0..60 {
+        let runs = commands::get_presence_runs(
+            state.clone(),
+            owner.clone(),
+            relay_url.into(),
+            vec![agent.into()],
+        )
+        .await?;
+        let now = nostr::Timestamp::now().as_secs();
+        if runs.get(agent).is_some_and(|runs| {
+            runs.iter()
+                .any(|r| r.run == run && r.status != "offline" && r.expires_at > now)
+        }) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    Err("ordinary restart generation not observed live".into())
 }
 
 async fn pulse(

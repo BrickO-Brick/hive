@@ -238,3 +238,34 @@ fn destination_rejection_reports_source_stopped_never_moved_or_restarted() {
     assert_eq!(f.store.journal.sent.len(), 2);
     super::super::host_start::validate_journal(&f.store, &f.owner, RELAY).unwrap();
 }
+
+#[test]
+fn renewed_stop_receipt_preserves_observation_and_releases_move_once() {
+    let mut f = Fixture::new();
+    f.receipt(Outcome::Stopped);
+    let intent = f.store.journal.moves[&f.id].clone();
+    let stop = f.store.journal.sent.get_mut(&intent.stop).unwrap();
+    let command = stop.command.clone();
+    let original = stop.receipt.clone().unwrap();
+    super::super::host_start_store::prepare_receipt(stop, &f.owner, &f.source, RELAY, &[], 1200)
+        .unwrap();
+    let renewed = stop.receipt.as_ref().unwrap();
+    assert_ne!(renewed.id, original.id);
+    assert_eq!(renewed.content, original.content);
+    assert_eq!(renewed.tags, original.tags);
+    assert_eq!(stop.command, command);
+    let req = request(&f.owner, stop, RELAY).unwrap();
+    let observation =
+        host_execution::decrypt_receipt(&f.owner, &stop.registration, renewed, &command, &req)
+            .unwrap();
+    assert_eq!(observation.observed_at, 110);
+    assert_eq!(observation.outcome, Outcome::Stopped);
+    f.store.save().unwrap();
+    drop(f.store);
+    f.store = Store::open_dir(f.dir.path(), &f.owner.public_key().to_hex(), RELAY).unwrap();
+    release_to_outbox(&mut f.store, &f.owner, RELAY, &f.id, &intent, 1201).unwrap();
+    let released = f.store.journal.moves[&f.id].clone();
+    assert!(release_to_outbox(&mut f.store, &f.owner, RELAY, &f.id, &released, 1202).is_err());
+    assert_eq!(f.store.journal.sent.len(), 2);
+    super::super::host_start::validate_journal(&f.store, &f.owner, RELAY).unwrap();
+}

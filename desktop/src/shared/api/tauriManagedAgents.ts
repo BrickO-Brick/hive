@@ -117,8 +117,13 @@ export async function stopManagedAgentRuntime(
 export async function restartManagedAgentRuntime(
   pubkey: string,
   relayUrl: string,
+  selectedRunId?: string | null,
 ): Promise<ManagedAgentRuntimeStatus> {
-  return invokeTauri("restart_managed_agent_runtime", { pubkey, relayUrl });
+  return invokeTauri("restart_managed_agent_runtime", {
+    pubkey,
+    relayUrl,
+    selectedRunId,
+  });
 }
 
 export async function putManagedAgentRuntimeLifecycle(

@@ -124,7 +124,10 @@ cannot be reported as stopped by replaying that earlier success.
 
 An explicit ordinary Start after confirmed exact Stop, and the existing pair
 Restart action, enter the same ledger for a fresh generation. Automatic reconcile
-remains fenced. Provider `!shutdown` behavior is unchanged. Config-edit, delete
+remains fenced. Spawn is not Ready: an immediate Stop during ACP pool initialization
+can return RootExited, even when partial children were drained. It cannot certify
+replacement; the actual tracer preserves this negative case rather than forcing
+Stopped. Provider `!shutdown` behavior is unchanged. Config-edit, delete
 and application cleanup retain their separate best-effort behavior and are not
 certified Stop claims. No new run authority or provider control channel is added.
 
@@ -260,8 +263,13 @@ Cleanup reaped only the fixture's tracked root, not a certified Stop.
 The 2026-08-31 Move tracer additionally completed confirmed selected-source Stop
 followed by destination spawn with the same agent and matching fresh run/host.
 The unrelated source peer survived Move and then completed its own ordinary Stop.
-An old source token was rejected at the destination. Both executors exited 0;
-fixture cleanup was not used as certification evidence.
+An old source token was rejected at the destination. The expanded tracer also
+exercised ordinary Start after confirmed Stop, waited for that exact new run's
+signed live presence, then used ordinary Restart and finally its own confirmed
+Stop. Retrying the earlier successful Stop could not report the successor stopped.
+Both executors completed with the required result files; fixture cleanup was not
+used as certification evidence. A debug tracer failure is checked from its result
+and log as well as exit code (the tracer uses the returning native event loop).
 
 Remaining gates include real-provider and second-physical-host validation,
 actual Hosts native UI capture, authenticated asynchronous lifecycle receipt
