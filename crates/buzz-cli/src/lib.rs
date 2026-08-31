@@ -2426,8 +2426,10 @@ mod tests {
                 "create",
                 "delete",
                 "get",
+                "link-channel",
                 "list",
                 "remove-repo",
+                "unlink-channel",
                 "update"
             ]
         );
@@ -2468,7 +2470,7 @@ mod tests {
             ("pack", 2),
             ("patches", 4),
             ("pr", 5),
-            ("projects", 8),
+            ("projects", 10),
             ("reactions", 3),
             ("repos", 5),
             ("social", 7),
