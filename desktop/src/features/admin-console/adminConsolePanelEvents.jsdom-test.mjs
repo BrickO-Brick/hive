@@ -5051,15 +5051,14 @@ test("resolve-frozen-payload-whole: ambiguous failure locks controls and retry s
   }
 });
 
-test("resolve-toast-from-response-ban: success toast uses authoritative response action, not form selection", async () => {
+test("resolve-toast-from-response-ban: form/response disagree — toast uses relay's ban, not selected dismiss", async () => {
   // Verifies Wes finding #4: the toast derives from AdminReportResolution, not
-  // from the mutable form selectedAction. Simulates first-ban / relay-returns-ban
-  // scenario — relay idempotency returns the first command's action.
+  // from the mutable form selectedAction.
   //
-  // Mutation evidence: derive toast from selectedAction → with the same IPC
-  // handler both toasts say "Ban"; change the test to select Dismiss after first
-  // failure and the production bug becomes visible (toast would say "Dismiss"
-  // but relay returned "Ban"). This test pins the authoritative path.
+  // Form disagrees with relay: operator selects Dismiss, but the relay's
+  // idempotent response carries activeAction.action = "ban" (the first command
+  // that landed). Authoritative path → toast says "Ban". selectedAction path →
+  // toast says "Dismiss". The disagreement makes the mutation bite.
 
   const origin = "https://admin.example.com";
   const pubkey = "e2".repeat(32);
@@ -5090,8 +5089,7 @@ test("resolve-toast-from-response-ban: success toast uses authoritative response
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
 
-  // Relay returns a resolution with activeAction.action = "ban" (the first
-  // command the relay executed, regardless of any client-side edits).
+  // Relay returns ban regardless of what the form sent — idempotent first-ban.
   setIpcHandler("admin_resolve_report", () =>
     Promise.resolve({
       status: "resolved",
@@ -5118,42 +5116,58 @@ test("resolve-toast-from-response-ban: success toast uses authoritative response
     await openFirstReportDetail(container);
     await settle(20);
 
-    const banBtn = container.querySelector("[data-testid='action-btn-ban']");
-    assert.ok(banBtn, "ban action button must be present");
+    // Select Dismiss — deliberately different from what the relay will return.
+    const dismissBtn = container.querySelector(
+      "[data-testid='action-btn-dismiss']",
+    );
+    assert.ok(dismissBtn, "dismiss action button must be present");
     await act(async () => {
-      fireEvent.click(banBtn);
+      fireEvent.click(dismissBtn);
       await new Promise((r) => setTimeout(r, 10));
     });
 
     const submit = container.querySelector(
       "[data-testid='resolve-submit-btn']",
     );
-    assert.ok(submit, "resolve submit button must appear after selecting ban");
+    assert.ok(
+      submit,
+      "resolve submit button must appear after selecting dismiss",
+    );
 
     await act(async () => {
       fireEvent.click(submit);
       await new Promise((r) => setTimeout(r, 20));
     });
 
+    // Relay returned ban; toast must say "Ban", not "Dismiss".
     assert.ok(
       capturedToasts.some((m) => m.toLowerCase().includes("ban")),
-      `success toast must say "Ban" (from authoritative response); got: ${JSON.stringify(capturedToasts)}`,
+      `success toast must say "Ban" (from authoritative response, not selected dismiss); got: ${JSON.stringify(capturedToasts)}`,
+    );
+    assert.ok(
+      !capturedToasts.some(
+        (m) =>
+          m.toLowerCase().includes("dismiss") &&
+          !m.toLowerCase().includes("ban"),
+      ),
+      `toast must not say "Dismiss" when relay returned ban; got: ${JSON.stringify(capturedToasts)}`,
     );
   } finally {
     await unmount();
   }
 });
 
-test("resolve-toast-from-response-escalated: decision-only status=escalated toasts Escalate", async () => {
-  // Verifies the null-activeAction path: escalate returns {status:"escalated",
-  // activeAction:null}. Toast must derive from status, not form state.
+test("resolve-toast-from-response-escalated: retry path — form has dismiss, relay idempotently returns escalated", async () => {
+  // Verifies the null-activeAction path after a retry: the frozen form still
+  // has "dismiss" selected from the first ambiguous attempt, but the relay
+  // idempotently returns {status:"escalated", activeAction:null}.
   //
-  // Mutation evidence: hard-code toast to selectedAction → test still passes
-  // when the selected action is escalate, but that proves nothing. To make
-  // the mutation bite: select dismiss, then override the resolve handler to
-  // return {status:"escalated", activeAction:null}. The authoritative path
-  // toasts "Escalate"; the selectedAction path toasts "Dismiss". This test
-  // selects escalate to keep setup simple while confirming the status path.
+  // Authoritative path → toast says "Escalate". selectedAction path → toast
+  // says "Dismiss". The disagreement makes the mutation bite on the retry.
+  //
+  // Mutation evidence: change production toast derivation to actionLabel(selectedAction)
+  // → with dismiss selected the toast says "Dismiss" even though the relay
+  // returned escalated → this test goes RED.
 
   const origin = "https://admin.example.com";
   const pubkey = "e3".repeat(32);
@@ -5184,10 +5198,18 @@ test("resolve-toast-from-response-escalated: decision-only status=escalated toas
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
 
-  // Decision-only: escalate creates no action record.
-  setIpcHandler("admin_resolve_report", () =>
-    Promise.resolve({ status: "escalated", activeAction: null }),
-  );
+  // First attempt: transport error — ambiguous, locks controls and freezes
+  // the dismiss payload.
+  let attempt = 0;
+  setIpcHandler("admin_resolve_report", () => {
+    attempt++;
+    if (attempt === 1) {
+      return mutationReject("relay unreachable: network timeout", null);
+    }
+    // Second attempt: relay idempotently returns escalated (dismiss was the
+    // frozen request; relay previously handled an escalate command).
+    return Promise.resolve({ status: "escalated", activeAction: null });
+  });
 
   const { container, doRender, unmount } = mountPanel({ origin, pubkey });
   try {
@@ -5196,12 +5218,13 @@ test("resolve-toast-from-response-escalated: decision-only status=escalated toas
     await openFirstReportDetail(container);
     await settle(20);
 
-    const escalateBtn = container.querySelector(
-      "[data-testid='action-btn-escalate']",
+    // Select Dismiss — this is what gets frozen.
+    const dismissBtn = container.querySelector(
+      "[data-testid='action-btn-dismiss']",
     );
-    assert.ok(escalateBtn, "escalate action button must be present");
+    assert.ok(dismissBtn, "dismiss action button must be present");
     await act(async () => {
-      fireEvent.click(escalateBtn);
+      fireEvent.click(dismissBtn);
       await new Promise((r) => setTimeout(r, 10));
     });
 
@@ -5210,30 +5233,63 @@ test("resolve-toast-from-response-escalated: decision-only status=escalated toas
     );
     assert.ok(
       submit,
-      "resolve submit button must appear after selecting escalate",
+      "resolve submit button must appear after selecting dismiss",
     );
 
+    // First attempt — transport error locks the form.
     await act(async () => {
       fireEvent.click(submit);
       await new Promise((r) => setTimeout(r, 20));
     });
 
+    assert.equal(attempt, 1, "first attempt must have fired");
+
+    // Controls must now be locked (frozen payload held).
+    const actionBtnsLocked = container.querySelectorAll(
+      "[data-testid^='action-btn-']",
+    );
+    for (const btn of actionBtnsLocked) {
+      assert.ok(
+        btn.disabled === true,
+        `action button ${btn.getAttribute("data-testid")} must be locked after ambiguous failure`,
+      );
+    }
+
+    // Retry — relay returns escalated while form still shows dismiss.
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.equal(attempt, 2, "second attempt must have fired");
+
+    // Toast must say "Escalate" (from relay status), not "Dismiss" (from form).
     assert.ok(
       capturedToasts.some((m) => m.toLowerCase().includes("escalate")),
-      `success toast must say "Escalate" (from status=escalated, activeAction=null); got: ${JSON.stringify(capturedToasts)}`,
+      `success toast must say "Escalate" (from status=escalated, not selected dismiss); got: ${JSON.stringify(capturedToasts)}`,
+    );
+    assert.ok(
+      !capturedToasts.some(
+        (m) =>
+          m.toLowerCase().includes("dismiss") &&
+          !m.toLowerCase().includes("escalate"),
+      ),
+      `toast must not say "Dismiss" when relay returned escalated; got: ${JSON.stringify(capturedToasts)}`,
     );
   } finally {
     await unmount();
   }
 });
 
-test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snapshot and re-enables controls", async () => {
+test("resolve-definitive-4xx-unlocks-controls: non-409 4xx clears snapshot; corrected resubmit gets fresh ID and body", async () => {
   // Verifies that a definitive pre-commit rejection clears the frozen payload
-  // and unlocks action/reason editing for a corrected resubmit.
+  // and unlocks action/reason editing. After unlock, a corrected resubmission
+  // uses a fresh requestId and the updated action/reason.
   //
   // Mutation evidence: clear frozenRef on EVERY error (not just definitive 4xx)
-  // → ambiguity case would also unlock, breaking the frozen-payload invariant.
-  // This test verifies the definitive path DOES unlock.
+  // → ambiguity case also unlocks, breaking the frozen-payload invariant.
+  // This test verifies the definitive path DOES unlock AND the second call
+  // carries different requestId + corrected body.
 
   const origin = "https://admin.example.com";
   const pubkey = "e4".repeat(32);
@@ -5264,11 +5320,32 @@ test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snap
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
 
-  // First call: definitive 400 (relay rejected pre-commit, full body read).
-  let callCount = 0;
-  setIpcHandler("admin_resolve_report", () => {
-    callCount++;
-    return mutationReject("bad_request: invalid action", 400);
+  const capturedBodiesE4 = [];
+  let callCountE4 = 0;
+  setIpcHandler("admin_resolve_report", (args) => {
+    callCountE4++;
+    capturedBodiesE4.push({ ...args?.body });
+    if (callCountE4 === 1) {
+      // First call: definitive 400 (relay rejected pre-commit, full body read).
+      return mutationReject("bad_request: invalid action", 400);
+    }
+    // Second call: success after correction.
+    return Promise.resolve({
+      status: "resolved",
+      activeAction: {
+        id: "00000000-0000-0000-0000-0000000000b1",
+        requestId: capturedBodiesE4[1]?.requestId ?? "",
+        actorPubkey: "e4".repeat(32),
+        actorRole: "operator",
+        action: "ban",
+        status: "succeeded",
+        reason: "corrected reason",
+        expiresAt: null,
+        errorMessage: null,
+        createdAt: "2024-07-01T00:00:00Z",
+        updatedAt: "2024-07-01T00:00:00Z",
+      },
+    });
   });
 
   const { container, doRender, unmount } = mountPanel({ origin, pubkey });
@@ -5278,6 +5355,7 @@ test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snap
     await openFirstReportDetail(container);
     await settle(20);
 
+    // First submit: select dismiss, submit → definitive 400.
     const dismissBtn = container.querySelector(
       "[data-testid='action-btn-dismiss']",
     );
@@ -5292,23 +5370,20 @@ test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snap
     );
     assert.ok(submit, "resolve submit button must appear");
 
-    // First attempt — definitive 400.
     await act(async () => {
       fireEvent.click(submit);
       await new Promise((r) => setTimeout(r, 20));
     });
 
-    assert.equal(callCount, 1, "one attempt must have been made");
+    assert.equal(callCountE4, 1, "one attempt must have been made");
 
-    // After a definitive rejection, controls must be unlocked (not disabled).
+    // After a definitive rejection, controls must be unlocked.
     const actionBtnsAfter = container.querySelectorAll(
       "[data-testid^='action-btn-']",
     );
     let anyLocked = false;
     for (const btn of actionBtnsAfter) {
-      if (btn.disabled === true) {
-        anyLocked = true;
-      }
+      if (btn.disabled === true) anyLocked = true;
     }
     assert.ok(
       !anyLocked,
@@ -5322,7 +5397,186 @@ test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snap
       reasonInputAfter?.disabled !== true,
       "reason input must be re-enabled after a definitive pre-commit rejection",
     );
+
+    // Corrected resubmit: select ban + enter a new reason.
+    const banBtn = container.querySelector("[data-testid='action-btn-ban']");
+    assert.ok(banBtn, "ban action button must be present after unlock");
+    await act(async () => {
+      fireEvent.click(banBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const reasonInput = container.querySelector(
+      "[data-testid='resolve-reason-input']",
+    );
+    assert.ok(reasonInput, "reason input must be present after unlock");
+    await act(async () => {
+      fireEvent.change(reasonInput, { target: { value: "corrected reason" } });
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.equal(callCountE4, 2, "two attempts must have been made");
+
+    // Second call must have a FRESH requestId (frozen snapshot was cleared).
+    assert.notEqual(
+      capturedBodiesE4[0].requestId,
+      capturedBodiesE4[1].requestId,
+      `corrected resubmit must use a fresh requestId; got: ${JSON.stringify(capturedBodiesE4.map((b) => b.requestId))}`,
+    );
+    // Second call must carry the corrected action and reason.
+    assert.equal(
+      capturedBodiesE4[1].action,
+      "ban",
+      `corrected resubmit must send ban; got: ${capturedBodiesE4[1].action}`,
+    );
+    assert.equal(
+      capturedBodiesE4[1].reason,
+      "corrected reason",
+      `corrected resubmit must send corrected reason; got: ${capturedBodiesE4[1].reason}`,
+    );
   } finally {
     await unmount();
   }
 });
+
+// ── Resolve-path whole-payload freeze: 409 / 5xx / truncated ─────────────────
+//
+// Each ambiguity class (409, 5xx, transport/null, truncated body) must
+// independently freeze the whole payload and carry it byte-for-byte on retry.
+// Table-driven over a shared fixture so there is no copied setup block.
+//
+// Mutation evidence: removing "processing" from the 409 message, or making
+// any case reset the frozenRef (instead of preserving), causes the ids to
+// differ on the second attempt → test goes RED.
+
+const RESOLVE_FREEZE_CASES = [
+  {
+    name: "409-whole-payload",
+    desc: "a 409 Conflict is ambiguous: freezes whole payload, retries byte-for-byte",
+    reject: () => mutationReject("admin API error: 409 conflict", 409),
+  },
+  {
+    name: "5xx-whole-payload",
+    desc: "a 5xx is ambiguous: freezes whole payload, retries byte-for-byte",
+    reject: () =>
+      mutationReject("admin API error: 500 internal server error", 500),
+  },
+  {
+    name: "truncated-body-whole-payload",
+    desc: "a truncated/incomplete body (bodyComplete=false) is ambiguous: freezes whole payload",
+    reject: () =>
+      mutationReject("admin API error: 400 partial read", 400, false),
+  },
+];
+
+for (const { name, desc, reject: makeReject } of RESOLVE_FREEZE_CASES) {
+  test(`resolve-${name}: ${desc}`, async () => {
+    const origin = "https://admin.example.com";
+    const pubkey = `e5${name.slice(0, 6).replace(/-/g, "0")}`.padEnd(64, "5");
+
+    const openItem = {
+      id: `00000000-0000-0000-0000-${name.replace(/-/g, "").slice(0, 12).padStart(12, "0")}`,
+      communityId: "comm-1",
+      communityHost: "alpha.example.com",
+      reportEventId: "aa",
+      reporterPubkey: "bb",
+      targetKind: "event",
+      target: "cc",
+      reportType: "spam",
+      status: "open",
+      createdAt: "2024-07-01T00:00:00Z",
+    };
+    const openDetail = {
+      ...openItem,
+      channelId: null,
+      note: null,
+      resolvedBy: null,
+      resolvedAt: null,
+      actionId: null,
+      message: null,
+    };
+
+    setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+    setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+    setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+    const capturedFreezeBodies = [];
+    setIpcHandler("admin_resolve_report", (args) => {
+      capturedFreezeBodies.push({ ...args?.body });
+      return makeReject();
+    });
+
+    const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+    try {
+      await doRender();
+      await settle(30);
+      await openFirstReportDetail(container);
+      await settle(20);
+
+      const banBtn = container.querySelector("[data-testid='action-btn-ban']");
+      assert.ok(banBtn, "ban action button must be present");
+      await act(async () => {
+        fireEvent.click(banBtn);
+        await new Promise((r) => setTimeout(r, 10));
+      });
+
+      const reasonInput = container.querySelector(
+        "[data-testid='resolve-reason-input']",
+      );
+      assert.ok(reasonInput, "reason input must be present");
+      await act(async () => {
+        fireEvent.change(reasonInput, {
+          target: { value: "freeze-test reason" },
+        });
+        await new Promise((r) => setTimeout(r, 10));
+      });
+
+      const submit = container.querySelector(
+        "[data-testid='resolve-submit-btn']",
+      );
+      assert.ok(
+        submit,
+        "resolve submit button must appear after selecting ban",
+      );
+
+      // First attempt — ambiguous failure.
+      await act(async () => {
+        fireEvent.click(submit);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      // Second attempt — retry must send frozen payload.
+      await act(async () => {
+        fireEvent.click(submit);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+
+      assert.equal(
+        capturedFreezeBodies.length,
+        2,
+        `[${name}] two attempts must have been made`,
+      );
+      assert.equal(
+        capturedFreezeBodies[0].requestId,
+        capturedFreezeBodies[1].requestId,
+        `[${name}] requestId must be preserved on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.requestId))}`,
+      );
+      assert.equal(
+        capturedFreezeBodies[0].action,
+        capturedFreezeBodies[1].action,
+        `[${name}] action must be identical on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.action))}`,
+      );
+      assert.equal(
+        capturedFreezeBodies[0].reason,
+        capturedFreezeBodies[1].reason,
+        `[${name}] reason must be identical on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.reason))}`,
+      );
+    } finally {
+      await unmount();
+    }
+  });
+}
