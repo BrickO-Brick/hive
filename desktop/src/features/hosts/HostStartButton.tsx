@@ -24,7 +24,13 @@ export function HostStartButton({
   const [error, setError] = useState<string>();
   const progress = useHostStartProgress();
   const operation = progress.operations
-    .filter((op) => op.agent === agent && op.host === row.host && op.current)
+    .filter(
+      (op) =>
+        op.action !== "stop" &&
+        op.agent === agent &&
+        op.host === row.host &&
+        op.current,
+    )
     .sort((a, b) => a.created_at - b.created_at)
     .at(-1);
   const runs = usePresenceRuns(agent ? [agent] : []);

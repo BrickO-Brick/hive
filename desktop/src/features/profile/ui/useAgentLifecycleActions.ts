@@ -21,7 +21,11 @@ export function useAgentLifecycleActions({
   managedAgent: ManagedAgent | undefined;
   relayAgents: readonly RelayAgent[] | undefined;
   startManagedAgent: (pubkey: string) => Promise<unknown>;
-  stopManagedAgent: (pubkey: string) => Promise<unknown>;
+  stopManagedAgent: (input: {
+    pubkey: string;
+    selectedRunId?: string | null;
+    expectedRelayUrl?: string | null;
+  }) => Promise<unknown>;
 }) {
   const handleAgentPrimaryAction = React.useCallback(async () => {
     if (!managedAgent) return;

@@ -300,6 +300,104 @@ pub(crate) fn execute_host_operation(
     }
 }
 
+/// Ordinary Desktop Stop enters the same generation fence, proof and ledger
+/// authority as a host Stop. The clicked nonce is mandatory, never read afresh.
+pub(super) fn stop_local_selected_run(
+    app: &AppHandle,
+    pubkey: &str,
+    relay: &str,
+    selected_run: Option<&str>,
+) -> Result<(), String> {
+    let run = selected_run
+        .filter(|run| buzz_core_pkg::host_execution::hex_id(run, 32))
+        .ok_or("Exact Stop unsupported without a selected run; refresh runtime status")?;
+    let state = app.state::<crate::app_state::AppState>();
+    let owner = state.signing_keys()?.public_key().to_hex();
+    let key = ManagedAgentRuntimeKey::new(pubkey, relay)?;
+    let operation = hex::encode(Sha256::digest(format!(
+        "buzz.desktop.stop.v1\n{owner}\n{}\n{pubkey}\n{run}",
+        key.relay_url
+    )))[..32]
+        .to_owned();
+    // Reuse the first immutable local request (including deadline) on retry.
+    let prior = ledger(app, &key, &owner)?.operation(&operation).cloned();
+    let (command_id, request) = match prior {
+        Some(entry) => (entry.command_id, entry.request),
+        None => {
+            let request = Command {
+                v: 1,
+                operation,
+                relay: key.relay_url,
+                agent: pubkey.into(),
+                expires_at: nostr::Timestamp::now().as_secs()
+                    + buzz_core_pkg::host_execution::COMMAND_TTL,
+                action: Action::Stop { run: run.into() },
+            };
+            let bytes = serde_json::to_vec(&request).map_err(|_| "invalid local Stop")?;
+            (hex::encode(Sha256::digest(bytes)), request)
+        }
+    };
+    let entry = execute_host_operation(app, &owner, &command_id, &request, false)?;
+    if entry.outcome != Outcome::Stopped {
+        return Err(format!(
+            "Selected Stop unconfirmed ({:?}); replacement remains blocked",
+            entry.outcome
+        ));
+    }
+    Ok(())
+}
+
+/// Explicit ordinary Start after an exact Stop still uses the execution ledger.
+/// Automatic reconciliation never calls this and remains fenced.
+pub(crate) fn start_after_exact_stop(
+    app: &AppHandle,
+    pubkey: &str,
+    relay: &str,
+) -> Result<bool, String> {
+    let state = app.state::<crate::app_state::AppState>();
+    let owner = state.signing_keys()?.public_key().to_hex();
+    let key = ManagedAgentRuntimeKey::new(pubkey, relay)?;
+    let prior = ledger(app, &key, &owner)?.current().cloned();
+    let Some(prior) = prior else {
+        return Ok(false);
+    };
+    if !matches!(prior.request.action, Action::Stop { .. }) {
+        return Ok(false);
+    }
+    if prior.outcome != Outcome::Stopped {
+        return Err("Selected Stop unconfirmed; replacement remains blocked".into());
+    }
+    let records = load_managed_agents(app)?;
+    let record = records
+        .iter()
+        .find(|r| r.pubkey == pubkey)
+        .ok_or("agent not found")?;
+    let config = local_execution_config(app, record)?;
+    let request = Command {
+        v: 1,
+        operation: uuid::Uuid::new_v4().simple().to_string(),
+        relay: key.relay_url,
+        agent: pubkey.into(),
+        expires_at: nostr::Timestamp::now().as_secs() + buzz_core_pkg::host_execution::COMMAND_TTL,
+        action: Action::Start {
+            runtime: config.runtime,
+            revision: config.revision,
+        },
+    };
+    let bytes = serde_json::to_vec(&request).map_err(|_| "invalid local Start")?;
+    let result = execute_host_operation(
+        app,
+        &owner,
+        &hex::encode(Sha256::digest(bytes)),
+        &request,
+        true,
+    )?;
+    if result.outcome != Outcome::Spawned {
+        return Err("Explicit Start not confirmed; inspect destination setup".into());
+    }
+    Ok(true)
+}
+
 pub(super) fn stop_proof_path(log: &std::path::Path, run: &str) -> std::path::PathBuf {
     log.with_extension(format!("stop-{run}.json"))
 }

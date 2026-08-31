@@ -704,6 +704,7 @@ pub fn run() {
             stop_managed_agent_runtime,
             commands::execute_host_command,
             commands::queue_host_start,
+            commands::queue_host_move,
             commands::pump_host_start,
             commands::inspect_local_execution_config,
             restart_managed_agent_runtime,

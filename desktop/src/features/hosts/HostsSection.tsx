@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useManagedAgentsQuery } from "@/features/agents/hooks";
+import { HostMoveSection } from "./HostMoveSection";
 import { HostStartButton } from "./HostStartButton";
 import { Laptop, LockKeyhole, RefreshCw } from "lucide-react";
 import { Button } from "@/shared/ui/button";
@@ -69,6 +70,7 @@ export function HostsSection() {
           files are transferred. Other hosts keep running.
         </span>
       </label>
+      <HostMoveSection agent={selectedAgent} rows={snapshot.rows} />
       <div className="grid gap-3 md:grid-cols-2">
         {snapshot.rows.map((row) => (
           <article key={row.host} className="rounded-lg border bg-card p-4">

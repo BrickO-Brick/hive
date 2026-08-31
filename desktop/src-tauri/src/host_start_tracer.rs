@@ -13,6 +13,8 @@ use std::{
 use tauri::Manager;
 #[cfg(all(target_os = "macos", feature = "system-keyring"))]
 mod keychain;
+#[path = "host_move_tracer.rs"]
+mod move_trace;
 
 /// Run `init|source|destination FIXTURE_DIR ws://127.0.0.1:PORT` in an isolated
 /// debug build. Init writes fresh synthetic keys with restricted permissions.
@@ -36,9 +38,13 @@ pub fn run() -> Result<(), String> {
     if url.scheme() != "ws" || url.host_str() != Some("127.0.0.1") {
         return Err("tracer requires an isolated loopback relay".into());
     }
-    if role == "init" {
+    if role == "init" || role == "move-init" {
         std::fs::create_dir(&root).map_err(|_| "fixture directory must be new")?;
-        for name in ["owner", "agent"] {
+        for name in if role == "move-init" {
+            vec!["owner", "agent", "peer"]
+        } else {
+            vec!["owner", "agent"]
+        } {
             managed_agents::atomic_write_json_restricted(
                 &root.join(format!("{name}.key")),
                 Keys::generate().secret_key().to_secret_hex().as_bytes(),
@@ -48,7 +54,10 @@ pub fn run() -> Result<(), String> {
         println!("PASS synthetic fixture initialized (no keys printed)");
         return Ok(());
     }
-    if !matches!(role.as_str(), "source" | "destination") {
+    if !matches!(
+        role.as_str(),
+        "source" | "destination" | "move-source" | "move-destination"
+    ) {
         return Err("unknown role".into());
     }
     // Unique per fixture and per executor: do not touch the real Desktop keyring.
@@ -83,7 +92,11 @@ pub fn run() -> Result<(), String> {
     let handle = app.handle().clone();
     let relay = args[3].clone();
     tauri::async_runtime::spawn(async move {
-        let result = trace(&handle, &role, &root, &relay).await;
+        let result = if role.starts_with("move-") {
+            move_trace::trace(&handle, &role, &root, &relay).await
+        } else {
+            trace(&handle, &role, &root, &relay).await
+        };
         match result {
             Ok(()) => handle.exit(0),
             Err(error) => {

@@ -29,7 +29,7 @@ pub(crate) use metadata::{
 
 mod stop;
 pub(crate) use stop::managed_agent_runtime_keys;
-pub use stop::{stop_managed_agent_process, stop_managed_agent_workspace_pair};
+pub use stop::stop_managed_agent_process;
 
 mod sweep;
 pub(crate) use sweep::sweep_untracked_bundle_harnesses;
@@ -75,34 +75,8 @@ pub use spawn_entry::spawn_agent_child;
 mod spawn_key; // production spawn-key derivation + its regressions
 pub(crate) use spawn_key::bound_runtime_key;
 
-/// Classify an agent's persona against the live catalog for the Agents-menu
-/// drift indicator. Returns `(out_of_date, orphaned)`.
-///
-/// Drift basis is the RECORD's `persona_source_version`, never the engram:
-/// - persona_id set + persona present: out_of_date when the snapshot hash
-///   differs from the persona's current content hash.
-/// - persona_id set + persona gone: orphaned (no current hash to respawn into,
-///   so never out_of_date — we must not tell the user to respawn into nothing).
-/// - no persona_id: neither — a hand-built agent has no persona to drift from.
-fn persona_drift_state(
-    record: &ManagedAgentRecord,
-    personas: &[crate::managed_agents::types::AgentDefinition],
-) -> (bool, bool) {
-    let Some(persona_id) = record.persona_id.as_deref() else {
-        return (false, false);
-    };
-    let Some(persona) = personas.iter().find(|p| p.id == persona_id) else {
-        return (false, true);
-    };
-    let current = crate::managed_agents::persona_events::persona_content_hash(
-        &crate::managed_agents::persona_events::persona_event_content(persona),
-    );
-    let out_of_date = record
-        .persona_source_version
-        .as_deref()
-        .is_some_and(|pinned| pinned != current);
-    (out_of_date, false)
-}
+mod persona_drift;
+use persona_drift::persona_drift_state;
 
 /// Resolve the runtime-pair key this record maps to for the active
 /// workspace: always the active workspace relay (the legacy per-record relay
@@ -303,6 +277,8 @@ pub fn build_managed_agent_summary(
         .to_string();
 
     Ok(ManagedAgentSummary {
+        selected_run_id: pair_runtime.map(|runtime| runtime.start_nonce.clone()),
+        selected_relay_url: pair_key.as_ref().map(|key| key.relay_url.clone()),
         pubkey: record.pubkey.clone(),
         name: record.name.clone(),
         persona_id: record.persona_id.clone(),

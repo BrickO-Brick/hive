@@ -77,8 +77,8 @@ exact previous operation ID. It requires either its signed rejected outcome or a
 host-signed `stopped` receipt correlated to an owner-signed Stop of that exact run.
 Neither `root_exited`, missing presence nor expiry qualifies. A persisted
 supersession chain selects the current intent without timestamp tie ambiguity.
-Destination placement fences still revalidate admission; this does not implement
-Stop or Move, and never bypasses a successor/unknown placement fence.
+Destination placement fences still revalidate admission; no Start bypasses a
+successor/unknown placement fence.
 
 ## Exact Stop: supported owned-work completion
 
@@ -93,6 +93,22 @@ same agent, canonical community and existing launcher `start_nonce`, plus a
 successfully reaped root. No binary-name, timing, goodbye/log, presence or exit-code
 heuristic can produce this proof. The host subsequently issues the existing
 host-signed encrypted execution Receipt for the immutable Stop command.
+
+### Existing Desktop Stop and explicit restart
+
+Existing agent, profile, sidebar and pair controls pass the clicked runtime nonce
+and community to the same native selected-run execution/proof/ledger authority.
+They do not look up a replacement generation at click execution time. Missing
+nonce/community is unsupported; stale selections cannot signal a successor.
+RootExited and Unknown return an error and keep replacement fenced. A repeated
+ordinary Stop reuses its original immutable local request; a live successor
+cannot be reported as stopped by replaying that earlier success.
+
+An explicit ordinary Start after confirmed exact Stop, and the existing pair
+Restart action, enter the same ledger for a fresh generation. Automatic reconcile
+remains fenced. Provider `!shutdown` behavior is unchanged. Config-edit, delete
+and application cleanup retain their separate best-effort behavior and are not
+certified Stop claims. No new run authority or provider control channel is added.
 
 ### Minimal supported capability chain
 
@@ -140,7 +156,7 @@ shuts down cleanly. A native restart without a retained child also stays unknown
 Move's approved meaning remains: confirmed selected-run Stop, then a fresh runtime
 session for the same agent at the destination, **no automatic file/workspace
 transfer**. Unknown/root-only outcomes block replacement; unrelated placements
-are preserved. This Stop candidate does not implement Move UI; the Start transport above remains default-off.
+are preserved. Start and Move transport remain default-off.
 
 ### Repeatable real-process check (fixture relay/provider)
 
@@ -170,6 +186,39 @@ completion proof and rejects different-community/generation proof reuse.
 The source-level native journal tests separately pin crash/ACK-loss deduplication
 and the rule that only confirmed exact Stop permits replacement.
 
+## Selected-run Move (preview)
+
+`queue_host_move` accepts the selected source registration/run, destination
+registration and its provisioned agent/runtime/revision. The native owner checks
+both current registrations, authenticated active source and destination presence,
+existing destination instances and signed compatible provisioning before saving.
+Presence is only a selection/preflight hint, never a Stop result.
+
+A Move dependency lives in the existing locked owner/community Start outbox.
+A domain-separated owner signature binds the exact encrypted Stop command and
+reserved destination Start template (including its predecessor). Only Stop is
+initially publishable. The app-scoped receiver handles both actions through the
+same native command/ledger seam, without giving hosts additional authority.
+Only a verified `stopped` receipt for that exact command, agent, host, community
+and run releases the reserved destination Start. Both registrations and destination
+configuration are checked again; execution rechecks configuration at spawn.
+The Start TTL begins at release. The release and immutable outbox entry are saved
+atomically before publication. Crash/reconnect/ACK-loss retries do not mint a run.
+
+Root-only exit, rejection, timeout, missing presence/receipt and Unknown block
+replacement. The destination is reserved while waiting; other source runs and
+agent/host/community placements are untouched. A saved Move to another destination
+cannot silently supersede this intent. Once the source is confirmed stopped,
+configuration drift may be corrected with an explicit retry using current
+provisioning. If destination execution rejects Start, the ordinary explicit
+`new_attempt_after` recovery creates a new destination attempt; unknown Start
+still cannot be replaced. There is never an automatic source restart.
+
+Hosts exposes exact active-run selection, disabled destinations with reasons,
+and a fresh-session/no-files/keys/configuration-transfer disclosure. Persisted
+progress remains visible after source presence disappears. Spawned is not Ready
+and a matching new run/host is displayed only when actually observed.
+
 ## Validation and integration gates
 
 The opt-in debug-only `remote-start-tracer` feature builds a separate
@@ -190,8 +239,23 @@ were observed. A restarted source reused the same immutable operation. The
 fixture initialized real buzz-agent ACP sessions but did not request inference.
 Cleanup reaped only the fixture's tracked root, not a certified Stop.
 
+The 2026-08-31 Move tracer additionally completed confirmed selected-source Stop
+followed by destination spawn with the same agent and matching fresh run/host.
+The unrelated source peer survived Move and then completed its own ordinary Stop.
+An old source token was rejected at the destination. Both executors exited 0;
+fixture cleanup was not used as certification evidence.
+
 Remaining gates include real-provider and second-physical-host validation,
 actual Hosts native UI capture, authenticated asynchronous lifecycle receipt
-updates beyond spawned, destination provisioning UX, and independent confirmed
-selected-run Stop integration before Move. No final mesh-enabled DMG or combined
-feature certification is implied by this slice.
+updates beyond spawned, and destination provisioning UX. No final mesh-enabled
+DMG or combined feature certification is implied by this slice.
+
+The same debug tracer has `move-init`, `move-source`, and `move-destination`
+roles (fresh fixture directory, isolated loopback relay). It provisions synthetic
+identities on both executors, starts the source plus an unrelated peer, queues
+Move through native IPC, and records either `move-success.json` (signed native
+outcomes + matching new run/host + surviving peer) or `move-blocked.json`.
+It never fabricates Stopped. Build all three workload binaries from the certified
+Stop source before running. Neither fixture cleanup nor a blocked trace is a
+successful Move certification. Native Hosts UI and real-provider work remain
+separate evidence requirements.

@@ -11,7 +11,7 @@ use nostr::{Event, JsonUtil, Keys, Timestamp};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-fn scope(state: &AppState, owner: &str, relay: &str) -> Result<(Keys, String), String> {
+pub(super) fn scope(state: &AppState, owner: &str, relay: &str) -> Result<(Keys, String), String> {
     let keys = super::hosts::owner_keys(state, owner)?;
     let relay =
         buzz_core_pkg::relay::normalize_relay_url(relay).map_err(|_| "invalid Start community")?;
@@ -22,7 +22,7 @@ fn scope(state: &AppState, owner: &str, relay: &str) -> Result<(Keys, String), S
     Ok((keys, relay))
 }
 
-async fn current_registration(
+pub(super) async fn current_registration(
     state: &AppState,
     owner: &Keys,
     relay: &str,
@@ -44,7 +44,7 @@ async fn current_registration(
     Ok(reg.clone())
 }
 
-fn request(owner: &Keys, pending: &Pending, relay: &str) -> Result<Command, String> {
+pub(super) fn request(owner: &Keys, pending: &Pending, relay: &str) -> Result<Command, String> {
     host_execution::validate_transport(
         &pending.command,
         &pending.registration,
@@ -88,6 +88,7 @@ pub async fn queue_host_start(
     let mut store = Store::open(&app, &expected_owner, &relay)?;
     let host = host::validate(&reg)?.host;
     validate_journal(&store, &owner, &relay)?;
+    super::host_move::check_reservation(&store, &owner, &relay, &agent, host)?;
     let previous = current_attempt(&store, &owner, &relay, &agent, host)?;
     let supersedes = if let Some(pending) = previous {
         let req = request(&owner, pending, &relay)?;
@@ -153,6 +154,7 @@ pub struct StartProgress {
     operation: String,
     created_at: u64,
     current: bool,
+    action: String,
     agent: String,
     host: String,
     run: String,
@@ -160,7 +162,7 @@ pub struct StartProgress {
     error: Option<String>,
 }
 
-async fn history(
+pub(super) async fn history(
     state: &AppState,
     owner: &Keys,
     relay: &str,
@@ -258,6 +260,7 @@ pub async fn pump_host_start(
     if !cfg!(feature = "remote-start-preview") {
         return Ok(StartSnapshot {
             operations: vec![],
+            moves: vec![],
             errors: vec![],
         });
     }
@@ -293,6 +296,7 @@ pub async fn pump_host_start(
         }
     }
     store.save()?;
+    super::host_move::advance_moves(&state, &owner, &relay, &mut store).await?;
     let commands = history(&state, &owner, &relay, serde_json::json!({"kinds":[50001], "authors":[expected_owner], "#p":[expected_owner], "#x":[host_keys.public_key().to_hex()], "limit":1000})).await?;
     let mut receiver_errors = Vec::new();
     for command in commands {
@@ -322,11 +326,10 @@ pub async fn pump_host_start(
         ) else {
             continue;
         };
-        // This receiver is Start-only; Stop stays behind its existing native seam.
-        if !matches!(req.action, Action::Start { .. }) {
-            continue;
-        }
-        if store.journal.sent.len() + store.journal.received.len() >= 4096 {
+        // Both actions use the same exact-run native authority and signed receipts.
+        if store.journal.sent.len() + store.journal.received.len() + store.journal.moves.len()
+            >= 4096
+        {
             return Err("Start outbox requires archival".into());
         }
         let value = serde_json::to_value(&command).map_err(|_| "invalid Start command")?;
@@ -410,6 +413,12 @@ pub async fn pump_host_start(
                 None => "queued".into(),
             };
             Ok(StartProgress {
+                action: if matches!(req.action, Action::Start { .. }) {
+                    "start"
+                } else {
+                    "stop"
+                }
+                .into(),
                 current: !store.journal.sent.values().any(|other| {
                     other.supersedes.as_deref() == Some(pending.command.id.to_hex().as_str())
                 }),
@@ -430,11 +439,16 @@ pub async fn pump_host_start(
         .filter_map(|pending| pending.error.clone())
         .chain(receiver_errors)
         .collect();
-    Ok(StartSnapshot { operations, errors })
+    let moves = super::host_move::progress(&store, &owner, &relay)?;
+    Ok(StartSnapshot {
+        operations,
+        errors,
+        moves,
+    })
 }
 
 /// A preview build is intentionally required until real two-executor validation.
-fn require_preview() -> Result<(), String> {
+pub(super) fn require_preview() -> Result<(), String> {
     if cfg!(feature = "remote-start-preview") {
         Ok(())
     } else {
@@ -460,14 +474,15 @@ pub(super) fn receiver_healthy(app: &AppHandle, owner: &str, relay: &str) -> boo
 #[derive(Serialize)]
 pub struct StartSnapshot {
     operations: Vec<StartProgress>,
+    moves: Vec<super::host_move::MoveProgress>,
     errors: Vec<String>,
 }
 
-fn validate_journal(store: &Store, owner: &Keys, relay: &str) -> Result<(), String> {
+pub(super) fn validate_journal(store: &Store, owner: &Keys, relay: &str) -> Result<(), String> {
     let mut superseded = std::collections::HashSet::new();
     for (id, pending) in store.journal.sent.iter().chain(&store.journal.received) {
         let req = request(owner, pending, relay)?;
-        if *id != pending.command.id.to_hex() || !matches!(req.action, Action::Start { .. }) {
+        if *id != pending.command.id.to_hex() {
             return Err("Start outbox binding corrupt".into());
         }
         if let Some(receipt) = &pending.receipt {
@@ -501,7 +516,9 @@ fn validate_journal(store: &Store, owner: &Keys, relay: &str) -> Result<(), Stri
                 .get(previous)
                 .ok_or("Start outbox predecessor missing")?;
             let old_req = request(owner, old, relay)?;
-            if previous == id
+            if !matches!(req.action, Action::Start { .. })
+                || !matches!(old_req.action, Action::Start { .. })
+                || previous == id
                 || old_req.agent != req.agent
                 || host::validate(&old.registration)?.host
                     != host::validate(&pending.registration)?.host
@@ -518,10 +535,11 @@ fn validate_journal(store: &Store, owner: &Keys, relay: &str) -> Result<(), Stri
     {
         return Err("Start outbox missing receipt".into());
     }
+    super::host_move::validate_moves(store, owner, relay)?;
     Ok(())
 }
 
-fn current_attempt<'a>(
+pub(super) fn current_attempt<'a>(
     store: &'a Store,
     owner: &Keys,
     relay: &str,
@@ -530,7 +548,8 @@ fn current_attempt<'a>(
 ) -> Result<Option<&'a Pending>, String> {
     let mut current = None;
     for (id, pending) in &store.journal.sent {
-        if request(owner, pending, relay)?.agent != agent
+        if !matches!(request(owner, pending, relay)?.action, Action::Start { .. })
+            || request(owner, pending, relay)?.agent != agent
             || host::validate(&pending.registration)?.host != host_key
         {
             continue;
@@ -550,7 +569,7 @@ fn current_attempt<'a>(
     Ok(current)
 }
 
-async fn confirmed_stop(
+pub(super) async fn confirmed_stop(
     state: &AppState,
     owner: &Keys,
     relay: &str,

@@ -3,10 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { invokeTauri } from "@/shared/api/tauri";
+import type { MoveProgress } from "./moveSelection";
 import { hostNativeDrain } from "./hostNativeDrain";
 
 export type StartProgress = {
   operation: string;
+  action?: "start" | "stop";
   created_at: number;
   current: boolean;
   agent: string;
@@ -15,8 +17,12 @@ export type StartProgress = {
   status: string;
   error?: string;
 };
-type Snapshot = { operations: StartProgress[]; error?: string };
-const empty: Snapshot = { operations: [] };
+type Snapshot = {
+  operations: StartProgress[];
+  moves: MoveProgress[];
+  error?: string;
+};
+const empty: Snapshot = { operations: [], moves: [] };
 const key = (owner?: string, relay?: string) => ["host-start", relay, owner];
 export const START_REFRESH = "buzz:refresh-host-start";
 
@@ -38,6 +44,7 @@ export function useHostStartReceiver(
         try {
           const snapshot = await invokeTauri<{
             operations: StartProgress[];
+            moves: MoveProgress[];
             errors: string[];
           }>("pump_host_start", {
             expectedOwner: owner,
@@ -46,6 +53,7 @@ export function useHostStartReceiver(
           if (active)
             client.setQueryData(key(owner, relay), {
               operations: snapshot.operations,
+              moves: snapshot.moves ?? [],
               error: snapshot.errors.length
                 ? "Destination transport has unconfirmed operations; retries continue independently."
                 : undefined,
@@ -54,6 +62,7 @@ export function useHostStartReceiver(
           if (active)
             client.setQueryData<Snapshot>(key(owner, relay), (old) => ({
               operations: old?.operations ?? [],
+              moves: old?.moves ?? [],
               error:
                 "Start transport unconfirmed. Retrying the same saved operation; no replacement will be launched.",
             }));

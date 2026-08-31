@@ -64,7 +64,7 @@ pub async fn get_local_host(
 ) -> Result<LocalHost, String> {
     let owner = owner_keys(&state, &expected_owner)?;
     let relay = buzz_core_pkg::relay::normalize_relay_url(
-        &crate::relay::relay_api_base_url_with_override(&state),
+        &crate::relay::relay_ws_url_with_override(&state),
     )
     .map_err(|_| "invalid host community")?;
     let catalog = super::discover_acp_providers(app.clone(), Some(false)).await?;

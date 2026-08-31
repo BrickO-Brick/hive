@@ -36,7 +36,9 @@ mod restore;
 pub mod retention;
 mod runtime;
 mod runtime_commands;
-pub(crate) use execution::{execute_host_operation, execution_agent_owner, local_execution_config};
+pub(crate) use execution::{
+    execute_host_operation, execution_agent_owner, local_execution_config, start_after_exact_stop,
+};
 mod runtime_types;
 pub(crate) mod snapshot_avatar;
 pub(crate) mod spawn_snapshot;

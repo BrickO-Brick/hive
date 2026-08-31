@@ -10,10 +10,10 @@ use crate::{
         find_managed_agent_mut, load_managed_agents, load_personas, load_teams,
         managed_agent_avatar_url, normalize_agent_args, resolve_provider_binary,
         save_managed_agents, start_managed_agent_process, stop_managed_agent_process,
-        stop_managed_agent_workspace_pair, sync_managed_agent_processes, try_regenerate_nest,
-        validate_provider_config, BackendKind, CreateManagedAgentRequest,
-        CreateManagedAgentResponse, ManagedAgentRecord, ManagedAgentSummary, RelayMeshConfig,
-        DEFAULT_ACP_COMMAND, DEFAULT_AGENT_PARALLELISM, DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
+        sync_managed_agent_processes, try_regenerate_nest, validate_provider_config, BackendKind,
+        CreateManagedAgentRequest, CreateManagedAgentResponse, ManagedAgentRecord,
+        ManagedAgentSummary, RelayMeshConfig, DEFAULT_ACP_COMMAND, DEFAULT_AGENT_PARALLELISM,
+        DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
     },
     relay::{relay_ws_url_with_override, sync_managed_agent_profile},
     util::now_iso,
@@ -953,6 +953,30 @@ pub async fn start_managed_agent(
 
     let result = match target {
         StartTarget::Local => {
+            let app_for_start = app.clone();
+            let agent_for_start = pubkey.clone();
+            let relay_for_start = reconcile_relay.as_str().to_owned();
+            let resumed = tokio::task::spawn_blocking(move || {
+                crate::managed_agents::start_after_exact_stop(
+                    &app_for_start,
+                    &agent_for_start,
+                    &relay_for_start,
+                )
+            })
+            .await
+            .map_err(|_| "explicit Start task failed")??;
+            if resumed {
+                let records = load_managed_agents(&app)?;
+                let runtimes = state
+                    .managed_agent_processes
+                    .lock()
+                    .map_err(|e| e.to_string())?;
+                let record = records
+                    .iter()
+                    .find(|r| r.pubkey == pubkey)
+                    .ok_or("agent not found")?;
+                return summarize_from_disk(&app, record, &runtimes);
+            }
             start_local_agent_with_preflight(
                 &app,
                 &state,
@@ -1035,56 +1059,9 @@ pub async fn start_managed_agent(
     result
 }
 
-#[tauri::command]
-pub async fn stop_managed_agent(
-    pubkey: String,
-    app: AppHandle,
-) -> Result<ManagedAgentSummary, String> {
-    use tauri::Manager;
-    tokio::task::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let _store_guard = state
-            .managed_agents_store_lock
-            .lock()
-            .map_err(|error| error.to_string())?;
-        let mut records = load_managed_agents(&app)?;
-        let mut runtimes = state
-            .managed_agent_processes
-            .lock()
-            .map_err(|error| error.to_string())?;
-
-        let (sync_changed, exited_pubkeys) =
-            sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
-        if sync_changed {
-            save_managed_agents(&app, &records)?;
-        }
-        for pubkey in &exited_pubkeys {
-            state.clear_agent_session_caches(pubkey);
-        }
-
-        {
-            let record = find_managed_agent_mut(&mut records, &pubkey)?;
-            // Remote agents are stopped via !shutdown @mention from the frontend,
-            // not via this backend command. Reject the call.
-            if record.backend != BackendKind::Local {
-                return Err(
-                    "remote agents are stopped via !shutdown message, not this command".to_string(),
-                );
-            }
-            // Pair-scoped: stops only the active workspace's pair; delete and
-            // the config-restart flows still drain every pair.
-            stop_managed_agent_workspace_pair(&app, record, &mut runtimes)?;
-        }
-        save_managed_agents(&app, &records)?;
-        let record = records
-            .iter()
-            .find(|record| record.pubkey == pubkey)
-            .ok_or_else(|| format!("agent {pubkey} not found"))?;
-        summarize_from_disk(&app, record, &runtimes)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking failed: {e}"))?
-}
+#[path = "agents_stop.rs"]
+mod selected_stop;
+pub use selected_stop::stop_managed_agent;
 
 // Async so the blocking body (disk reads/writes, process termination, keyring
 // delete, nest regeneration) runs off the main UI thread via spawn_blocking.

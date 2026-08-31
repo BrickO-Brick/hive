@@ -28,6 +28,8 @@ pub(super) struct Pending {
 pub(super) struct Journal {
     pub sent: BTreeMap<String, Pending>,
     pub received: BTreeMap<String, Pending>,
+    #[serde(default)]
+    pub moves: BTreeMap<String, super::host_move::MoveIntent>,
 }
 
 pub(super) struct Store {
@@ -65,7 +67,7 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal::default(),
             _ => return Err("Start outbox unreadable or full".into()),
         };
-        if journal.sent.len() + journal.received.len() > 4096 {
+        if journal.sent.len() + journal.received.len() + journal.moves.len() > 4096 {
             return Err("Start outbox requires archival".into());
         }
         Ok(Self {
@@ -76,7 +78,7 @@ impl Store {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        if self.journal.sent.len() + self.journal.received.len() > 4096 {
+        if self.journal.sent.len() + self.journal.received.len() + self.journal.moves.len() > 4096 {
             return Err("Start outbox requires archival".into());
         }
         let bytes =

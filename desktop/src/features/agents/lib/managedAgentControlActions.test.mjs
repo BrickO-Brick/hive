@@ -166,3 +166,30 @@ test("test_respawn_onStopped_fires_before_start_resolves", async () => {
     "onStopped must fire after stop resolves and before start is called",
   );
 });
+
+test("ordinary Stop preserves clicked generation even when a successor appears", async () => {
+  const { stopManagedAgentWithRules } = await import(
+    "./managedAgentControlActions.ts"
+  );
+  const clicked = agent({
+    status: "running",
+    selectedRunId: "aa".repeat(16),
+    selectedRelayUrl: "wss://clicked.example",
+  });
+  let request;
+  await stopManagedAgentWithRules({
+    agent: clicked,
+    channels: [],
+    relayAgents: [],
+    stopManagedAgent: async (selected) => {
+      clicked.selectedRunId = "bb".repeat(16);
+      clicked.selectedRelayUrl = "wss://successor.example";
+      request = selected;
+    },
+  });
+  assert.deepEqual(request, {
+    pubkey: clicked.pubkey,
+    selectedRunId: "aa".repeat(16),
+    expectedRelayUrl: "wss://clicked.example",
+  });
+});

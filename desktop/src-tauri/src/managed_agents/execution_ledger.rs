@@ -106,6 +106,17 @@ impl Ledger {
         Ok(())
     }
 
+    pub(crate) fn current(&self) -> Option<&Entry> {
+        self.journal
+            .current
+            .as_ref()
+            .and_then(|id| self.journal.entries.get(id))
+    }
+
+    pub(crate) fn operation(&self, id: &str) -> Option<&Entry> {
+        self.journal.entries.get(id)
+    }
+
     pub(crate) fn replay(
         &self,
         command_id: &str,

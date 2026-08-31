@@ -13,7 +13,19 @@ type DeleteManagedAgentInput = {
 };
 
 type StartManagedAgent = (pubkey: string) => Promise<unknown>;
-type StopManagedAgent = (pubkey: string) => Promise<unknown>;
+type StopManagedAgent = (input: {
+  pubkey: string;
+  selectedRunId?: string | null;
+  expectedRelayUrl?: string | null;
+}) => Promise<unknown>;
+
+function selectedStop(agent: ManagedAgent) {
+  return {
+    pubkey: agent.pubkey,
+    selectedRunId: agent.selectedRunId,
+    expectedRelayUrl: agent.selectedRelayUrl,
+  };
+}
 type DeleteManagedAgent = (input: DeleteManagedAgentInput) => Promise<unknown>;
 
 type ManagedAgentChannelContext = {
@@ -102,7 +114,7 @@ export async function respawnManagedAgentWithRules({
   onStopped?: () => void;
 }) {
   if (agent.backend.type === "local" && isManagedAgentActive(agent)) {
-    await stopManagedAgent(agent.pubkey);
+    await stopManagedAgent(selectedStop(agent));
     onStopped?.();
   }
 
@@ -137,7 +149,7 @@ export async function stopManagedAgentWithRules({
     };
   }
 
-  await stopManagedAgent(agent.pubkey);
+  await stopManagedAgent(selectedStop(agent));
   return {};
 }
 
