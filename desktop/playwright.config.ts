@@ -73,6 +73,7 @@ export default defineConfig({
         "**/composer-tooltip-dismiss.spec.ts",
         "**/mentions.spec.ts",
         "**/remote-owned-mentions.spec.ts",
+        "**/forum-agent-invitation.spec.ts",
         "**/team-mentions.spec.ts",
         "**/persistent-agent-audience.spec.ts",
         "**/relay-reconnect.spec.ts",
