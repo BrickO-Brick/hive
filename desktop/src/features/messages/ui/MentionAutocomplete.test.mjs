@@ -443,3 +443,27 @@ test("live host names use the cloud marker even without a name collision", async
   );
   assert.equal(view.queryByRole("img", { name: "Running on Workshop" }), null);
 });
+
+test("duplicate agent without a live host reports management, not location", async () => {
+  const React = await import("react");
+  const { render } = await import("@testing-library/react");
+  const { MentionAutocomplete } = await import("./MentionAutocomplete.tsx");
+  const view = render(
+    React.createElement(MentionAutocomplete, {
+      suggestions: [
+        { ...suggestion("managed-here"), pubkey: "a".repeat(64) },
+        { ...suggestion("managed-elsewhere"), pubkey: "b".repeat(64) },
+      ],
+      selectedIndex: 0,
+      onSelect: () => {},
+    }),
+  );
+  const marker = view.getByTestId("mention-agent-provenance");
+  assert.equal(marker.getAttribute("aria-label"), "Not managed on this device");
+  assert.equal(marker.getAttribute("title"), "Not managed on this device");
+  assert.equal(marker.textContent, "");
+  assert.match(
+    marker.querySelector("svg").getAttribute("class"),
+    /lucide-cloud/,
+  );
+});
