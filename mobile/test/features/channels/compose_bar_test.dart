@@ -151,6 +151,24 @@ void _setMockNativeAttachmentPopoverHandler(
       .setMockMethodCallHandler(_nativeAttachmentPopoverChannel, handler);
 }
 
+TargetPlatform? _beginIosVoiceNoteTest() {
+  final previousPlatform = debugDefaultTargetPlatformOverride;
+  debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+  _setMockNativeAttachmentPopoverHandler((call) async {
+    return switch (call.method) {
+      'isSupported' || 'present' => true,
+      'dismiss' => null,
+      _ => null,
+    };
+  });
+  return previousPlatform;
+}
+
+void _endIosVoiceNoteTest(TargetPlatform? previousPlatform) {
+  _setMockNativeAttachmentPopoverHandler(null);
+  debugDefaultTargetPlatformOverride = previousPlatform;
+}
+
 Future<void> _sendNativeAttachmentPopoverCall(
   WidgetTester tester,
   String method, [
@@ -2610,9 +2628,12 @@ void main() {
       expect(find.text('Photos'), findsOneWidget);
     });
 
-    testWidgets('attachment menu uses roomy rows and surrounding padding', (
+    testWidgets('Android attachment menu omits unsupported voice notes', (
       tester,
     ) async {
+      final previousPlatform = debugDefaultTargetPlatformOverride;
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = previousPlatform);
       await tester.pumpWidget(
         _buildComposeBar(
           uploadService: _testUploadService(nostr.Keys.generate().nsec),
@@ -2630,13 +2651,7 @@ void main() {
       final menu = find.byKey(const ValueKey('attachment-menu'));
       final surface = find.byKey(const ValueKey('attachment-surface-popover'));
       final rows = [
-        for (final label in [
-          'camera',
-          'photos',
-          'video',
-          'voice note',
-          'files',
-        ])
+        for (final label in ['camera', 'photos', 'video', 'files'])
           find.byKey(ValueKey('attachment-menu-item-$label')),
       ];
       final menuRect = tester.getRect(menu);
@@ -2650,41 +2665,24 @@ void main() {
         material.shadowColor,
         appPopoverShadowColor(tester.element(surface)),
       );
-      expect(menuRect.size, const Size(216, 324));
+      expect(menuRect.size, const Size(216, 264));
       for (final row in rows) {
         expect(tester.getSize(row).height, 52);
         expect(tester.getRect(row).left - menuRect.left, Grid.xs);
         expect(menuRect.right - tester.getRect(row).right, Grid.xs);
       }
-      for (final label in [
-        'Camera',
-        'Photos',
-        'Video',
-        'Voice note',
-        'Files',
-      ]) {
+      expect(find.text('Voice note'), findsNothing);
+      for (final label in ['Camera', 'Photos', 'Video', 'Files']) {
         final text = tester.widget<Text>(find.text(label));
         expect(text.style?.fontSize, 20);
         expect(text.style?.fontFamily, 'Inter');
       }
       final icons = [
-        for (final label in [
-          'camera',
-          'photos',
-          'video',
-          'voice note',
-          'files',
-        ])
+        for (final label in ['camera', 'photos', 'video', 'files'])
           find.byKey(ValueKey('attachment-menu-icon-$label')),
       ];
       final labels = [
-        for (final label in [
-          'camera',
-          'photos',
-          'video',
-          'voice note',
-          'files',
-        ])
+        for (final label in ['camera', 'photos', 'video', 'files'])
           find.byKey(ValueKey('attachment-menu-label-$label')),
       ];
       for (final icon in icons) {
@@ -2715,6 +2713,7 @@ void main() {
           Grid.xxs,
         );
       }
+      debugDefaultTargetPlatformOverride = previousPlatform;
     });
 
     testWidgets('tapping outside dismisses the Android attachment menu', (
@@ -2779,13 +2778,7 @@ void main() {
 
         final menu = find.byKey(const ValueKey('attachment-menu'));
         final rows = [
-          for (final label in [
-            'camera',
-            'photos',
-            'video',
-            'voice note',
-            'files',
-          ])
+          for (final label in ['camera', 'photos', 'video', 'files'])
             find.byKey(ValueKey('attachment-menu-item-$label')),
         ];
         final scrollView = tester.widget<ListView>(
@@ -4531,6 +4524,7 @@ void main() {
     testWidgets('records, previews, uploads, and sends a voice note', (
       tester,
     ) async {
+      final previousPlatform = _beginIosVoiceNoteTest();
       final recorder = _FakeVoiceNoteRecorder();
       final uploadService = _FakeVoiceNoteUploadService();
       String? sentContent;
@@ -4557,8 +4551,7 @@ void main() {
       await _expandComposer(tester);
       await tester.enterText(find.byType(TextField), 'Keep this draft');
       await _openAttachmentMenu(tester);
-      expect(find.text('Voice note'), findsOneWidget);
-      await tester.tap(find.text('Voice note'));
+      await _sendNativeAttachmentPopoverCall(tester, 'recordVoiceNote');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -4762,11 +4755,14 @@ void main() {
           'filename voice-note-test.mp4',
         ]),
       );
+      await tester.pumpWidget(const SizedBox.shrink());
+      _endIosVoiceNoteTest(previousPlatform);
     });
 
     testWidgets('discarding an inline voice note restores the composer', (
       tester,
     ) async {
+      final previousPlatform = _beginIosVoiceNoteTest();
       final recorder = _FakeVoiceNoteRecorder();
       await tester.pumpWidget(
         _buildComposeBar(
@@ -4777,7 +4773,7 @@ void main() {
       );
 
       await _openAttachmentMenu(tester);
-      await tester.tap(find.text('Voice note'));
+      await _sendNativeAttachmentPopoverCall(tester, 'recordVoiceNote');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('voice-note-recorder-close')));
       await tester.pump();
@@ -4824,11 +4820,14 @@ void main() {
         find.byKey(const ValueKey('composer-voice-note-remove')),
         findsNothing,
       );
+      await tester.pumpWidget(const SizedBox.shrink());
+      _endIosVoiceNoteTest(previousPlatform);
     });
 
     testWidgets('removing a voice note restores keyboard focus', (
       tester,
     ) async {
+      final previousPlatform = _beginIosVoiceNoteTest();
       final recorder = _FakeVoiceNoteRecorder();
       final focusNode = FocusNode();
       addTearDown(focusNode.dispose);
@@ -4842,7 +4841,7 @@ void main() {
       );
 
       await _openAttachmentMenu(tester);
-      await tester.tap(find.text('Voice note'));
+      await _sendNativeAttachmentPopoverCall(tester, 'recordVoiceNote');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('voice-note-recorder-stop')));
       await tester.pumpAndSettle();
@@ -4857,6 +4856,8 @@ void main() {
 
       expect(find.byType(TextField), findsOneWidget);
       expect(focusNode.hasFocus, isTrue);
+      await tester.pumpWidget(const SizedBox.shrink());
+      _endIosVoiceNoteTest(previousPlatform);
     });
   });
 
