@@ -4230,4 +4230,272 @@ mod tests {
              got: {fp_mismatch_err}"
         );
     }
+
+    /// NIP-FI authenticated kind-9 OperatorDenied denial: an authenticated
+    /// kind-9 event (actor_kind 1–3, non-null request_fingerprint) must commit
+    /// without an authorization_authentication_denial_attempts row and must
+    /// reject any attempt to attach one.
+    ///
+    /// Mutation sensitivity:
+    /// - Removing the `actor_kind <> 4` guard from the event-side trigger makes
+    ///   positive A red: the COMMIT fails because the guard now requires a
+    ///   denial-attempt row for the authenticated event and none is present.
+    /// - Removing the `actor_kind <> 4` shape guard from the attempt-side
+    ///   trigger makes negative B red: the attempt binds to the authenticated
+    ///   event and COMMIT succeeds, so the `expect_err` panics. Without the
+    ///   exact constraint name check, the pre-existing
+    ///   `authorization_denial_attempt_semantic_binding` guard would fire instead
+    ///   (non-null attempt semantic_fingerprint vs. null on the event), masking
+    ///   whether the new shape guard is load-bearing.
+    ///
+    /// The unresolved pre-auth positive path (actor_kind 4) is exercised in
+    /// `authorization_denial_attempt_requires_kind_9_event_bidirectional` and
+    /// is unchanged by this fix.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn authenticated_kind_9_denial_commits_without_denial_attempt() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("auth-denial-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        // Seed an operation receipt for the authenticated denial. Use
+        // operation_kind = 12 (invalidation) with outcome_code = 2 (denied):
+        // this satisfies the receipt CHECK constraints without triggering the
+        // lifecycle history guard (expected_count = 0 for non-lifecycle kinds)
+        // and without requiring a lifecycle event (expected_event_kind = NULL).
+        // The authorization_events FK on (community_id, operation_id,
+        // request_fingerprint) requires a receipt row.
+        let op_auth = uuid::Uuid::new_v4();
+        let fp_auth = vec![0xA1_u8; 32];
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 12, $4, 2, $5)",
+            // operation_kind 12 (invalidation), outcome_code 2 (denied)
+        )
+        .bind(community_id)
+        .bind(op_auth)
+        .bind(&fp_auth)
+        .bind(vec![0xA2_u8; 32]) // actor_fingerprint
+        .bind(vec![0xA3_u8; 32]) // result_digest
+        .execute(&pool)
+        .await
+        .expect("seed authenticated denial receipt");
+
+        let event_auth = uuid::Uuid::new_v4();
+        let corr_auth = uuid::Uuid::new_v4();
+        let attempt_auth = uuid::Uuid::new_v4();
+
+        // --- Positive A: authenticated kind-9 denial (actor_kind = 1) commits
+        // without any denial-attempt row. The semantic_fingerprint must be NULL
+        // per the corrected shape CHECK. The deferred cardinality guard must
+        // skip this event because actor_kind ≠ 4.
+        let mut conn = pool.acquire().await.expect("acquire connection");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin");
+
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, actor_fingerprint, operation_id, request_fingerprint, \
+              correlation_id, attempt_id, semantic_fingerprint, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 9, 2, 4, 1, $3, $4, $5, $6, $7, NULL, \
+                     '2026-01-01T00:00:00Z', $8, $9)",
+        )
+        .bind(community_id)
+        .bind(event_auth)
+        .bind(vec![0xA4_u8; 32]) // actor_fingerprint (required for actor_kind 1)
+        .bind(op_auth)
+        .bind(&fp_auth) // non-null request_fingerprint (authenticated shape)
+        .bind(corr_auth)
+        .bind(attempt_auth)
+        // semantic_fingerprint = NULL: authenticated kind-9 must not carry one
+        .bind(vec![0xA5_u8; 64]) // canonical_envelope
+        .bind(vec![0xA6_u8; 32]) // envelope_digest
+        .execute(&mut *conn)
+        .await
+        .expect("insert authenticated kind-9 event");
+
+        sqlx::query("COMMIT").execute(&mut *conn).await.expect(
+            "authenticated kind-9 denial must commit without a denial-attempt row \
+                 — the event-side cardinality guard must skip actor_kind 1",
+        );
+        drop(conn);
+
+        // Confirm no denial attempt was needed: the table must have zero rows
+        // for this event.
+        let attempt_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM authorization_authentication_denial_attempts \
+             WHERE community_id = $1 AND audit_event_id = $2",
+        )
+        .bind(community_id)
+        .bind(event_auth)
+        .fetch_one(&pool)
+        .await
+        .expect("count denial attempts for authenticated event");
+        assert_eq!(
+            attempt_count, 0,
+            "no denial-attempt row should exist for an authenticated kind-9 event"
+        );
+
+        // --- Negative B: a denial attempt cannot bind to the authenticated kind-9
+        // event. The attempt-side shape guard must reject this at commit because
+        // the referenced event has actor_kind = 1 (not 4). The rejection must
+        // name the exact shape constraint (authorization_denial_attempt_event_kind)
+        // rather than merely returning 23514, proving the new actor/request-fingerprint
+        // guard fires — not the pre-existing semantic_fingerprint equality check
+        // (which would fire as authorization_denial_attempt_semantic_binding if
+        // the shape guard were absent, because the attempt carries a non-null
+        // semantic_fingerprint while the authenticated event has null).
+        //
+        // Reuse attempt_auth from the committed event so the deferred attempt_id
+        // FK resolves (wrong attempt_id would activate that FK first and make the
+        // negative non-isolated to the new guard).
+        let mut conn_b = pool.acquire().await.expect("acquire connection B");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_b)
+            .await
+            .expect("begin B");
+
+        // Insert the denial attempt referencing the authenticated event.
+        // The attempt table FKs are deferred, so this INSERT succeeds;
+        // the shape guard fires at COMMIT.
+        sqlx::query(
+            "INSERT INTO authorization_authentication_denial_attempts \
+             (community_id, operation_id, correlation_id, semantic_fingerprint, \
+              denial_reason, expected_revision, action, reason_code, \
+              attempt_id, audit_event_id, audit_event_kind) \
+             VALUES ($1, $2, $3, $4, 1, 1, 1, 2, $5, $6, 9)",
+        )
+        .bind(community_id)
+        .bind(op_auth)
+        .bind(corr_auth)
+        .bind(vec![0xA7_u8; 32]) // semantic_fingerprint on the attempt (non-null)
+        .bind(attempt_auth) // reuse the event's attempt_id — FK isolation
+        .bind(event_auth) // references the authenticated event (actor_kind = 1)
+        .execute(&mut *conn_b)
+        .await
+        .expect("attempt INSERT must pass — shape guard is deferred");
+
+        let cross_shape_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_b)
+            .await
+            .expect_err(
+                "denial attempt binding to authenticated kind-9 event must be rejected at commit",
+            );
+        // The exact constraint name must be authorization_denial_attempt_event_kind —
+        // the new actor/request_fingerprint shape guard. If the shape guard were
+        // removed, the pre-existing semantic_fingerprint equality check would fire
+        // instead, named authorization_denial_attempt_semantic_binding. Requiring
+        // the exact name makes the mutation reliably red.
+        assert_eq!(
+            cross_shape_err
+                .as_database_error()
+                .and_then(|e| e.constraint()),
+            Some("authorization_denial_attempt_event_kind"),
+            "rejection must be attributed to authorization_denial_attempt_event_kind \
+             shape guard (not an incidental FK or semantic-binding check), \
+             got: {cross_shape_err}"
+        );
+    }
+
+    /// NIP-FI denied lifecycle receipt: a denied core lifecycle receipt
+    /// (outcome_code = 2) must commit without a paired audit event. Requiring
+    /// one would falsely record that the lifecycle transition occurred.
+    ///
+    /// Mutation sensitivity: removing the `outcome_code NOT IN (1, 3)` early-return
+    /// from `authorization_operation_receipt_event_guard_v1` makes the positive case
+    /// red — the denied enroll receipt cannot commit alone because the guard then
+    /// demands a paired enroll audit event (expected_event_kind = 1) that is absent.
+    /// Existing tests (`authorization_denial_attempt_requires_kind_9_event_bidirectional`
+    /// and `authorization_admission_result_requires_kind_11_receipt_bidirectional`)
+    /// already protect the applied/no-op side of the guard.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn denied_lifecycle_receipt_commits_without_audit_event() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(42, &pool)
+            .await
+            .expect("apply migrations 1-42");
+
+        let community_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!(
+                "denied-lifecycle-{}.example",
+                community_id.simple()
+            ))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        // Denied enroll receipt (operation_kind = 1, outcome_code = 2) must commit
+        // without any paired authorization_events row. The guard must skip it
+        // because outcome_code = 2 is not in (1, 3).
+        //
+        // The receipt history guard (migration 0041) uses `outcome_code IN (1, 3)`
+        // for lifecycle receipts, so a denied enroll receipt (outcome_code = 2)
+        // expects zero lifecycle history rows — no history setup is needed.
+        let op_denied = uuid::Uuid::new_v4();
+        let fp_denied = vec![0xB1_u8; 32];
+
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 2, $5)",
+            // operation_kind 1 (enroll), outcome_code 2 (denied)
+        )
+        .bind(community_id)
+        .bind(op_denied)
+        .bind(&fp_denied)
+        .bind(vec![0xB2_u8; 32])
+        .bind(vec![0xB3_u8; 32])
+        .execute(&pool)
+        .await
+        .expect("denied enroll receipt must commit without a paired audit event");
+
+        // No audit event for this operation; confirm the table is empty for it.
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM authorization_events \
+             WHERE community_id = $1 AND operation_id = $2",
+        )
+        .bind(community_id)
+        .bind(op_denied)
+        .fetch_one(&pool)
+        .await
+        .expect("count events for denied receipt");
+        assert_eq!(
+            event_count, 0,
+            "no audit event should be required or present for a denied lifecycle receipt"
+        );
+    }
 }

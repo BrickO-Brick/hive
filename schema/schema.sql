@@ -3009,11 +3009,13 @@ CREATE TABLE authorization_events (
         (actor_kind = 4 AND actor_fingerprint IS NULL AND subject_fingerprint IS NULL)
         OR (actor_kind IN (1, 2, 3) AND actor_fingerprint IS NOT NULL)
     ),
-    -- Kind-9 (pre-auth denial) events must carry a non-zero semantic_fingerprint;
+    -- Unresolved pre-auth kind-9 events (actor_kind = 4) carry a non-zero
+    -- semantic_fingerprint; authenticated kind-9 events (actor_kind 1-3) and
     -- all other event kinds must not.
     CHECK (
-        (event_kind = 9 AND semantic_fingerprint IS NOT NULL
+        (event_kind = 9 AND actor_kind = 4 AND semantic_fingerprint IS NOT NULL
             AND semantic_fingerprint <> decode(repeat('00', 32), 'hex'))
+        OR (event_kind = 9 AND actor_kind IN (1, 2, 3) AND semantic_fingerprint IS NULL)
         OR (event_kind <> 9 AND semantic_fingerprint IS NULL)
     )
 );
@@ -3322,14 +3324,19 @@ CREATE FUNCTION authorization_denial_attempt_guard_v1()
 RETURNS TRIGGER AS $$
 DECLARE
     found_event_kind SMALLINT;
+    found_actor_kind SMALLINT;
+    found_request_fingerprint BYTEA;
     found_correlation_id UUID;
     found_reason_code SMALLINT;
     found_semantic_fingerprint BYTEA;
     attempt_count BIGINT;
 BEGIN
     IF TG_TABLE_NAME = 'authorization_events' THEN
-        -- Firing from the event side: only kind-9 events require a denial row.
-        IF NEW.event_kind <> 9 THEN
+        -- Firing from the event side: only unresolved pre-auth kind-9 events
+        -- (actor_kind = 4) require a denial attempt row. Authenticated
+        -- OperatorDenied events (actor_kind 1-3) have a canonical receipt and
+        -- no denial attempt.
+        IF NEW.event_kind <> 9 OR NEW.actor_kind <> 4 THEN
             RETURN NULL;
         END IF;
 
@@ -3377,10 +3384,13 @@ BEGIN
                       CONSTRAINT = 'authorization_denial_attempt_semantic_binding';
         END IF;
     ELSE
-        -- Firing from the denial-attempt side: verify the audit event is kind-9
-        -- and that exactly one denial attempt references it.
-        SELECT event_kind, correlation_id, reason_code, semantic_fingerprint
-        INTO found_event_kind, found_correlation_id, found_reason_code,
+        -- Firing from the denial-attempt side: verify the audit event is the
+        -- unresolved pre-auth kind-9 shape (actor_kind = 4, null receipt
+        -- fingerprint) and that exactly one denial attempt references it.
+        SELECT event_kind, actor_kind, request_fingerprint,
+               correlation_id, reason_code, semantic_fingerprint
+        INTO found_event_kind, found_actor_kind, found_request_fingerprint,
+             found_correlation_id, found_reason_code,
              found_semantic_fingerprint
         FROM authorization_events
         WHERE community_id = NEW.community_id
@@ -3398,6 +3408,22 @@ BEGIN
             RAISE EXCEPTION
                 'denial attempt audit event must be kind 9, got %',
                 found_event_kind
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denial_attempt_event_kind';
+        END IF;
+
+        -- The referenced event must be the unresolved pre-auth shape: actor_kind
+        -- 4 with a null receipt fingerprint. Attaching a denial attempt to an
+        -- authenticated OperatorDenied (actor_kind 1-3) would violate the
+        -- credential-free pre-authentication contract.
+        IF found_actor_kind <> 4 OR found_request_fingerprint IS NOT NULL THEN
+            RAISE EXCEPTION
+                'denial attempt must reference an unresolved pre-auth kind-9 event '
+                '(actor_kind 4, null request_fingerprint); got actor_kind % '
+                'and request_fingerprint % for event %',
+                found_actor_kind,
+                CASE WHEN found_request_fingerprint IS NULL THEN 'null' ELSE 'non-null' END,
+                NEW.audit_event_id
                 USING ERRCODE = 'check_violation',
                       CONSTRAINT = 'authorization_denial_attempt_event_kind';
         END IF;
@@ -3703,6 +3729,14 @@ BEGIN
         RETURN NULL;
     END IF;
 
+    -- Only applied (outcome_code = 1) and no-op (outcome_code = 3) lifecycle
+    -- receipts require a paired audit event. A denied lifecycle receipt
+    -- (outcome_code = 2) commits without one; fabricating a transition event
+    -- would falsely record that the lifecycle change occurred.
+    IF receipt.outcome_code NOT IN (1, 3) THEN
+        RETURN NULL;
+    END IF;
+
     SELECT
         count(*),
         count(*) FILTER (WHERE event_kind = expected_event_kind)
@@ -3732,4 +3766,3 @@ CREATE CONSTRAINT TRIGGER authorization_event_receipt_cardinality
     AFTER INSERT ON authorization_events
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION authorization_operation_receipt_event_guard_v1();
-
