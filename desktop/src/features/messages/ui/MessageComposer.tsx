@@ -164,6 +164,7 @@ function MessageComposerImpl({
   const media = mediaController ?? internalMedia;
   const voiceNote = useComposerVoiceNote({
     draftKey: effectiveDraftKey,
+    editTargetId: editTarget?.id ?? null,
     media,
     setFormattingOpen: setIsFormattingOpen,
     setEmojiPickerOpen: setIsEmojiPickerOpen,

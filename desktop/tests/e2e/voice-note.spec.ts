@@ -1,10 +1,18 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 import { expectSmoothCorners } from "../helpers/css";
 
 const AUDIO_URL = "http://127.0.0.1:4173/sounds/ping.mp3";
+
+async function openMoreActionsMenu(page: Page, messageId: string) {
+  const row = page.locator(`[data-message-id="${messageId}"]`);
+  await row.hover();
+  await page.getByTestId(`more-actions-${messageId}`).click();
+  await expect(page.locator('[role="menuitem"]').first()).toBeVisible();
+}
 
 test.beforeEach(async ({ page }, testInfo) => {
   await page.addInitScript(() => {
@@ -132,6 +140,23 @@ test("keeps pasted snapshots and channel drops out of an active voice note", asy
     "second-attachment.pdf",
   );
   await expect(page.getByTestId("composer-voice-note-card")).toBeVisible();
+});
+
+test("discards an active recording when entering edit mode", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  await page.getByRole("button", { name: "Record voice note" }).click();
+  await expect(page.getByTestId("voice-note-recorder")).toBeVisible();
+
+  await openMoreActionsMenu(page, "mock-general-welcome");
+  await page.getByTestId("edit-message-mock-general-welcome").click();
+
+  await expect(page.getByTestId("edit-target")).toBeVisible();
+  await expect(page.getByTestId("voice-note-recorder")).toHaveCount(0);
+  await expect(page.getByTestId("composer-voice-note-card")).toHaveCount(0);
 });
 
 test("records from the composer and renders an inline waveform card", async ({
