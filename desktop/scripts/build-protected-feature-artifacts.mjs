@@ -9,17 +9,12 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadEnv } from "vite";
 
 const desktopRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const selectedInternalVariant = process.env.VITE_BUZZ_BESTIE === "1";
-const scratchRoot = mkdtempSync(
-  path.join(tmpdir(), "buzz-protected-feature-artifacts-"),
-);
-const selectedOutput = path.join(desktopRoot, "dist");
-const alternateOutput = path.join(scratchRoot, "alternate");
 const vitePackageJsonPath = fileURLToPath(
   import.meta.resolve("vite/package.json"),
 );
@@ -30,12 +25,12 @@ const viteEntrypoint = path.resolve(
 );
 
 function buildVariant({ internal, output }) {
-  const env = { ...process.env };
-  if (internal) {
-    env.VITE_BUZZ_BESTIE = "1";
-  } else {
-    delete env.VITE_BUZZ_BESTIE;
-  }
+  const env = {
+    ...process.env,
+    // Pin both children explicitly. Deleting the OSS value lets Vite reload
+    // `=1` from .env.local or a mode-specific env file.
+    VITE_BUZZ_BESTIE: internal ? "1" : "0",
+  };
 
   const result = spawnSync(
     process.execPath,
@@ -72,7 +67,7 @@ function emittedText(root) {
   return chunks.join("\n");
 }
 
-function assertArtifactContract({ ossOutput, internalOutput }) {
+export function assertArtifactContract({ ossOutput, internalOutput }) {
   const ossText = emittedText(ossOutput);
   const internalText = emittedText(internalOutput);
   const protectedContent = /\bbestie\b|chief of staff|builtin:bestie/iu;
@@ -91,14 +86,25 @@ function assertArtifactContract({ ossOutput, internalOutput }) {
   }
 }
 
-try {
+/** Resolve the requested output with the same precedence used by Vite config. */
+export function selectInternalVariant({ processEnv, modeEnv }) {
+  return (processEnv.VITE_BUZZ_BESTIE ?? modeEnv.VITE_BUZZ_BESTIE) === "1";
+}
+
+/** Build and inspect both graphs, leaving the requested variant in dist. */
+export function buildArtifactMatrix({
+  selectedInternalVariant,
+  selectedOutput,
+  alternateOutput,
+  build = buildVariant,
+}) {
   // Build the unselected variant outside dist first, then leave the requested
   // variant in dist for Vite/Tauri's ordinary packaging contract.
-  buildVariant({
+  build({
     internal: !selectedInternalVariant,
     output: alternateOutput,
   });
-  buildVariant({
+  build({
     internal: selectedInternalVariant,
     output: selectedOutput,
   });
@@ -107,9 +113,37 @@ try {
     ossOutput: selectedInternalVariant ? alternateOutput : selectedOutput,
     internalOutput: selectedInternalVariant ? selectedOutput : alternateOutput,
   });
+}
+
+function main() {
+  const selectedInternalVariant = selectInternalVariant({
+    processEnv: process.env,
+    modeEnv: loadEnv("production", desktopRoot, ""),
+  });
+  const scratchRoot = mkdtempSync(
+    path.join(tmpdir(), "buzz-protected-feature-artifacts-"),
+  );
+  const selectedOutput = path.join(desktopRoot, "dist");
+  const alternateOutput = path.join(scratchRoot, "alternate");
+
+  try {
+    buildArtifactMatrix({
+      selectedInternalVariant,
+      selectedOutput,
+      alternateOutput,
+    });
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
+
   console.log(
     `Protected feature artifact matrix passed; dist contains the ${selectedInternalVariant ? "internal" : "OSS"} variant.`,
   );
-} finally {
-  rmSync(scratchRoot, { recursive: true, force: true });
+}
+
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main();
 }
