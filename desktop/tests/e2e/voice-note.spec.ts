@@ -286,10 +286,52 @@ test("surfaces waveform and playback failures with retry", async ({ page }) => {
   await expect(card.getByRole("alert")).toContainText("Audio unavailable");
 });
 
-test("bounds eager audio work to nearby cards and releases object URLs", async ({
+test("generic audio retains the relay-native download action", async ({
+  page,
+}) => {
+  const audioUrl = `http://localhost:3000/media/${"d".repeat(64)}.mp3`;
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await waitForMockLiveSubscription(page, "general");
+  await page.evaluate(
+    ({ href }) => {
+      const emit = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      emit({
+        channelName: "general",
+        content: `[meeting.mp3](${href})`,
+        extraTags: [
+          ["imeta", `url ${href}`, "m audio/mpeg", "filename meeting.mp3"],
+        ],
+      });
+    },
+    { href: audioUrl },
+  );
+
+  const card = page.getByTestId("audio-message-attachment").last();
+  const download = card.getByRole("button", { name: "Download meeting.mp3" });
+  await expect(download).toBeVisible();
+  await download.click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMAND_LOG__?.find(
+            ({ command }) => command === "download_file",
+          ) ?? null,
+      ),
+    )
+    .toEqual({
+      command: "download_file",
+      payload: { filename: "meeting.mp3", url: audioUrl },
+    });
+});
+
+test("hard-caps audio work and cancels active and queued loads on unmount", async ({
   page,
 }) => {
   await page.addInitScript(() => {
+    window.__BUZZ_E2E_HOLD_MEDIA_FETCHES__ = true;
     const originalCreate = URL.createObjectURL.bind(URL);
     const originalRevoke = URL.revokeObjectURL.bind(URL);
     const counters = { created: 0, revoked: 0 };
@@ -351,42 +393,42 @@ test("bounds eager audio work to nearby cards and releases object URLs", async (
           (command) => command === "fetch_media_bytes",
         ).length ?? 0,
     );
-  await expect.poll(readFetchCount).toBeGreaterThan(0);
-  const fetchCount = await readFetchCount();
-  expect(fetchCount).toBeLessThan(24);
   await expect
     .poll(() =>
       page.evaluate(
-        () =>
-          (
-            window as Window & {
-              __BUZZ_E2E_AUDIO_OBJECT_URLS__?: {
-                created: number;
-                revoked: number;
-              };
-            }
-          ).__BUZZ_E2E_AUDIO_OBJECT_URLS__?.created ?? 0,
+        () => window.__BUZZ_E2E_MEDIA_FETCH_STATE__ ?? { active: 0, peak: 0 },
       ),
     )
-    .toBeGreaterThan(0);
+    .toEqual({ active: 3, peak: 3 });
+  expect(await readFetchCount()).toBe(3);
+  expect(
+    await page.evaluate(
+      () => window.__BUZZ_E2E_AUDIO_OBJECT_URLS__?.created ?? 0,
+    ),
+  ).toBe(0);
 
   await page.getByTestId("channel-random").click();
   await expect(cards).toHaveCount(0);
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const counters = (
-          window as Window & {
-            __BUZZ_E2E_AUDIO_OBJECT_URLS__?: {
-              created: number;
-              revoked: number;
-            };
-          }
-        ).__BUZZ_E2E_AUDIO_OBJECT_URLS__;
-        return counters ? counters.revoked === counters.created : false;
-      }),
+      page.evaluate(() => window.__BUZZ_E2E_MEDIA_FETCH_STATE__?.active ?? -1),
     )
-    .toBe(true);
+    .toBe(0);
+  const commandCounts = await page.evaluate(() => {
+    const commands = window.__BUZZ_E2E_COMMANDS__ ?? [];
+    return {
+      cancelled: commands.filter((command) => command === "cancel_media_fetch")
+        .length,
+      fetched: commands.filter((command) => command === "fetch_media_bytes")
+        .length,
+      released: commands.filter((command) => command === "release_media_fetch")
+        .length,
+    };
+  });
+  expect(commandCounts).toEqual({ cancelled: 3, fetched: 3, released: 3 });
+  expect(
+    await page.evaluate(() => window.__BUZZ_E2E_AUDIO_OBJECT_URLS__),
+  ).toEqual({ created: 0, revoked: 0 });
 });
 
 test("records from the composer and renders an inline waveform card", async ({

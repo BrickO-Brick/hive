@@ -1,6 +1,7 @@
 import * as React from "react";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, Download, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
+import { toast } from "sonner";
 
 import {
   formatVoiceNoteDuration,
@@ -10,6 +11,8 @@ import {
   waveformPeaks,
   type AudioAttachmentImetaEntry,
 } from "@/features/messages/lib/audioAttachment";
+import { scheduleAudioMediaLoad } from "@/features/messages/lib/audioMediaLoadScheduler";
+import { invokeTauri } from "@/shared/api/tauri";
 import { fetchMediaBytes } from "@/shared/api/tauriMedia";
 import { cn } from "@/shared/lib/cn";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
@@ -43,9 +46,12 @@ export function renderAudioMessageAttachment(
   entry: AudioAttachmentImetaEntry | undefined,
   href: string | undefined,
   label: string,
+  downloadUrl?: string,
 ) {
   const attachment = resolveAudioAttachment(entry, href, label);
-  return attachment ? <AudioMessageAttachment {...attachment} /> : null;
+  return attachment ? (
+    <AudioMessageAttachment {...attachment} downloadUrl={downloadUrl} />
+  ) : null;
 }
 
 function audioMimeForUrl(url: string): string {
@@ -56,28 +62,58 @@ function audioMimeForUrl(url: string): string {
   return "audio/wav";
 }
 
-async function decodeSamples(url: string): Promise<Float32Array> {
-  const response = await fetch(url);
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+async function decodeSamples(
+  url: string,
+  signal: AbortSignal,
+): Promise<Float32Array> {
+  const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Audio fetch failed (${response.status})`);
   const bytes = await response.arrayBuffer();
+  if (signal.aborted) {
+    throw new DOMException("Audio decode cancelled", "AbortError");
+  }
   const context = new AudioContext();
+  let rejectCancellation: ((reason?: unknown) => void) | undefined;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  const onAbort = () => {
+    void context.close().catch(() => undefined);
+    rejectCancellation?.(
+      new DOMException("Audio decode cancelled", "AbortError"),
+    );
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
-    const buffer = await context.decodeAudioData(bytes);
+    const buffer = await Promise.race([
+      context.decodeAudioData(bytes),
+      cancellation,
+    ]);
+    if (signal.aborted) {
+      throw new DOMException("Audio decode cancelled", "AbortError");
+    }
     return buffer.getChannelData(0);
   } finally {
-    await context.close();
+    signal.removeEventListener("abort", onAbort);
+    await context.close().catch(() => undefined);
   }
 }
 
 export function AudioMessageAttachment({
   composer = false,
   duration: taggedDuration,
+  downloadUrl,
   filename,
   href,
   onRemove,
 }: {
   composer?: boolean;
   duration?: number;
+  downloadUrl?: string;
   filename: string;
   href: string;
   onRemove?: () => void;
@@ -157,7 +193,10 @@ export function AudioMessageAttachment({
     let active = true;
     let objectUrl: string | undefined;
     setPlaybackHref(undefined);
-    void fetchMediaBytes(href)
+    const load = scheduleAudioMediaLoad((signal) =>
+      fetchMediaBytes(href, signal),
+    );
+    void load.promise
       .then((bytes) => {
         if (!active) return;
         objectUrl = URL.createObjectURL(
@@ -165,11 +204,14 @@ export function AudioMessageAttachment({
         );
         setPlaybackHref(objectUrl);
       })
-      .catch(() => {
-        if (active) setPlaybackHref(rewriteRelayUrl(href));
+      .catch((error: unknown) => {
+        if (active && !isAbortError(error)) {
+          setPlaybackHref(rewriteRelayUrl(href));
+        }
       });
     return () => {
       active = false;
+      load.cancel();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [composer, href, loadRequest]);
@@ -194,16 +236,20 @@ export function AudioMessageAttachment({
     setWaveformReady(false);
     setWaveformError(false);
     setDecodedSamples(undefined);
-    void decodeSamples(playbackHref)
+    const load = scheduleAudioMediaLoad((signal) =>
+      decodeSamples(playbackHref, signal),
+    );
+    void load.promise
       .then((samples) => {
         if (!active) return;
         setDecodedSamples(samples);
       })
-      .catch(() => {
-        if (active) setWaveformError(true);
+      .catch((error: unknown) => {
+        if (active && !isAbortError(error)) setWaveformError(true);
       });
     return () => {
       active = false;
+      load.cancel();
     };
   }, [playbackHref]);
 
@@ -454,6 +500,27 @@ export function AudioMessageAttachment({
           </button>
         ) : null}
       </AttachmentActions>
+      {!composer && downloadUrl ? (
+        <AttachmentActions>
+          <AttachmentAction
+            aria-label={`Download ${filename}`}
+            onClick={() => {
+              invokeTauri("download_file", {
+                filename,
+                url: downloadUrl,
+              }).catch((error: unknown) => {
+                toast.error(
+                  error instanceof Error ? error.message : "Download failed",
+                );
+              });
+            }}
+            title="Download"
+            type="button"
+          >
+            <Download />
+          </AttachmentAction>
+        </AttachmentActions>
+      ) : null}
       {!composer && onRemove ? (
         <AttachmentActions>
           <AttachmentAction

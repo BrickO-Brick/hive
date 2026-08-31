@@ -1298,7 +1298,7 @@ test("generic audio attachments render outside paragraph markup", () => {
           onOpenChannel: () => {},
           onOpenEntityLink: () => {},
           onOpenMessageLink: () => {},
-          relayOrigin: null,
+          relayOrigin: "https://relay.example",
         },
       },
       markdown,
@@ -1306,6 +1306,7 @@ test("generic audio attachments render outside paragraph markup", () => {
   );
 
   assert.match(html, /data-testid="audio-message-attachment"/);
+  assert.match(html, /aria-label="Download meeting.mp3"/);
   assert.doesNotMatch(html, /<p[^>]*>\s*<div/);
 });
 

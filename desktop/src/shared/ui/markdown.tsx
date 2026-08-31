@@ -69,7 +69,7 @@ import {
   type MediaContextMenuPosition,
   useDismissMediaContextMenu,
 } from "./markdown/MediaContextMenu";
-import { isVideoMedia } from "./markdown/mediaEntry";
+import { isRelayDownloadable, isVideoMedia } from "./markdown/mediaEntry";
 import {
   type ImageGalleryDirection,
   type ImageGalleryItem,
@@ -1247,6 +1247,9 @@ export function createMarkdownComponents(
       href ? imetaByUrl?.get(href) : undefined,
       href,
       label,
+      href && isRelayDownloadable(href, relayOrigin ?? undefined)
+        ? href
+        : undefined,
     );
     if (audioAttachment) return audioAttachment;
 
