@@ -1497,7 +1497,8 @@ LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE AS $$
         'authorization_event_capacity', 'authorization_events',
         'authorization_authentication_denial_attempts',
         'authorization_operation_version_delta_manifests',
-        'authorization_operation_version_deltas', 'authorization_admission_results'
+        'authorization_operation_version_deltas', 'authorization_admission_results',
+        'nip_fi_proof_replay_claims'
     ]::TEXT[])
 $$;
 
@@ -3733,3 +3734,28 @@ CREATE CONSTRAINT TRIGGER authorization_event_receipt_cardinality
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION authorization_operation_receipt_event_guard_v1();
 
+-- Proof replay claim ledger.
+--
+-- Inserted inside the SERIALIZABLE commit transaction immediately before the
+-- operation receipt. The `(community_id, proof_event_id)` primary key enforces
+-- single-use proof identity within a community. A duplicate INSERT raises
+-- unique_violation (23505); the caller maps this to `AuthorizationDenied`
+-- without distinguishing it from any other private-state denial
+-- (FI-TRACE-DENIAL-ORACLE).
+--
+-- `proof_event_id` is the full 32-byte Nostr event ID of the NIP-42 AUTH or
+-- NIP-98 signed event — never UUID-truncated.
+CREATE TABLE nip_fi_proof_replay_claims (
+    community_id      UUID        NOT NULL,
+    proof_event_id    BYTEA       NOT NULL CHECK (octet_length(proof_event_id) = 32),
+    retained_until    TIMESTAMPTZ NOT NULL,
+    committed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (community_id, proof_event_id)
+);
+
+CREATE TRIGGER nip_fi_proof_replay_claims_immutable
+    BEFORE UPDATE OR DELETE ON nip_fi_proof_replay_claims
+    FOR EACH ROW EXECUTE FUNCTION nip_fi_reject_row_mutation_v1();
+CREATE TRIGGER nip_fi_proof_replay_claims_no_truncate
+    BEFORE TRUNCATE ON nip_fi_proof_replay_claims
+    FOR EACH STATEMENT EXECUTE FUNCTION nip_fi_reject_truncate_v1();

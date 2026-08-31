@@ -1,5 +1,5 @@
 //! NIP-FI federated-identity authorization — assertion verifier, JWKS runtime,
-//! startup validation, and discovery.
+//! startup validation, discovery, and prepared/committed authority types.
 
 /// The client-attached transport header for federated-identity assertions.
 ///
@@ -9,6 +9,7 @@
 pub const CLIENT_ATTACHED_HEADER: &str = "Nostr-Federated-Identity";
 
 pub mod assertion;
+pub mod authority;
 pub mod config;
 pub mod denial;
 pub mod discovery;
@@ -19,6 +20,11 @@ pub mod verifier;
 pub use assertion::{
     CanonicalCapabilities, ConfidentialAssertion, FederatedIdentity, RevalidationDependencies,
     VerifiedAssertion,
+};
+pub use authority::{
+    AdmissionError, BindingProposal, BindingProvenance, ExactProtectedUse, OperationIntent,
+    PreparedDependencyVersions, ProofTransport, ProtectedObjectKind, RouteCapability,
+    VerifiedServerDirectContext,
 };
 pub use config::{
     AssertionPolicyId, ClientSubjectPosture, FreshnessClass, IssuerPolicy, IssuerPolicyError,

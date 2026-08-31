@@ -2742,7 +2742,7 @@ mod tests {
     }
 
     /// NIP-FI full state: migrations 0041 + 0042 together must present a
-    /// coherent 15-relation catalog with zero dangling foreign keys, all
+    /// coherent 16-relation catalog with zero dangling foreign keys, all
     /// relations write-fence excluded, and an intact exact deletion catalog.
     #[tokio::test]
     #[ignore = "requires Postgres"]
@@ -2769,10 +2769,11 @@ mod tests {
             "identity_enrollment_policies",
             "identity_lifecycle_history",
             "identity_lifecycle_selectors",
+            "nip_fi_proof_replay_claims",
             "protected_object_authority",
         ];
 
-        // All fifteen relations exist.
+        // All sixteen relations exist.
         let present: Vec<String> = sqlx::query_scalar(
             "SELECT table_name FROM information_schema.tables \
              WHERE table_schema = 'public' AND table_name = ANY($1) ORDER BY table_name",
@@ -2801,7 +2802,7 @@ mod tests {
             "no NIP-FI foreign key may be left unvalidated"
         );
 
-        // None of the fifteen appear as tenant-scoped drift; all are excluded.
+        // None of the sixteen appear as tenant-scoped drift; all are excluded.
         let scoped: Vec<String> = sqlx::query_scalar(
             "SELECT c.relname FROM pg_class c \
              JOIN pg_namespace n ON n.oid = c.relnamespace \

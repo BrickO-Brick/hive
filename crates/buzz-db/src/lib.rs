@@ -36,9 +36,9 @@ pub(crate) use runtime::{
 };
 pub use store::{
     admin_moderation, allowlist, api_token, archived_identities, channel, channel_members,
-    community, deletion, dm, event, feed, git_repo, moderation, partition, product_feedback, push,
-    reaction, relay_admin_actions, relay_invite, relay_members, relay_operators, reminder,
-    replaceable, thread, usage, user, workflow,
+    community, deletion, dm, event, feed, git_repo, moderation, nip_fi_authority, partition,
+    product_feedback, push, reaction, relay_admin_actions, relay_invite, relay_members,
+    relay_operators, reminder, replaceable, thread, usage, user, workflow,
 };
 
 pub use allowlist::AllowlistEntry;
@@ -50,6 +50,10 @@ pub use community::{
 };
 pub use error::{DbError, Result};
 pub use event::{EventQuery, DEFAULT_MAX_PAGE_LIMIT};
+pub use nip_fi_authority::{
+    authorize_protected_use, commit_admission, prepare_direct, AuthorizedUse,
+    CommittedAuthorization, PrepareError, PreparedAuthorization,
+};
 pub use reaction::ReactionEventInsertOutcome;
 pub use reminder::DueReminder;
 pub use usage::UsageMetricsLeader;

@@ -26,6 +26,8 @@ pub mod feed;
 pub mod git_repo;
 /// Community moderation: reports, bans/timeouts, audit actions.
 pub mod moderation;
+/// NIP-FI direct preparation and atomic final admission authority.
+pub mod nip_fi_authority;
 /// Monthly table partition management.
 pub mod partition;
 /// Buzz product-feedback sidecar persistence.
