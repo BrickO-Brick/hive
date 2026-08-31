@@ -849,8 +849,11 @@ pub(super) fn spawn_agent_child_for_run(
     let start_nonce = spawn_entry::launcher_generation(generation)?;
     command
         .env("BUZZ_MANAGED_AGENT", current_instance_id(app))
-        .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce);
-
+        .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce)
+        .env(
+            "BUZZ_STOP_RECEIPT_PATH",
+            super::execution::stop_proof_path(&log_path, &start_nonce),
+        );
     // Stamp the effective spawn config from the values that populated the
     // `Command` above, BEFORE spawning. Re-resolving after `spawn()` would let
     // a persona/harness/global edit landing in between stamp the NEW config

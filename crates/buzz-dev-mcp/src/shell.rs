@@ -199,6 +199,7 @@ pub async fn run(
     };
 
     let pid = child.id();
+    let mut owned_work = state.workloads.child();
 
     // KillGroup ties the spawned bash and all its descendants to a single kill
     // primitive (Unix process group / Windows Job Object). Built from the live
@@ -246,6 +247,7 @@ pub async fn run(
                     tracing::debug!("cancel: child reap timed out; guard will kill on drop");
                 }
             }
+            owned_work.finish(pid, matches!(child.try_wait(), Ok(Some(_)))).await;
             stdout_handle.abort();
             stderr_handle.abort();
             let _ = stdout_handle.await;
@@ -335,6 +337,9 @@ pub async fn run(
         "notes": notes,
     });
     let text = serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into());
+    owned_work
+        .finish(pid, matches!(child.try_wait(), Ok(Some(_))))
+        .await;
     kill_group.disarm();
     Ok(CallToolResult::success(vec![Content::text(text)]))
 }

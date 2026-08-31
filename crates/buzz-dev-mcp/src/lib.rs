@@ -36,6 +36,23 @@ impl DevMcp {
         }
     }
 
+    // Hidden from the model by buzz-agent's underscore-tool rule. Discovery
+    // of this exact versioned tool is the supported teardown capability.
+    #[tool(
+        name = "_buzz_shutdown_v1",
+        description = "Close shell admission and confirm owned process-group work has ended. Supervisor only."
+    )]
+    async fn shutdown_owned_work(&self) -> Result<CallToolResult, ErrorData> {
+        self.state
+            .workloads
+            .drain()
+            .await
+            .map_err(|_| ErrorData::internal_error("owned work teardown unconfirmed", None))?;
+        Ok(CallToolResult::success(vec![rmcp::model::Content::text(
+            "buzz.owned-work.stopped.v1",
+        )]))
+    }
+
     #[tool(
         name = "shell",
         description = "Run a shell command (bash by default; set `BUZZ_SHELL` to use cmd, PowerShell, or another shell). Ephemeral process per call. Output tail-truncated to ~8KB for the LLM; full output (first 10MB) saved to artifact file. timeout_ms defaults to 120000 (2 min) if omitted; capped at 600000 (10 min). For long-running commands (git push with hooks, cargo build, test suites), use 300000+. On PATH: rg (prefer over grep; flags: -n -i -l -g <glob> -C <n> --files), tree (flags: -d <depth>; shows line counts), and buzz (Buzz relay CLI — run buzz --help for commands)."

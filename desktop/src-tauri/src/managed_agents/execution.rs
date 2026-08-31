@@ -265,14 +265,29 @@ pub(crate) fn execute_host_operation(
                 // A delayed selected-run Stop must not kill this newer peer.
                 return ledger.finish(&request.operation, Outcome::Unknown);
             }
-            if super::runtime::terminate_exact_owned_group(&mut runtime.child).is_err() {
+            let actual = runtime.start_nonce.clone();
+            if stop_selected_generation(&mut runtime.child, &actual, run).is_err() {
                 return ledger.finish(&request.operation, Outcome::Unknown);
             }
-            // ACP/agent/MCP children can own separate process groups. Root/group
-            // exit is real evidence, but NOT a full execution teardown certificate.
-            // Keep the placement fenced until stronger containment/reconciliation
-            // can prove Stopped; no Move or replacement may use this observation.
-            let result = ledger.finish(&request.operation, Outcome::RootExited)?;
+            // Root exit alone cannot certify separately grouped descendants.
+            // Only a supported, authenticated same-generation owned-work proof
+            // permits replacement. Missing/invalid evidence remains fenced.
+            let proof_path = stop_proof_path(&runtime.log_path, run);
+            let successful_root = runtime
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .is_some_and(|status| status.success());
+            let outcome = if successful_root
+                && verified_stop_proof(&proof_path, &key.pubkey, &key.relay_url, run)
+            {
+                Outcome::Stopped
+            } else {
+                Outcome::RootExited
+            };
+            let result = ledger.finish(&request.operation, outcome)?;
+            let _ = std::fs::remove_file(proof_path);
             runtimes.remove(&key);
             remove_agent_runtime_receipt(app, &key);
             state.clear_agent_session_cache(&key);
@@ -284,6 +299,38 @@ pub(crate) fn execute_host_operation(
         }
     }
 }
+
+pub(super) fn stop_proof_path(log: &std::path::Path, run: &str) -> std::path::PathBuf {
+    log.with_extension(format!("stop-{run}.json"))
+}
+
+fn verified_stop_proof(path: &std::path::Path, agent: &str, relay: &str, run: &str) -> bool {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file.take(4097).read_to_end(&mut bytes).is_err() || bytes.len() > 4096 {
+        return false;
+    }
+    serde_json::from_slice::<buzz_core_pkg::owned_stop::Proof>(&bytes)
+        .is_ok_and(|proof| buzz_core_pkg::owned_stop::verify(&proof, agent, relay, run).is_ok())
+}
+
+fn stop_selected_generation(
+    child: &mut std::process::Child,
+    actual: &str,
+    expected: &str,
+) -> Result<(), String> {
+    if !exact_generation_matches(actual, expected) {
+        return Err("selected generation is no longer current".into());
+    }
+    super::runtime::terminate_exact_owned_group(child)
+}
+
+#[cfg(all(test, unix))]
+#[path = "execution_stop_process_tests.rs"]
+mod stop_process_tests;
 
 fn exact_generation_matches(actual: &str, expected: &str) -> bool {
     buzz_core_pkg::host_execution::hex_id(expected, 32) && actual == expected

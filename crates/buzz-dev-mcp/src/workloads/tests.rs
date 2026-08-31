@@ -122,3 +122,11 @@ async fn mcp_eof_reaps_separate_shell_group_without_stopping_peer() {
     }
     assert!(state.workloads.enter().is_none());
 }
+
+#[tokio::test]
+async fn abandoned_owned_child_prevents_success_even_when_task_count_is_zero() {
+    let owner = Workloads::default();
+    drop(owner.child());
+    assert!(owner.drain().await.is_err());
+    assert!(owner.drain().await.is_err());
+}

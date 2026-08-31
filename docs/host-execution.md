@@ -80,43 +80,95 @@ supersession chain selects the current intent without timestamp tie ambiguity.
 Destination placement fences still revalidate admission; this does not implement
 Stop or Move, and never bypasses a successor/unknown placement fence.
 
-## Exact Stop: important containment limit
+## Exact Stop: supported owned-work completion
 
-The current native Stop only signals an exact tracked generation and waits for its
-root and owned process group to exit. An already-reaped root cannot be signaled by
-its potentially recycled PID. Unknown teardown retains the fence.
+Native Stop signals only the retained selected-generation ACP owner and allows
+90 seconds for nested cleanup. It never signals a reaped/recycled root or a newer
+run. Deadline escalation is `unknown`, not successful Stop. The legacy PID-only
+best-effort path remains separate.
 
-**This does not prove full tree teardown.** ACP agents and buzz-agent MCP servers
-create their own process groups (`buzz-acp/src/acp.rs`, `buzz-agent/src/mcp.rs`).
-The executor therefore records **`root_exited`**, never `stopped`, after observing
-root-group teardown. `root_exited` is explicitly insufficient to permit a new
-Start. The journal's `stopped` state is reserved for a future containment-backed
-proof; no production native path currently emits it. A healthy goodbye, exit code,
-lease expiry or relay acknowledgement cannot substitute for that proof.
+Root/group exit alone remains **`root_exited`**, blocking replacement. `stopped`
+now additionally requires a verified agent-signed local owned-work proof for the
+same agent, canonical community and existing launcher `start_nonce`, plus a
+successfully reaped root. No binary-name, timing, goodbye/log, presence or exit-code
+heuristic can produce this proof. The host subsequently issues the existing
+host-signed encrypted execution Receipt for the immutable Stop command.
 
-Move remains unimplemented, but its product meaning is approved: stop-confirm
-only the selected generation, then a fresh runtime session for the same agent on
-the destination, with **no automatic workspace or file transfer**. Unknown or
-root-only outcomes continue blocking replacement; unrelated placements must not
-be touched. Do not use identity-wide `!shutdown`.
+### Minimal supported capability chain
 
-The first workload-owner correction is in `buzz-dev-mcp`: connection EOF/error
-closes shell admission and cancels running shell calls before the MCP response
-drain, and server teardown waits for those calls. Shell cancellation signals its
-own process group, waits for its direct child, and joins its output-reader tasks.
-A real-process test drives MCP EOF with a shell/grandchild in a separate group and
-checks that an unrelated peer survives. This fixes cooperative MCP connection
-teardown, **not** the full Desktop Stop chain or arbitrary daemon containment.
+1. ACP installs SIGTERM/SIGINT handlers **before spawning**. The same sticky watch
+   cancels eager/lazy initialization and respawn/backoff; startup errors explicitly
+   drain partial pools. Stop cancels checked-out channel and heartbeat work before
+   joining it. Bounded abort/escalation never clears incomplete-child evidence.
+2. `buzz-agent` advertises `_meta.buzzOwnedWorkShutdown: 1` at ACP initialize.
+   `_buzz/shutdown_v1` closes request admission, cancels sessions and joins all
+   session/new and prompt tasks, including partial initialization. It returns
+   `{v:1, ownedWorkStopped:true}` only when all lifetime MCP children completed.
+   EOF/broken output still performs cleanup, but cannot issue this acknowledgement.
+3. MCP discovery of `_buzz_shutdown_v1` negotiates the supervisor-only capability
+   (underscore tools are hidden from the model). It closes shell admission,
+   cancels and drains shell owners, and returns exactly
+   `buzz.owned-work.stopped.v1` only when owned shell roots were reaped and their
+   groups disappeared. Dropped/aborted/unobserved shell work is sticky uncertainty.
+4. The agent retains each actual MCP child through an rmcp `Transport` adapter:
+   explicit work acknowledgement **and** successful child reap are both required.
+   rmcp 1.8's default transport masks timeout-kill/nonzero exits, so waiting for its
+   `cancel()` alone was insufficient. Failed initialization, restart, borrowed
+   clients, noncooperative tools and forced exits cannot certify completion.
+5. ACP requires the negotiated agent acknowledgement and successful agent reap.
+   A process-lifetime incomplete-child count includes failed/aborted respawns.
+   Only zero incomplete children permits writing the final local proof, using the
+   agent key already entrusted to this runtime. No new run ID/key/kill authority
+   or relay kind is introduced. Native stamps `BUZZ_STOP_RECEIPT_PATH` beside the
+   runtime log (`.stop-<start_nonce>.json`); ACP strips this variable from agent
+   children. The file is create-new, mode0600, synced, signature-checked and bounded
+   to4096 bytes. Missing, altered or wrong-scope files cannot authorize replacement.
 
-The remaining concrete ownership gap is upstream: native escalation currently
-allows only one second; ACP immediately kills its agent group; buzz-agent spawns
-session/prompt tasks without joining them on EOF and kills MCP groups in Drop
-instead of awaiting rmcp's existing graceful transport close. Those owners must
-propagate cancellation, join their work and await child teardown before an
-exact-generation authenticated completion can be trusted. A killed/hung owner,
-unobserved cleanup or unsupported runtime must remain unknown, not stopped.
-There is no universal containment promise for arbitrary programs that detach from
-managed groups.
+**Supported boundary and failure model:** this is trusted cooperative
+`buzz-acp → buzz-agent → buzz-dev-mcp → shell process-group` execution on Unix,
+not hostile-code containment. Ordinary shell children/grandchildren in their
+owned group are included, even if ignoring TERM (the tool owner kills and reaps
+them). Deliberately detached/daemonized work, external services/jobs created by
+commands, arbitrary third-party tools, compromised executors/agent keys and
+OS-level unobservable workloads are outside the supported capability contract.
+Do not present it as universal descendant or remote-job termination. Unsupported
+servers do not silently inherit support from their name or exit status; they
+remain `root_exited`/`unknown`. Windows lacks the required observation here and
+fails closed. Lifetime uncertainty persists even if a later replacement child
+shuts down cleanly. A native restart without a retained child also stays unknown.
+
+Move's approved meaning remains: confirmed selected-run Stop, then a fresh runtime
+session for the same agent at the destination, **no automatic file/workspace
+transfer**. Unknown/root-only outcomes block replacement; unrelated placements
+are preserved. This Stop candidate does not implement Move UI; the Start transport above remains default-off.
+
+### Repeatable real-process check (fixture relay/provider)
+
+```sh
+cargo build --locked -p buzz-acp -p buzz-agent -p buzz-dev-mcp
+export BUZZ_STOP_CHAIN_BIN_DIR="$PWD/target/debug" # use actual CARGO_TARGET_DIR if set
+# Optional: a fresh directory for process-tree snapshots and per-owner logs.
+export BUZZ_STOP_CHAIN_ARTIFACTS="$(mktemp -d)"
+# Source-only native test; this does not test packaged mesh sidecars.
+export TAURI_CONFIG='{"bundle":{"externalBin":[]}}'
+cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml \
+  selected_generation_process_chain -- --ignored --nocapture
+```
+
+Requires Unix and Node. The test starts real `buzz-acp`, `buzz-agent`, and
+`buzz-dev-mcp` binaries, uses the production native selected-generation guard and
+termination seam, and observes real shell/grandchild PIDs in independently owned
+process groups. A same-identity peer on another fixture relay remains running
+through selected Stop, stale-generation rejection and retry-after-reap rejection.
+Every peer process is then stopped by its own owner. Fixture services bind only
+loopback, accept test auth, and supply a canned OpenAI tool call. The test clears
+inherited configuration and uses only a public deterministic test key.
+
+This is **not** a Desktop UI test, signed command receiver/outbox test, real LLM
+provider run or second physical machine. It verifies the signed supported
+completion proof and rejects different-community/generation proof reuse.
+The source-level native journal tests separately pin crash/ACK-loss deduplication
+and the rule that only confirmed exact Stop permits replacement.
 
 ## Validation and integration gates
 

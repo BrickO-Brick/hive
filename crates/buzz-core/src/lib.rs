@@ -32,6 +32,8 @@ pub mod network;
 pub mod nip10;
 /// Agent observer frame helpers.
 pub mod observer;
+/// Authenticated local owned-work teardown evidence.
+pub mod owned_stop;
 /// NIP-AB device pairing — crypto primitives, message types, and errors.
 pub mod pairing;
 /// Presence status types shared across crates.

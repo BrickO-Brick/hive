@@ -69,7 +69,8 @@ pub enum Outcome {
     /// Selected root and its group exited, but separately grouped descendants
     /// have not been proven terminated. This MUST NOT authorize replacement.
     RootExited,
-    /// Controller proved teardown of the full managed execution containment.
+    /// Controller authenticated completion of the supported owned-work boundary
+    /// and reaped the selected root. Not a universal arbitrary-daemon guarantee.
     Stopped,
     /// Proven pre-side-effect rejection (safe enum, no private diagnostics).
     Rejected,
