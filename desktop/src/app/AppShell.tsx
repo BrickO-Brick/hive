@@ -893,9 +893,7 @@ export function AppShell() {
                           onSetPresenceStatus={(status) =>
                             presenceSession.setStatus(status)
                           }
-                          onSetUserStatus={(text, emoji) =>
-                            setUserStatusMutation.mutate({ text, emoji })
-                          }
+                          onSetUserStatus={setUserStatusMutation.mutate}
                           onClearUserStatus={() =>
                             setUserStatusMutation.mutate({
                               text: "",

@@ -17,6 +17,7 @@ import {
   DEFAULT_USER_STATUS_EMOJI,
   StatusEmoji,
 } from "@/features/user-status/ui/StatusEmoji";
+import type { UserStatusInput } from "@/features/user-status/types";
 import type { PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { isMacPlatform } from "@/shared/lib/platform";
@@ -31,8 +32,10 @@ interface ProfilePopoverProps {
   isStatusPending?: boolean;
   userStatusText?: string;
   userStatusEmoji?: string;
+  userStatusExpiresAt?: number;
+  userStatusUpdatedAt?: number;
   onSetStatus: (status: PresenceStatus) => void;
-  onSetUserStatus: (text: string, emoji: string) => void;
+  onSetUserStatus: (status: UserStatusInput) => void;
   onClearUserStatus: () => void;
   onOpenSettings: (section?: "profile" | "appearance") => void;
   onSendFeedback?: () => void;
@@ -61,6 +64,8 @@ export function ProfilePopover({
   isStatusPending,
   userStatusText,
   userStatusEmoji,
+  userStatusExpiresAt,
+  userStatusUpdatedAt,
   onSetStatus,
   onSetUserStatus,
   onClearUserStatus,
@@ -291,7 +296,9 @@ export function ProfilePopover({
       <SetStatusDialog
         hasExistingStatus={hasUserStatus}
         initialEmoji={userStatusEmoji}
+        initialExpiresAt={userStatusExpiresAt}
         initialText={userStatusText}
+        initialUpdatedAt={userStatusUpdatedAt}
         onClear={onClearUserStatus}
         onOpenChange={setStatusDialogOpen}
         onSave={onSetUserStatus}

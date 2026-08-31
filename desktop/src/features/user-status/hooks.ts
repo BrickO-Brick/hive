@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import type { UserStatusInput } from "@/features/user-status/types";
 import { relayClient } from "@/shared/api/relayClient";
 import type {
   RelayEvent,
@@ -26,15 +27,21 @@ export function parseUserStatusEvent(event: RelayEvent): {
   text: string;
   emoji: string;
   updatedAt: number;
+  expiresAt?: number;
 } {
   const emojiTag = event.tags.find(
     (tag) => tag[0] === "emoji" && tag.length >= 2,
   );
+  const expirationTag = event.tags.find(
+    (tag) => tag[0] === "expiration" && tag.length >= 2,
+  );
+  const parsedExpiration = Number.parseInt(expirationTag?.[1] ?? "", 10);
   return {
     pubkey: normalizePubkey(event.pubkey),
     text: event.content,
     emoji: emojiTag?.[1] ?? "",
     updatedAt: event.created_at,
+    expiresAt: Number.isFinite(parsedExpiration) ? parsedExpiration : undefined,
   };
 }
 
@@ -77,12 +84,16 @@ export function useUserStatusQuery(pubkeys: string[]) {
         const parsed = parseUserStatusEvent(event);
         const existing = lookup[parsed.pubkey];
         if (!existing || parsed.updatedAt > existing.updatedAt) {
+          const isExpired =
+            parsed.expiresAt !== undefined &&
+            parsed.expiresAt <= Math.floor(Date.now() / 1_000);
           lookup[parsed.pubkey] =
-            parsed.text || parsed.emoji
+            (parsed.text || parsed.emoji) && !isExpired
               ? {
                   text: parsed.text,
                   emoji: parsed.emoji,
                   updatedAt: parsed.updatedAt,
+                  expiresAt: parsed.expiresAt,
                 }
               : null;
         }
@@ -108,12 +119,16 @@ export function useUserStatusSubscription() {
       const dTag = event.tags.find((t) => t[0] === "d");
       if (dTag?.[1] !== "general") return;
       const parsed = parseUserStatusEvent(event);
+      const isExpired =
+        parsed.expiresAt !== undefined &&
+        parsed.expiresAt <= Math.floor(Date.now() / 1_000);
       const status: UserStatus | null =
-        parsed.text || parsed.emoji
+        (parsed.text || parsed.emoji) && !isExpired
           ? {
               text: parsed.text,
               emoji: parsed.emoji,
               updatedAt: parsed.updatedAt,
+              expiresAt: parsed.expiresAt,
             }
           : null;
 
@@ -170,16 +185,21 @@ export function useSetUserStatusMutation(pubkey?: string) {
   const normalizedPubkey = normalizePubkey(pubkey ?? "");
 
   return useMutation({
-    mutationFn: async ({ text, emoji }: { text: string; emoji: string }) => {
-      await relayClient.publishUserStatus(text, emoji);
-      return { text, emoji };
+    mutationFn: async ({ text, emoji, expiresAt }: UserStatusInput) => {
+      await relayClient.publishUserStatus({ text, emoji, expiresAt });
+      return { text, emoji, expiresAt };
     },
-    onSuccess: ({ text, emoji }) => {
+    onSuccess: ({ text, emoji, expiresAt }) => {
       if (normalizedPubkey.length === 0) return;
 
       const status: UserStatus | null =
         text || emoji
-          ? { text, emoji, updatedAt: Math.floor(Date.now() / 1_000) }
+          ? {
+              text,
+              emoji,
+              updatedAt: Math.floor(Date.now() / 1_000),
+              expiresAt,
+            }
           : null;
 
       queryClient.setQueryData<UserStatusLookup>(

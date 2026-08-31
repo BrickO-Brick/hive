@@ -161,8 +161,8 @@ export type UserStatus = {
   text: string;
   emoji: string;
   updatedAt: number;
+  expiresAt?: number;
 };
-
 export type UserStatusLookup = Record<string, UserStatus | null>;
 
 export type {

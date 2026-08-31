@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 
 const SHORTCODE = "buzz";
@@ -41,6 +42,112 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+test("set status dialog uses the desktop modal with shared status choices", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await openProfilePopover(page);
+  await page.getByTestId("profile-popover-set-status").click();
+
+  const dialog = page.getByTestId("set-status-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("heading", { name: "Set a status" }),
+  ).toBeVisible();
+  await expect(dialog.getByLabel("Save status")).toBeDisabled();
+  const emojiButton = dialog.getByLabel("Choose a status emoji");
+  await expect(dialog.getByLabel("Remove status emoji")).toHaveCount(0);
+  await expect
+    .poll(() =>
+      emojiButton.locator("svg").evaluate((element) => ({
+        height: getComputedStyle(element).height,
+        width: getComputedStyle(element).width,
+      })),
+    )
+    .toEqual({ height: "20px", width: "20px" });
+  await dialog.getByTestId("set-status-input").fill("Heads down");
+  await expect(emojiButton.getByText("💬", { exact: true })).toBeVisible();
+  await expect(emojiButton.locator("svg")).toHaveCount(0);
+  await dialog.getByTestId("set-status-input").fill("");
+  await expect(dialog.getByText("Duration", { exact: true })).toHaveCount(2);
+  await expect(
+    dialog.getByText("Quick statuses", { exact: true }),
+  ).toBeVisible();
+
+  for (const quickStatus of [
+    "In a meeting",
+    "Commuting",
+    "Out sick",
+    "Vacationing",
+    "Working remotely",
+  ]) {
+    await expect(dialog.getByText(quickStatus, { exact: true })).toBeVisible();
+  }
+
+  await dialog.getByTestId("set-status-duration").click();
+  for (const duration of [
+    "1 hour",
+    "8 hours",
+    "Today",
+    "This week",
+    "Custom",
+  ]) {
+    await expect(page.getByRole("menuitem", { name: duration })).toBeVisible();
+  }
+  await waitForAnimations(page);
+  await page.screenshot({
+    clip: { height: 700, width: 600, x: 340, y: 10 },
+    path: "test-results/profile-status/04-status-duration-options.png",
+  });
+  await page.getByRole("menuitem", { name: "8 hours" }).click();
+
+  await dialog.getByTestId("set-status-preset-working-remotely").click();
+  await expect(dialog.getByTestId("set-status-input")).toHaveValue(
+    "Working remotely",
+  );
+  await expect(dialog.getByLabel("Save status")).toBeEnabled();
+  await dialog.getByTestId("set-status-save").click();
+
+  await openProfilePopover(page);
+  await page.getByTestId("profile-popover-set-status").click();
+  await expect(page.getByTestId("set-status-duration")).toContainText(
+    "8 hours",
+  );
+
+  await page.getByTestId("set-status-duration").click();
+  await page.getByRole("menuitem", { name: "Custom" }).click();
+  await expect(dialog.getByText("Until", { exact: true })).toBeVisible();
+  const expirationDate = dialog.getByLabel("Status expiration date");
+  await expect(expirationDate).toBeVisible();
+  await expirationDate.click();
+  await expect(page.locator('[data-slot="calendar"]')).toBeVisible();
+  await waitForAnimations(page);
+  await page.screenshot({
+    clip: { height: 700, width: 600, x: 340, y: 10 },
+    path: "test-results/profile-status/05-custom-status-calendar.png",
+  });
+  await page.keyboard.press("Escape");
+  const expirationTime = dialog.getByLabel("Status expiration time");
+  await expect(expirationTime).toBeVisible();
+  await expirationTime.click();
+  const timeMenu = page.getByTestId("status-expiration-time-menu");
+  await expect(timeMenu.getByRole("menuitem")).toHaveCount(48);
+  await expect
+    .poll(() =>
+      timeMenu.evaluate(
+        (element) =>
+          element.clientHeight <= 368 &&
+          element.scrollHeight > element.clientHeight,
+      ),
+    )
+    .toBe(true);
+  await waitForAnimations(page);
+  await page.screenshot({
+    clip: { height: 700, width: 600, x: 340, y: 10 },
+    path: "test-results/profile-status/06-custom-status-time.png",
+  });
+});
+
 test("profile popover renders a custom emoji status as an image", async ({
   page,
 }) => {
@@ -49,7 +156,7 @@ test("profile popover renders a custom emoji status as an image", async ({
 
   await page.getByTestId("profile-popover-set-status").click();
   await expect(page.getByTestId("set-status-dialog")).toBeVisible();
-  await page.getByLabel("Choose status emoji").click();
+  await page.getByLabel("Choose a status emoji").click();
 
   const picker = page.locator("em-emoji-picker");
   await picker.locator("input[type='search']").fill(SHORTCODE);
