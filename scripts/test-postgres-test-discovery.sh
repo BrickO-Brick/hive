@@ -63,6 +63,7 @@ RS
 
 python3 "$checker" "$fixture_root"
 python3 "$checker" "$fixture_root/src/out_of_line.rs"
+python3 "$checker" "$fixture_root/src/standard/postgres_tests.rs"
 
 packages="$("$repo_root/scripts/postgres-test-packages.sh" "$fixture_root")"
 if [[ "$packages" != "postgres-discovery-fixture" ]]; then

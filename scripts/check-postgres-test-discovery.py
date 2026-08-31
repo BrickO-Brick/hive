@@ -207,6 +207,9 @@ def out_of_line_module_index(files: list[Path]) -> dict[Path, list[str]]:
     """Index explicit and conventional module names by resolved source file."""
     names: dict[Path, list[str]] = {}
     context_files = set(files)
+    for path in files:
+        if (root := crate_root(path)) is not None:
+            context_files.update(root.rglob("*.rs"))
     for directory in {path.parent for path in files}:
         context_files.update(directory.glob("*.rs"))
     for parent_source in sorted(context_files):
