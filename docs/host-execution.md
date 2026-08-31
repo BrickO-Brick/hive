@@ -122,9 +122,26 @@ RootExited and Unknown return an error and keep replacement fenced. A repeated
 ordinary Stop reuses its original immutable local request; a live successor
 cannot be reported as stopped by replaying that earlier success.
 
-An explicit ordinary Start after confirmed exact Stop, and the existing pair
-Restart action, enter the same ledger for a fresh generation. Automatic reconcile
-remains fenced. Spawn is not Ready: an immediate Stop during ACP pool initialization
+Summary/profile Start captures the selected community, and Restart retains that
+same community across its Stop await. The native Start command binds its owner
+and community before preflight, then revalidates after suspension; a stale
+continuation cannot start in the newly selected workspace.
+
+An explicit ordinary Start after confirmed exact Stop or definite rejected Start,
+and the existing pair Restart action, enter the same ledger for a fresh generation.
+Local recovery uses ordinary local pair/config/readiness semantics (including
+legacy stored relay pins, setup-listener mode and custom runtimes), not remote
+provisioning grants. Remote Start still requires its pinned relay, verified owner
+attestation and advertised compatible runtime. Both paths recheck the exact
+configuration revision at spawn. The captured local predecessor is rechecked
+under the transition and OS journal locks; a concurrent/newer intent invalidates
+it. Rejected means no child was created by that attempt: spawn failures before
+child creation qualify, but post-spawn persistence failure, timeout and root exit
+do not. Accepted/Unknown/RootExited/Spawned remain fenced, including after reopen;
+old commands replay their immutable results. Automatic reconcile remains fenced.
+No agent-configuration model rules changed.
+
+Spawn is not Ready: an immediate Stop during ACP pool initialization
 can return RootExited, even when partial children were drained. It cannot certify
 replacement; the actual tracer preserves this negative case rather than forcing
 Stopped. Provider `!shutdown` behavior is unchanged. Config-edit, delete

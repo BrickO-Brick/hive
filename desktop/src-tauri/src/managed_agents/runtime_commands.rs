@@ -238,7 +238,12 @@ pub fn start_managed_agent_runtime(
     relay_url: String,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
-    if super::execution::start_after_exact_stop(&app, &pubkey, &relay_url)? {
+    let owner = app
+        .state::<AppState>()
+        .signing_keys()?
+        .public_key()
+        .to_hex();
+    if super::execution::start_after_exact_stop(&app, &pubkey, &relay_url, &owner)? {
         let state = app.state::<AppState>();
         let records = load_managed_agents(&app)?;
         let record = records

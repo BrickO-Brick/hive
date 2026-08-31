@@ -43,13 +43,30 @@ pub(crate) fn local_execution_config(
     app: &AppHandle,
     record: &ManagedAgentRecord,
 ) -> Result<LocalExecutionConfig, String> {
+    execution_config(app, record, true)
+}
+
+fn execution_config(
+    app: &AppHandle,
+    record: &ManagedAgentRecord,
+    remote: bool,
+) -> Result<LocalExecutionConfig, String> {
     local_execution_prerequisites(record)?;
     let personas = load_personas(app)?;
     let teams = load_teams(app)?;
     let global = load_global_agent_config(app)?;
     let descriptor = resolve_effective_harness_descriptor(record, &personas, &global)?;
-    let runtime = known_acp_runtime(&descriptor.command)
-        .ok_or("destination runtime is not in the Rust catalog")?;
+    let runtime = known_acp_runtime(&descriptor.command);
+    let revision = config_revision(record, &personas, &global, &teams, &descriptor)?;
+    if !remote {
+        // Ordinary local launch keeps its existing readiness/custom-runtime and
+        // agents-everywhere semantics. Spawn still rechecks this exact revision.
+        return Ok(LocalExecutionConfig {
+            runtime: runtime.map_or("custom", |runtime| runtime.id).into(),
+            revision,
+        });
+    }
+    let runtime = runtime.ok_or("destination runtime is not in the Rust catalog")?;
     let effective = effective_config::resolve_effective_config(record, &personas, &global)
         .require_resolved()?;
     // Destination-local mesh preflight needs its own readiness gate. Do not
@@ -70,7 +87,7 @@ pub(crate) fn local_execution_config(
     }
     Ok(LocalExecutionConfig {
         runtime: runtime.id.into(),
-        revision: config_revision(record, &personas, &global, &teams, &descriptor)?,
+        revision,
     })
 }
 
@@ -143,6 +160,72 @@ pub(crate) fn execute_host_operation(
     request: &Command,
     compatible_runtime: bool,
 ) -> Result<Entry, String> {
+    execute_operation(
+        app,
+        owner,
+        command_id,
+        request,
+        compatible_runtime,
+        Admission::Remote,
+    )
+}
+
+enum Admission<'a> {
+    Remote,
+    // Exact predecessor captured by the explicit local action; rechecked while
+    // holding both the transition lock and OS journal lock, never auto-reconcile.
+    Local { predecessor: &'a str },
+}
+
+fn local_start_predecessor(entry: &Entry) -> Result<(), String> {
+    match (&entry.request.action, &entry.outcome) {
+        (Action::Stop { .. }, Outcome::Stopped) | (Action::Start { .. }, Outcome::Rejected) => {
+            Ok(())
+        }
+        _ => Err(
+            "Previous execution is not proven stopped or rejected; replacement remains blocked"
+                .into(),
+        ),
+    }
+}
+
+impl Admission<'_> {
+    fn validate_predecessor(&self, ledger: &Ledger, request: &Command) -> Result<(), String> {
+        if let Admission::Local { predecessor } = self {
+            let current = ledger
+                .current()
+                .ok_or("local Start predecessor disappeared")?;
+            if current.command_id != *predecessor || !matches!(request.action, Action::Start { .. })
+            {
+                return Err("local Start predecessor changed; refresh runtime status".into());
+            }
+            local_start_predecessor(current)?;
+        }
+        Ok(())
+    }
+
+    fn admits_record(&self, record: &ManagedAgentRecord, owner: &str, relay: &str) -> bool {
+        match self {
+            Self::Local { .. } => local_execution_prerequisites(record).is_ok(),
+            Self::Remote => {
+                buzz_core_pkg::relay::normalize_relay_url(&record.relay_url)
+                    .ok()
+                    .as_deref()
+                    == Some(relay)
+                    && execution_agent_owner(record, owner).is_ok()
+            }
+        }
+    }
+}
+
+fn execute_operation(
+    app: &AppHandle,
+    owner: &str,
+    command_id: &str,
+    request: &Command,
+    compatible_runtime: bool,
+    admission: Admission<'_>,
+) -> Result<Entry, String> {
     let state = app.state::<crate::app_state::AppState>();
     let _transition = state
         .managed_agent_runtime_transition
@@ -178,16 +261,12 @@ pub(crate) fn execute_host_operation(
     if request.expires_at <= nostr::Timestamp::now().as_secs() {
         return Err("execution command expired without a recorded outcome".into());
     }
+    admission.validate_predecessor(&ledger, request)?;
     let mut records = load_managed_agents(app)?;
     if matches!(request.action, Action::Start { .. })
-        && !records.iter().any(|r| {
-            r.pubkey == request.agent
-                && buzz_core_pkg::relay::normalize_relay_url(&r.relay_url)
-                    .ok()
-                    .as_deref()
-                    == Some(request.relay.as_str())
-                && execution_agent_owner(r, owner).is_ok()
-        })
+        && !records
+            .iter()
+            .any(|r| r.pubkey == request.agent && admission.admits_record(r, owner, &request.relay))
     {
         ledger.begin(command_id, request)?;
         return ledger.finish(&request.operation, Outcome::Rejected);
@@ -217,7 +296,7 @@ pub(crate) fn execute_host_operation(
             let receipt_path = managed_agents_base_dir(app)?
                 .join("agent-pids")
                 .join(format!("{}.json", key.runtime_id()));
-            let preflight = local_execution_config(app, record);
+            let preflight = execution_config(app, record, matches!(admission, Admission::Remote));
             let compatible = preflight
                 .is_ok_and(|config| config.runtime == *runtime && config.revision == *revision);
             if !compatible_runtime
@@ -238,6 +317,10 @@ pub(crate) fn execute_host_operation(
                 Some((&request.operation, revision)),
             ) {
                 Ok(process) => process,
+                // spawn_agent_child_for_run returns Err only before a child is
+                // created (including OS spawn failure); after spawn it always
+                // returns the retained Child. Never classify post-spawn receipt,
+                // startup timeout or root-exit failures as definite rejection.
                 Err(_) => return ledger.finish(&request.operation, Outcome::Rejected),
             };
             let now = crate::util::now_iso();
@@ -357,32 +440,27 @@ pub(super) fn stop_local_selected_run(
     Ok(())
 }
 
-/// Explicit ordinary Start after an exact Stop still uses the execution ledger.
-/// Automatic reconciliation never calls this and remains fenced.
+/// Explicit ordinary Start after an exact Stop or a definite rejected Start
+/// uses the same journal, with ordinary local admission rather than remote
+/// provisioning grants. Automatic reconciliation never calls this.
 pub(crate) fn start_after_exact_stop(
     app: &AppHandle,
     pubkey: &str,
     relay: &str,
+    owner: &str,
 ) -> Result<bool, String> {
-    let state = app.state::<crate::app_state::AppState>();
-    let owner = state.signing_keys()?.public_key().to_hex();
     let key = ManagedAgentRuntimeKey::new(pubkey, relay)?;
-    let prior = ledger(app, &key, &owner)?.current().cloned();
+    let prior = ledger(app, &key, owner)?.current().cloned();
     let Some(prior) = prior else {
         return Ok(false);
     };
-    if !matches!(prior.request.action, Action::Stop { .. }) {
-        return Ok(false);
-    }
-    if prior.outcome != Outcome::Stopped {
-        return Err("Selected Stop unconfirmed; replacement remains blocked".into());
-    }
+    local_start_predecessor(&prior)?;
     let records = load_managed_agents(app)?;
     let record = records
         .iter()
         .find(|r| r.pubkey == pubkey)
         .ok_or("agent not found")?;
-    let config = local_execution_config(app, record)?;
+    let config = execution_config(app, record, false)?;
     let request = Command {
         v: 1,
         operation: uuid::Uuid::new_v4().simple().to_string(),
@@ -395,12 +473,15 @@ pub(crate) fn start_after_exact_stop(
         },
     };
     let bytes = serde_json::to_vec(&request).map_err(|_| "invalid local Start")?;
-    let result = execute_host_operation(
+    let result = execute_operation(
         app,
-        &owner,
+        owner,
         &hex::encode(Sha256::digest(bytes)),
         &request,
         true,
+        Admission::Local {
+            predecessor: &prior.command_id,
+        },
     )?;
     if result.outcome != Outcome::Spawned {
         return Err("Explicit Start not confirmed; inspect destination setup".into());
@@ -463,6 +544,14 @@ mod tests {
         // Availability only: this preflight must not inspect or export key bytes.
         record.private_key_nsec = "synthetic-nonempty-placeholder".into();
         assert!(local_execution_prerequisites(&record).is_ok());
+        // A legacy pin and absent attestation do not revoke ordinary local
+        // community-pair authority. They still deny remote destination Start.
+        let local = Admission::Local {
+            predecessor: "unused",
+        };
+        assert!(local.admits_record(&record, &"aa".repeat(32), "wss://other.example"));
+        assert!(!Admission::Remote.admits_record(&record, &"aa".repeat(32), "wss://other.example"));
+        assert!(!Admission::Remote.admits_record(&record, &"aa".repeat(32), "wss://relay.example"));
     }
 
     #[test]
@@ -476,3 +565,7 @@ mod tests {
         assert!(!exact_generation_matches("legacy", "legacy"));
     }
 }
+
+#[cfg(test)]
+#[path = "execution_local_recovery_tests.rs"]
+mod local_recovery_tests;
