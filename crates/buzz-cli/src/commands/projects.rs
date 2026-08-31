@@ -367,13 +367,10 @@ async fn current_project_revision(
         })
         .collect();
     let mut current = project.id.to_hex();
-    loop {
-        let Some((event_id, revision)) = parsed
-            .iter()
-            .find(|(_, revision)| revision.expected_revision == current)
-        else {
-            break;
-        };
+    while let Some((event_id, revision)) = parsed
+        .iter()
+        .find(|(_, revision)| revision.expected_revision == current)
+    {
         apply_project_revision(
             &mut related_channels,
             home_channel,

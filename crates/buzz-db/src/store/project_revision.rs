@@ -3,7 +3,7 @@
 use buzz_core::kind::KIND_PROJECT;
 use buzz_core::project_revision::{apply_project_revision, can_manage_project, ProjectRevision};
 use buzz_core::CommunityId;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use nostr::Event;
 use sqlx::Row;
 use uuid::Uuid;
@@ -229,7 +229,7 @@ impl Db {
         .bind(&base_id)
         .bind(event.id.as_bytes().as_slice())
         .bind(&channels)
-        .bind(DateTime::<Utc>::from(Utc::now()))
+        .bind(Utc::now())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
