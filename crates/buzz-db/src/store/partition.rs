@@ -128,6 +128,9 @@ async fn ensure_partition(
     sqlx::query("SET LOCAL lock_timeout = '2s'")
         .execute(&mut *tx)
         .await?;
+    sqlx::query("SET LOCAL TIME ZONE 'UTC'")
+        .execute(&mut *tx)
+        .await?;
     let result = sqlx::query(sqlx::AssertSqlSafe(sql))
         .execute(&mut *tx)
         .await;
@@ -139,14 +142,16 @@ async fn ensure_partition(
             Ok(())
         }
         Err(error) => {
-            let range_is_covered = matches!(
+            let is_overlap = matches!(
                 &error,
                 sqlx::Error::Database(db_error)
                     if db_error.code().as_deref() == Some("42P17")
                         && db_error.message().contains("would overlap partition")
             );
             tx.rollback().await?;
-            if range_is_covered {
+            if is_overlap
+                && partition_range_covered(pool, table_name, start_date_str, end_date_str).await?
+            {
                 // A concurrent creator can cover the range between the catalog
                 // pre-check and this DDL.
                 info!(
@@ -169,11 +174,19 @@ async fn partition_range_covered(
 ) -> Result<bool> {
     let (all_bounds_recognized, covered): (bool, bool) = sqlx::query_as(
         r#"
-        WITH partition_bounds AS (
-            SELECT pg_get_expr(c.relpartbound, c.oid, false) AS bound
+        WITH partition_nodes AS (
+            SELECT
+                tree.level,
+                tree.isleaf,
+                pg_get_expr(c.relpartbound, c.oid, false) AS bound
             FROM pg_catalog.pg_partition_tree(to_regclass($1)) AS tree
             JOIN pg_catalog.pg_class c ON c.oid = tree.relid
-            WHERE tree.isleaf
+            WHERE tree.level > 0
+        ),
+        partition_bounds AS (
+            SELECT bound
+            FROM partition_nodes
+            WHERE level = 1 AND isleaf
         ),
         extracted_bounds AS (
             SELECT
@@ -202,7 +215,11 @@ async fn partition_range_covered(
             FROM extracted_bounds
         )
         SELECT
-            COALESCE(bool_and(bound = 'DEFAULT' OR parts IS NOT NULL), true),
+            COALESCE(
+                (SELECT bool_and(level = 1 AND isleaf) FROM partition_nodes),
+                true
+            )
+            AND COALESCE(bool_and(bound = 'DEFAULT' OR parts IS NOT NULL), true),
             EXISTS (
                 SELECT 1
                 FROM parsed_bounds
@@ -223,7 +240,7 @@ async fn partition_range_covered(
 
     if !all_bounds_recognized {
         return Err(DbError::InvalidData(format!(
-            "unsupported partition bound for table {table_name:?}"
+            "unsupported partition topology or bound for table {table_name:?}"
         )));
     }
 
@@ -396,9 +413,11 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn missing_partition_is_created_with_production_bounds() {
+    async fn missing_partition_is_created_with_production_bounds_in_non_utc_session() {
         let admin = admin_pool().await;
-        let (pool, name) = create_scratch_db(&admin, "partition_missing").await;
+        let (pool, name) =
+            create_scratch_db_with_timezone(&admin, "partition_missing", "America/Los_Angeles")
+                .await;
         sqlx::query("DROP TABLE events_p_future, delivery_log_p_future")
             .execute(&pool)
             .await
@@ -410,6 +429,13 @@ mod tests {
 
         let now = Utc::now();
         let suffix = format!("{:04}_{:02}", now.year(), now.month());
+        let start_str = format!("{:04}-{:02}-01", now.year(), now.month());
+        let (end_year, end_month) = if now.month() == 12 {
+            (now.year() + 1, 1)
+        } else {
+            (now.year(), now.month() + 1)
+        };
+        let end_str = format!("{end_year:04}-{end_month:02}-01");
         for table in PARTITIONED_TABLES {
             let partition_name = format!("{table}_p{suffix}");
             let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
@@ -418,7 +444,56 @@ mod tests {
                 .await
                 .expect("check created partition");
             assert!(exists, "missing partition {partition_name}");
+            let covered = partition_range_covered(&pool, table, &start_str, &end_str)
+                .await
+                .expect("inspect created partition bounds");
+            assert!(covered, "partition {partition_name} must use UTC bounds");
         }
+
+        drop_scratch_db(&admin, pool, &name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn partial_overlap_does_not_count_as_coverage() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_partial_overlap").await;
+        sqlx::query("DROP TABLE events_p_future")
+            .execute(&pool)
+            .await
+            .expect("remove events catch-all partition");
+
+        let now = Utc::now();
+        let start = Utc
+            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+            .single()
+            .expect("current month starts at a valid date");
+        let middle = Utc
+            .with_ymd_and_hms(now.year(), now.month(), 15, 0, 0, 0)
+            .single()
+            .expect("current month has a fifteenth day");
+        let sql = format!(
+            "CREATE TABLE events_partial PARTITION OF events \
+             FOR VALUES FROM ('{}') TO ('{}')",
+            start.to_rfc3339(),
+            middle.to_rfc3339()
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&pool)
+            .await
+            .expect("create partially overlapping partition");
+
+        let error = ensure_future_partitions(&pool, 0)
+            .await
+            .expect_err("partial overlap must not be accepted as full coverage");
+        assert!(
+            matches!(
+                error,
+                DbError::Sqlx(sqlx::Error::Database(ref db_error))
+                    if db_error.code().as_deref() == Some("42P17")
+            ),
+            "unexpected error: {error}"
+        );
 
         drop_scratch_db(&admin, pool, &name).await;
     }
@@ -488,7 +563,44 @@ mod tests {
             matches!(
                 error,
                 DbError::InvalidData(ref message)
-                    if message.contains("unsupported partition bound")
+                    if message.contains("unsupported partition")
+            ),
+            "unexpected error: {error}"
+        );
+
+        drop_scratch_db(&admin, pool, &name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn nested_partition_bounds_fail_closed() {
+        let admin = admin_pool().await;
+        let (pool, name) = create_scratch_db(&admin, "partition_nested").await;
+        sqlx::query("DROP TABLE events CASCADE")
+            .execute(&pool)
+            .await
+            .expect("replace events test table");
+        for statement in [
+            "CREATE TABLE events (created_at TIMESTAMPTZ NOT NULL, sequence INT NOT NULL) \
+             PARTITION BY RANGE (created_at)",
+            "CREATE TABLE events_all PARTITION OF events \
+             FOR VALUES FROM (MINVALUE) TO (MAXVALUE) PARTITION BY RANGE (sequence)",
+            "CREATE TABLE events_nested_default PARTITION OF events_all DEFAULT",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create nested partition topology");
+        }
+
+        let error = ensure_future_partitions(&pool, 0)
+            .await
+            .expect_err("nested bounds must fail closed before DDL");
+        assert!(
+            matches!(
+                error,
+                DbError::InvalidData(ref message)
+                    if message.contains("unsupported partition")
             ),
             "unexpected error: {error}"
         );

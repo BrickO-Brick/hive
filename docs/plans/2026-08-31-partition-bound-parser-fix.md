@@ -38,3 +38,13 @@
 1. Add the new ignored PostgreSQL tests to the Backend Integration selector.
 2. Run formatting, focused tests, `buzz-db` tests, clippy, and workflow lint.
 3. Transfer the verified patch locally, commit, push the existing branch, and monitor PR #7005.
+
+### Task 4: Address independent review findings
+
+**Files:**
+- Modify: `crates/buzz-db/src/store/partition.rs`
+- Modify: `.github/workflows/ci.yml`
+
+1. Reproduce session-local DDL bounds, partial-overlap acceptance, and nested-default false coverage.
+2. Set transaction-local UTC for DDL, re-check coverage after `42P17`, and reject nested topologies.
+3. Add all three regressions to Backend Integration CI and repeat the full verification matrix.
