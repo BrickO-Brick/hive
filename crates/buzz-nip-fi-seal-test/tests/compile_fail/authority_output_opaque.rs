@@ -1,18 +1,34 @@
-//! Fixture: the output types of the admission path are opaque to external crates.
+//! Fixture: `CommittedAuthorization` fields are opaque to external crates.
 //!
-//! `CommittedAuthorization` and `AuthorizedUse` are `pub(crate)` structs with
-//! no public fields and no public constructors.  Even if `commit_admission_in_tx`
-//! were somehow reachable, the caller could not construct or inspect these types.
+//! `CommittedAuthorization` is `pub(crate)` with all fields `pub(super)`.
+//! This fixture proves a distinct structural concern from the outer module wall:
+//! even if the admission function were somehow reachable, the output type itself
+//! cannot be constructed or field-accessed by any caller outside `nip_fi`.
 //!
-//! This fixture tests the admission function boundary: even naming
-//! `commit_admission_in_tx` requires entering the private `nip_fi` module.
-//! If `nip_fi::admission` were re-exported as pub and `commit_admission_in_tx`
-//! were made pub, this fixture would compile (turn green), revealing that the
-//! authority output types need their own sealing.
+//! This tests the INNER authority output boundary — not the outer module wall.
+//! The two violations are layered:
 //!
-//! Expected error: module `nip_fi` is private
+//! 1. `buzz_relay::nip_fi` is a private module (`mod nip_fi`).  E0603 fires
+//!    on the module name (outer wall).
+//!
+//! 2. Even if `nip_fi` were `pub mod`, `CommittedAuthorization` is `pub(crate)`
+//!    — invisible outside the `buzz_relay` crate.  E0603 would fire on the
+//!    struct name.
+//!
+//! 3. Even if both were public, all fields are `pub(super)` — inaccessible
+//!    outside `buzz_relay::nip_fi`.  A struct-literal construction attempt would
+//!    produce E0451 "field `…` is private".  No public constructor exists.
+//!
+//! This layered boundary means that authority output tokens cannot be forged
+//! by any external caller regardless of how access restrictions are relaxed at
+//! one layer.  If all three walls dissolved, this fixture would compile (turn
+//! green), proving the combined boundary is broken.
+//!
+//! Expected error: module `nip_fi` is private (outer wall fires first)
 fn main() {
-    // Attempting to name the admission function must fail — both the outer
-    // module and the function itself are crate-private.
+    // Attempting to name the admission output type must fail.
+    // E0603 fires on `nip_fi`; if that dissolved, E0603 fires on
+    // `CommittedAuthorization` (pub(crate)); if that dissolved, E0451 fires
+    // on each private field.
     let _ = buzz_relay::nip_fi::admission::commit_admission_in_tx;
 }

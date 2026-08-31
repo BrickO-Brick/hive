@@ -1,7 +1,7 @@
 error[E0603]: module `nip_fi` is private
-  --> tests/compile_fail/authority_output_opaque.rs:17:25
+  --> tests/compile_fail/authority_output_opaque.rs:33:25
    |
-17 |     let _ = buzz_relay::nip_fi::admission::commit_admission_in_tx;
+33 |     let _ = buzz_relay::nip_fi::admission::commit_admission_in_tx;
    |                         ^^^^^^             ---------------------- function `commit_admission_in_tx` is not publicly re-exported
    |                         |
    |                         private module

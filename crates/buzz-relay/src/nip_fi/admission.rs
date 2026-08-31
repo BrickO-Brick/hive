@@ -1727,6 +1727,15 @@ async fn authorize_protected_use_body(
     if bs != 1 {
         return Err(AdmissionError::BindingRetired);
     }
+    let bc_lifecycle_revision: i64 = bc
+        .try_get("lifecycle_revision")
+        .map_err(|e| AdmissionError::Transient(e.to_string()))?;
+    // lifecycle_revision must match the one recorded at admission — an
+    // advanced lifecycle (e.g. binding transitioned to a new state after
+    // admission) must be rejected at final use.
+    if bc_lifecycle_revision != committed.binding_lifecycle_revision {
+        return Err(AdmissionError::BindingRetired);
+    }
     let bind_exp: Option<DateTime<Utc>> = bc
         .try_get("expires_at")
         .map_err(|e| AdmissionError::Transient(e.to_string()))?;
@@ -2070,6 +2079,7 @@ mod tests {
 // Named mutation reds prove that rows_affected() guards catch predicate drift:
 //   pg_epoch_update_zero_rows  — epoch UPDATE matches no rows → Transient
 //   pg_poa_update_zero_rows    — POA UPDATE matches no rows → Transient
+//   pg_lifecycle_revision_advance — lifecycle_revision advances → BindingRetired
 #[cfg(test)]
 mod pg_integration {
     use super::*;
@@ -2645,6 +2655,114 @@ mod pg_integration {
                 Err(AdmissionError::NoActiveBinding) | Err(AdmissionError::Transient(_))
             ),
             "POA row absent must return NoActiveBinding or Transient; got: {result:?}"
+        );
+
+        teardown_fixture(&pool, fx.community_id).await;
+    }
+
+    /// Named mutation red — lifecycle_revision advance: if the binding's
+    /// lifecycle_revision advances between admission and final use (e.g. a
+    /// lifecycle transition ran concurrently), `authorize_protected_use_body`
+    /// must return `BindingRetired`, not silently accept the stale coordinates.
+    ///
+    /// Setup: run admission to record `binding_lifecycle_revision = 1`, then
+    /// manually increment `lifecycle_revision` in `identity_bindings` to
+    /// simulate a concurrent transition.  The guard fires and rejects.
+    #[tokio::test]
+    #[ignore = "requires live PostgreSQL DB with migrations applied"]
+    async fn pg_lifecycle_revision_advance_is_binding_retired() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let fx = setup_fixture(&pool).await;
+
+        let keys = nostr::Keys::generate();
+        let actor = keys.public_key();
+        let proof_expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
+
+        let ctx = make_test_ctx(actor, fx.community_id, fx.object_key, proof_expires_at);
+        let proposal = make_proposal();
+
+        use buzz_auth::nip_fi::assertion::test_support::minimal_verified_assertion;
+        let fresh = minimal_verified_assertion(
+            "https://issuer.example.com",
+            "test-subject",
+            proof_expires_at,
+        );
+
+        // Step 1: run admission in a committed transaction — this records
+        // binding_lifecycle_revision from the INSERT RETURNING path (= 1 at enrollment).
+        let committed = {
+            let mut tx = pool.begin().await.expect("begin");
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                .execute(&mut *tx)
+                .await
+                .expect("serializable");
+            let db_now: chrono::DateTime<chrono::Utc> =
+                sqlx::query_scalar("SELECT transaction_timestamp()")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("db_now");
+            let c = commit_admission_in_tx(&mut tx, db_now, &ctx, &proposal, &fresh)
+                .await
+                .expect("admission must succeed");
+            tx.commit().await.expect("commit admission");
+            c
+        };
+
+        // Step 2: advance lifecycle_revision in the binding row to simulate a
+        // concurrent lifecycle transition (e.g. binding renewed or transitioned).
+        let rows = sqlx::query(
+            r#"
+            UPDATE identity_bindings
+            SET lifecycle_revision = lifecycle_revision + 1
+            WHERE community_id    = $1
+              AND binding_id      = $2
+              AND binding_version = $3
+            "#,
+        )
+        .bind(fx.community_id)
+        .bind(committed.binding_id)
+        .bind(committed.binding_version)
+        .execute(&pool)
+        .await
+        .expect("update lifecycle_revision");
+        assert_eq!(
+            rows.rows_affected(),
+            1,
+            "must update exactly one binding row"
+        );
+
+        // Step 3: authorize_protected_use_in_tx — the lifecycle_revision
+        // mismatch must be caught and return BindingRetired.
+        let mut tx2 = pool.begin().await.expect("begin tx2");
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+            .execute(&mut *tx2)
+            .await
+            .expect("serializable");
+        let db_now2: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT transaction_timestamp()")
+                .fetch_one(&mut *tx2)
+                .await
+                .expect("db_now2");
+
+        let result = authorize_protected_use_in_tx(
+            &mut tx2,
+            db_now2,
+            &committed,
+            ctx.conn_id,
+            &ctx.challenge,
+            &ctx.relay_url,
+            &ctx.proof_event_id,
+            ProofTransport::Nip42WebSocket,
+            &actor,
+        )
+        .await;
+        let _ = tx2.rollback().await;
+
+        assert!(
+            matches!(result, Err(AdmissionError::BindingRetired)),
+            "lifecycle_revision advance must return BindingRetired; got: {result:?}"
         );
 
         teardown_fixture(&pool, fx.community_id).await;

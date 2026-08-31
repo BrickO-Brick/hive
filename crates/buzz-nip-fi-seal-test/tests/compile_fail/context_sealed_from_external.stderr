@@ -1,10 +1,10 @@
 error[E0603]: module `nip_fi` is private
-  --> tests/compile_fail/context_sealed_from_external.rs:12:24
+  --> tests/compile_fail/context_sealed_from_external.rs:29:21
    |
-12 |     let _: buzz_relay::nip_fi::context::SealedRequestContext;
-   |                        ^^^^^^           -------------------- struct `SealedRequestContext` is not publicly re-exported
-   |                        |
-   |                        private module
+29 |     use buzz_relay::nip_fi::context::SealedRequestContext;
+   |                     ^^^^^^  ------- module `context` is not publicly re-exported
+   |                     |
+   |                     private module
    |
 note: the module `nip_fi` is defined here
   --> $WORKSPACE/crates/buzz-relay/src/lib.rs
