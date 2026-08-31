@@ -66,6 +66,7 @@ fn status_for_with(
             .map(|runtime| runtime.lifecycle.clone())
             .unwrap_or(ManagedAgentRuntimeLifecycle::Stopped),
         pid: runtime.map(|runtime| runtime.child.id()),
+        run_id: runtime.map(|runtime| runtime.start_nonce.clone()),
         error: runtime.and_then(|runtime| runtime.error.clone()),
         log_path: managed_agent_runtime_log_path(app, key)
             .ok()
@@ -295,6 +296,7 @@ fn start_pair(
         pid: process.child.id(),
         desktop_instance_id: current_instance_id(&app),
         started_at: now.clone(),
+        run_id: Some(process.start_nonce.clone()),
     };
     if let Err(error) = write_agent_runtime_receipt(&app, &receipt) {
         let _ = terminate_process(process.child.id());
@@ -446,6 +448,7 @@ fn unkeyable_failed_status(
         local_setup: matches!(agent_readiness(&effective), AgentReadiness::Ready),
         lifecycle: ManagedAgentRuntimeLifecycle::Failed,
         pid: None,
+        run_id: None,
         error: Some(error),
         log_path: None,
     }

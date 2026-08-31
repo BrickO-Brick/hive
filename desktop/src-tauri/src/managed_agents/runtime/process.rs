@@ -467,3 +467,84 @@ pub(crate) fn terminate_untracked_pair_runtime(
         super::super::remove_agent_runtime_receipt_path,
     )
 }
+
+/// Teardown observation for generation-fenced operations. Unlike the legacy
+/// helper, root exit alone is insufficient: kill remaining owned group members,
+/// reap the root and wait for the group to disappear. Detached groups are outside
+/// this containment boundary; this is NOT arbitrary process-tree migration proof.
+#[cfg(unix)]
+pub(crate) fn terminate_exact_owned_group(child: &mut std::process::Child) -> Result<(), String> {
+    if child
+        .try_wait()
+        .map_err(|_| "cannot inspect selected run")?
+        .is_some()
+    {
+        // Already reaped roots may have recycled PIDs. Never signal by a stale
+        // PID after restart/retry; lack of containment evidence remains unknown.
+        return Err("selected root already exited; group teardown is unconfirmed".into());
+    }
+    let pid = child.id();
+    terminate_process(pid)?;
+    signal_process_group_or_leader(pid, libc::SIGKILL, "kill remaining group")?;
+    child.wait().map_err(|_| "failed to reap selected run")?;
+    for _ in 0..20 {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-axo", "pgid="])
+            .output()
+            .map_err(|_| "cannot observe process groups")?;
+        if !output.status.success() {
+            return Err("cannot observe process groups".into());
+        }
+        let text =
+            std::str::from_utf8(&output.stdout).map_err(|_| "invalid process group observation")?;
+        let groups = text
+            .split_whitespace()
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "invalid process group observation")?;
+        if !groups.contains(&pid) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err("selected run group teardown is unconfirmed".into())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn terminate_exact_owned_group(_child: &mut std::process::Child) -> Result<(), String> {
+    Err("exact run teardown observation is not supported on this platform".into())
+}
+
+#[cfg(all(test, unix))]
+mod exact_run_tests {
+    use super::*;
+    use std::os::unix::process::CommandExt;
+
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn child() -> ChildGuard {
+        ChildGuard(
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        )
+    }
+    #[test]
+    fn exact_group_teardown_reaps_root_and_leaves_peer_alive() {
+        let mut selected = child();
+        let mut peer = child();
+        terminate_exact_owned_group(&mut selected.0).unwrap();
+        assert!(selected.0.try_wait().unwrap().is_some());
+        assert!(peer.0.try_wait().unwrap().is_none());
+        // Retry after the root was reaped cannot signal a potentially reused PID.
+        assert!(terminate_exact_owned_group(&mut selected.0).is_err());
+        assert!(peer.0.try_wait().unwrap().is_none());
+    }
+}

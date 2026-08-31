@@ -699,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 40);
+        assert_eq!(migrations.len(), 41);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -908,7 +908,11 @@ mod tests {
         assert!(migrations[32].sql.as_str().contains("search_tsv"));
         assert!(!migrations[0].sql.as_str().contains("30179"));
         assert!(include_str!("../../../../schema/schema.sql")
-            .contains("kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200)"));
+            .contains("kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200, 50000)"));
+        // Host privacy is additive too; never rewrite historical checksums.
+        assert_eq!(migrations[40].version, 41);
+        assert!(migrations[40].sql.as_str().contains("kind = 50000"));
+        assert!(!migrations[0].sql.as_str().contains("50000"));
 
         // Public push-gateway authority is intentionally deployment-global and
         // durable: immediate revocation and hostile-relay admission cannot be

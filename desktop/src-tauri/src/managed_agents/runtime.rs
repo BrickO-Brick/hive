@@ -42,7 +42,8 @@ use process::{
 };
 pub(crate) use process::{
     current_instance_id, process_belongs_to_us, process_has_buzz_marker, process_is_running,
-    terminate_process, terminate_untracked_pair_runtime, valid_agent_runtime_receipt,
+    terminate_exact_owned_group, terminate_process, terminate_untracked_pair_runtime,
+    valid_agent_runtime_receipt,
 };
 
 mod orphan_sweep;
@@ -68,6 +69,9 @@ mod lifecycle;
 #[cfg(test)]
 use lifecycle::kill_stale_tracked_processes_with;
 pub use lifecycle::{kill_stale_tracked_processes, sync_managed_agent_processes};
+mod spawn_entry;
+use spawn_entry::child_rust_log_filter;
+pub use spawn_entry::spawn_agent_child;
 mod spawn_key; // production spawn-key derivation + its regressions
 pub(crate) use spawn_key::bound_runtime_key;
 
@@ -397,18 +401,13 @@ pub(crate) fn configure_runtime_cli(
     }
 }
 
-/// Spawn an agent process without holding any locks on records or runtimes.
-/// Returns the child process and log path on success. The caller is responsible
-/// for updating `ManagedAgentRecord` fields and inserting into the runtimes map.
-///
-/// `owner_hex`: the workspace owner's pubkey, used as a fallback for legacy
-/// records that have no NIP-OA `auth_tag`. See `build_respond_to_env`.
-pub fn spawn_agent_child(
+pub(super) fn spawn_agent_child_for_run(
     app: &AppHandle,
     record: &ManagedAgentRecord,
     relay_url: &str,
     lazy: bool,
     owner_hex: Option<&str>,
+    generation: Option<(&str, &str)>,
 ) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
     if let Some(error) = spawn_key_refusal(record) {
         return Err(error);
@@ -457,6 +456,13 @@ pub fn spawn_agent_child(
                     crate::managed_agents::user_facing_harness_error(&e)
                 )
             })?;
+    if let Some((_, expected_revision)) = generation {
+        if super::execution::config_revision(record, &personas, &global, &teams, &descriptor)?
+            != expected_revision
+        {
+            return Err("destination configuration changed before spawn".into());
+        }
+    }
     let effective_command = &descriptor.command;
     let agent_args = &descriptor.args;
 
@@ -810,12 +816,9 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    // B5: carry persisted effort; harness resolves thought_level configId at first session.
-    // Written AFTER descriptor.env so the canonical persisted value wins over any
-    // user-supplied BUZZ_ACP_EFFORT_LEVEL entry, mirroring the A1 model-authority pattern
-    // (ANTHROPIC_MODEL is applied post-loop for the same reason). When effort_level is
-    // None there is no canonical value to assert, so env passthrough stands — user env
-    // legitimately seeds startup effort in that case.
+    // B5: carry persisted effort after user env; the harness resolves thought_level
+    // at first session. Canonical persisted effort wins, like ANTHROPIC_MODEL below.
+    // With no persisted effort, preserve user env to seed startup configuration.
     apply_effort_env(&mut command, record.effort_level.as_deref());
 
     // A1: for local claude agents, ANTHROPIC_MODEL is the single startup model authority.
@@ -826,6 +829,7 @@ pub fn spawn_agent_child(
         apply_claude_model_env(&mut command, effective_model.as_deref());
     }
     configure_runtime_cli(&mut command, runtime_meta);
+    super::host_location::apply(&mut command, owner_hex)?;
 
     // Buzz shared compute is stored as a native provider; derive the OpenAI-compatible
     // transport at spawn time and scrub any unrelated ambient OpenAI key.
@@ -842,7 +846,7 @@ pub fn spawn_agent_child(
     }
 
     // Stamp desktop ownership and an unpredictable harness-generation identity.
-    let start_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let start_nonce = spawn_entry::launcher_generation(generation)?;
     command
         .env("BUZZ_MANAGED_AGENT", current_instance_id(app))
         .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce);
@@ -928,14 +932,6 @@ pub fn spawn_agent_child(
     })
 }
 
-fn child_rust_log_filter() -> String {
-    match std::env::var("RUST_LOG") {
-        Ok(existing) if existing.contains("buzz_acp") => existing,
-        Ok(existing) if !existing.trim().is_empty() => format!("{existing},buzz_acp=info"),
-        _ => "buzz_acp=info".to_string(),
-    }
-}
-
 /// Spawn (or adopt) the runtime pair for `record` on the caller's bound
 /// workspace relay. `workspace_relay` can only be produced by
 /// `bind_expected_relay_scope`, so this spawn consumes — by construction — the
@@ -974,6 +970,7 @@ pub fn start_managed_agent_process(
         pid: process.child.id(),
         desktop_instance_id: current_instance_id(app),
         started_at: now.clone(),
+        run_id: Some(process.start_nonce.clone()),
     };
     if let Err(error) = super::write_agent_runtime_receipt(app, &receipt) {
         let _ = terminate_process(process.child.id());

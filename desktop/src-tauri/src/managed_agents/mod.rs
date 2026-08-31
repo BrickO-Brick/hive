@@ -16,6 +16,8 @@ mod definition_validation;
 mod discovery;
 pub(crate) mod effective_config;
 mod env_vars;
+mod execution;
+mod execution_ledger;
 pub(crate) mod git_bash;
 pub(crate) mod global_config;
 mod managed_node_paths;
@@ -34,6 +36,7 @@ mod restore;
 pub mod retention;
 mod runtime;
 mod runtime_commands;
+pub(crate) use execution::{execute_host_operation, local_execution_config};
 mod runtime_types;
 pub(crate) mod snapshot_avatar;
 pub(crate) mod spawn_snapshot;
@@ -124,3 +127,5 @@ pub fn default_agent_workdir() -> Option<std::path::PathBuf> {
 fn is_real_dir(path: &std::path::Path) -> bool {
     path.symlink_metadata().map(|m| m.is_dir()).unwrap_or(false)
 }
+
+mod host_location;

@@ -84,29 +84,8 @@ fn current_working_directory() -> Result<String> {
     Ok(cwd.to_string_lossy().into_owned())
 }
 
-/// Publish a kind:20001 presence update event via the WebSocket connection.
-///
-/// Ephemeral kinds (20000-29999) are rejected by the HTTP bridge, so presence
-/// updates must be routed through the WS path.
-///
-/// Content is a bare status string (`"online"`, `"away"`, `"offline"`) matching
-/// the desktop client's format. The relay stores this in Redis and synthesizes
-/// it back on presence queries.
-async fn publish_presence(
-    publisher: &relay::RelayEventPublisher,
-    keys: &nostr::Keys,
-    status: &str,
-) -> Result<(), relay::RelayError> {
-    use buzz_core::kind::KIND_PRESENCE_UPDATE;
-    use nostr::{EventBuilder, Kind};
-
-    let event = EventBuilder::new(Kind::Custom(KIND_PRESENCE_UPDATE as u16), status)
-        .tags([])
-        .sign_with_keys(keys)
-        .map_err(|e| relay::RelayError::Http(format!("presence sign error: {e}")))?;
-    publisher.publish_event(event).await?;
-    Ok(())
-}
+mod run_presence;
+use run_presence::PresencePublisher;
 
 fn emit_runtime_lifecycle(
     observer: Option<&observer::ObserverHandle>,
@@ -2649,8 +2628,12 @@ async fn tokio_main() -> Result<()> {
     // Online means the harness can receive work, not merely that its socket is
     // connected. Publishing after channel subscriptions gives desktop callers
     // a durable readiness boundary before they send a startup mention.
+    let run_presence = PresencePublisher::from_env().map_err(anyhow::Error::msg)?;
     if config.presence_enabled {
-        match publish_presence(&presence_publisher, &presence_keys, "online").await {
+        match run_presence
+            .publish(&presence_publisher, &presence_keys, "online")
+            .await
+        {
             Ok(_) => tracing::info!("presence set to online"),
             Err(e) => tracing::warn!("failed to set initial presence: {e}"),
         }
@@ -3509,8 +3492,9 @@ async fn tokio_main() -> Result<()> {
                     }
                     let pp = presence_publisher.clone();
                     let pk = presence_keys.clone();
+                    let pulse = run_presence.clone();
                     presence_task = Some(tokio::spawn(async move {
-                        if let Err(e) = publish_presence(&pp, &pk, "online").await {
+                        if let Err(e) = pulse.publish(&pp, &pk, "online").await {
                             tracing::warn!("presence heartbeat failed: {e}");
                         }
                     }));
@@ -3916,7 +3900,7 @@ async fn tokio_main() -> Result<()> {
     if config.presence_enabled {
         match tokio::time::timeout(
             Duration::from_secs(2),
-            publish_presence(&presence_publisher, &presence_keys, "offline"),
+            run_presence.publish(&presence_publisher, &presence_keys, "offline"),
         )
         .await
         {
