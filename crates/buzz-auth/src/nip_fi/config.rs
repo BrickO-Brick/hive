@@ -561,8 +561,8 @@ impl IssuerRegistry {
         self.policies.is_empty()
     }
 
-    /// All registered issuer policies, in unspecified order. Useful for
-    /// iterating over every configured issuer during startup validation.
+    /// Iteration order is deliberately unspecified; callers must not depend on
+    /// registration order.
     pub fn all_policies(&self) -> impl Iterator<Item = &IssuerPolicy> {
         self.policies.values()
     }
