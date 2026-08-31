@@ -40,6 +40,7 @@ mod relay;
 mod relay_admission;
 mod reset;
 mod secret_store;
+mod send_perf;
 mod shutdown;
 mod team_catalog;
 mod templates;
@@ -517,6 +518,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            send_perf::log_send_perf,
             terminal_runtime::terminal_attach,
             terminal_runtime::terminal_detach,
             terminal_runtime::terminal_close,
