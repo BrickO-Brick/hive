@@ -130,6 +130,10 @@ export function useMentionSendFlow({
     availableRuntimesQuery.isLoading,
     availableRuntimesQuery.refetch,
   ]);
+  // Depend on the stable mutateAsync method, not the mutation result object —
+  // React Query returns a fresh object each render, which would re-create this
+  // callback and every useCallback chained off it (repo gotcha #6).
+  const startAgentMutateAsync = startAgentMutation.mutateAsync;
   const startAgentDetached = React.useCallback(
     (agent: ManagedAgent) => {
       // Publish-first: the send no longer waits for the agent start. The
@@ -137,18 +141,19 @@ export function useMentionSendFlow({
       // this moment, so the about-to-publish message is inside its first
       // subscription window however long the spawn takes.
       const replayFloorUnix = Math.floor(Date.now() / 1000);
-      void startAgentMutation
-        .mutateAsync({ pubkey: agent.pubkey, replayFloorUnix })
-        .catch((error: unknown) => {
-          toast.error(
-            `Could not start ${agent.name} — your message was sent, but the agent may not respond. ${getErrorMessage(
-              error,
-              "Could not start agent.",
-            )}`,
-          );
-        });
+      void startAgentMutateAsync({
+        pubkey: agent.pubkey,
+        replayFloorUnix,
+      }).catch((error: unknown) => {
+        toast.error(
+          `Could not start ${agent.name} — your message was sent, but the agent may not respond. ${getErrorMessage(
+            error,
+            "Could not start agent.",
+          )}`,
+        );
+      });
     },
-    [startAgentMutation],
+    [startAgentMutateAsync],
   );
   const ensureManagedAgentMentionsReady = React.useCallback(
     async (
@@ -161,6 +166,7 @@ export function useMentionSendFlow({
         return {
           errors: [] as string[],
           pubkeys: [] as string[],
+          wroteRelayState: false,
         };
       }
       const [managedAgentsByPubkey, personas] = await Promise.all([
@@ -179,6 +185,9 @@ export function useMentionSendFlow({
       ]);
       const errors: string[] = [];
       const pubkeys: string[] = [];
+      // Reported to the caller so the publish boundary knows whether awaited
+      // relay writes separated it from the pre-side-effect authorization pass.
+      let wroteRelayState = false;
       for (const pubkey of uniqueNormalizedPubkeys(mentionPubkeys)) {
         const agent = managedAgentsByPubkey.get(pubkey);
         if (!agent) continue;
@@ -190,6 +199,11 @@ export function useMentionSendFlow({
                 {},
                 personas.find((persona) => persona.id === agent.personaId),
               );
+          if (readyAgent !== agent) {
+            // A distinct record back means the access-policy update hit the
+            // relay; a matching policy returns `agent` itself without writing.
+            wroteRelayState = true;
+          }
           if (participants.has(pubkey)) {
             if (
               (isProviderBackedAgent(readyAgent) &&
@@ -209,6 +223,7 @@ export function useMentionSendFlow({
               role: "bot",
               detachedStart: startAgentDetached,
             });
+            wroteRelayState = true;
           }
           pubkeys.push(pubkey);
         } catch (error) {
@@ -217,7 +232,11 @@ export function useMentionSendFlow({
           );
         }
       }
-      return { errors, pubkeys: uniqueNormalizedPubkeys(pubkeys) };
+      return {
+        errors,
+        pubkeys: uniqueNormalizedPubkeys(pubkeys),
+        wroteRelayState,
+      };
     },
     [
       attachAgentMutation,
@@ -486,8 +505,15 @@ export function useMentionSendFlow({
           ...agentMentionPubkeys,
         ]);
         let sendChannelId = draft.capturedChannelId;
+        // The pre-side-effect authorization pass above only stands at the
+        // publish boundary while nothing separates the two. Track whether any
+        // awaited relay round-trip (DM-expansion channel resolution, agent
+        // membership/access-policy writes, huddle enrollment) actually ran in
+        // between — a revocation can land during those waits (#5681).
+        let relaySideEffectsRan = false;
         if (preparedAgentPubkeys.length > 0 && onPrepareSendChannel) {
           sendChannelId = await onPrepareSendChannel(preparedAgentPubkeys);
+          relaySideEffectsRan = true;
           if (isSendCancelled()) return restoreComposerAfterFailure();
           if (!sendChannelId) {
             return restoreComposerAfterFailure();
@@ -505,6 +531,9 @@ export function useMentionSendFlow({
           onPrepareSendChannel ? preparedAgentPubkeys : [],
           [...managedAgentsByPubkey.values()],
         );
+        if (agentReadiness.wroteRelayState) {
+          relaySideEffectsRan = true;
+        }
         if (isSendCancelled()) return restoreComposerAfterFailure();
         if (!isMountedRef.current) {
           persistPreflightDraft();
@@ -523,10 +552,19 @@ export function useMentionSendFlow({
         }
         if (preparedAgentPubkeys.length > 0 && sendChannelId) {
           try {
-            await invokeTauri("sync_agents_to_active_huddle", {
+            const huddleSync = await invokeTauri<{
+              matched_active_huddle: boolean;
+              added: string[];
+            }>("sync_agents_to_active_huddle", {
               channelId: sendChannelId,
               agentPubkeys: preparedAgentPubkeys,
             });
+            if (huddleSync.matched_active_huddle) {
+              // A matched huddle means the sync did relay work (membership
+              // read at minimum, enrollment writes for missing agents); no
+              // active huddle returns before touching the relay.
+              relaySideEffectsRan = true;
+            }
             if (isSendCancelled()) return restoreComposerAfterFailure();
           } catch (error) {
             if (isSendCancelled()) return restoreComposerAfterFailure();
@@ -564,13 +602,15 @@ export function useMentionSendFlow({
           if (!finalOutgoingTags || signal?.aborted || isSendCancelled())
             return;
           // Mention authorization was already established by the pre-side-effect
-          // pass above. Re-validate at the publish boundary only when a deferred
-          // wait (background media upload, link-preview settlement) separated
-          // that pass from this publish and authorization could have been
-          // revoked meanwhile; on the immediate path a second pass would repeat
+          // pass above. Re-validate at the publish boundary only when something
+          // separated that pass from this publish — a deferred wait (background
+          // media upload, link-preview settlement) or an awaited relay side
+          // effect (DM expansion, membership/access-policy writes, huddle
+          // enrollment) — since authorization could have been revoked during
+          // the gap. On the remaining immediate path a second pass would repeat
           // the same relay round-trips with the same inputs.
           const revalidatedMentionPubkeys =
-            preparedUpload || draft.preparedLinkPreviews
+            preparedUpload || draft.preparedLinkPreviews || relaySideEffectsRan
               ? await mentions.revalidateMentionPubkeys(mentionPubkeys)
               : admittedMentionPubkeys;
           if (signal?.aborted || isSendCancelled()) return;
