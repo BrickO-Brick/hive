@@ -204,7 +204,7 @@ with a TypeScript lookup table or an id comparison in a component.
    archived, and relay-only identities. Only explicit persona navigation may
    select a representative or offer persona Start; a relay persona link cannot
    borrow a local sibling's management controls. See
-   [the identity contract](../../../../../docs/agent-profile-identity.md).
+   [the identity contract](../../../../docs/agent-profile-identity.md).
 14. **Thinking effort has two surfaces: a local-only WRITE control and a
    read-only two-facts DISPLAY.** The write control is `EffortPickerField`
    (`ui/EffortPickerField.tsx`), a self-contained section component mounted in
