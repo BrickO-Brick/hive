@@ -1,4 +1,7 @@
+import * as React from "react";
+
 import { useIsUserInHuddle } from "@/features/huddle/HuddlePresenceContext";
+import { useUserStatusLookupContext } from "@/features/user-status/UserStatusLookupContext";
 import { useUserStatusQuery } from "@/features/user-status/hooks";
 import {
   DEFAULT_USER_STATUS_EMOJI,
@@ -18,10 +21,19 @@ export function UserNameIndicators({
   size?: "chat" | "dm";
 }) {
   const normalizedPubkey = normalizePubkey(pubkey ?? "");
-  const statusQuery = useUserStatusQuery(
-    normalizedPubkey ? [normalizedPubkey] : [],
+  const sharedStatus = useUserStatusLookupContext();
+  const registerStatus = sharedStatus?.register;
+  React.useEffect(
+    () => registerStatus?.(normalizedPubkey),
+    [normalizedPubkey, registerStatus],
   );
-  const status = normalizedPubkey ? statusQuery.data?.[normalizedPubkey] : null;
+  const fallbackStatusQuery = useUserStatusQuery(
+    !sharedStatus && normalizedPubkey ? [normalizedPubkey] : [],
+  );
+  const status = normalizedPubkey
+    ? (sharedStatus?.lookup[normalizedPubkey] ??
+      fallbackStatusQuery.data?.[normalizedPubkey])
+    : null;
   const isInHuddle = useIsUserInHuddle(normalizedPubkey);
   const statusEmoji = status?.emoji || DEFAULT_USER_STATUS_EMOJI;
   const indicatorTextClass =
