@@ -1,7 +1,8 @@
-//! NIP-11 federated-identity discovery output (NIP-FI Phase A, PR 3).
+//! NIP-11 federated-identity discovery output.
 //!
 //! [`FederatedIdentityDiscovery`] serializes to the `federated_identity`
-//! object NIP-FI.md "Discovery" requires in NIP-11 relay information.
+//! object required by the NIP-FI.md "Discovery" section of the NIP-11 relay
+//! information document.
 //!
 //! ## Privacy invariants
 //!
@@ -19,42 +20,40 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The `assertion_freshness` sub-object inside `federated_identity`.
+/// The `assertion_freshness` sub-object in the `federated_identity` discovery
+/// document. Describes the claimed freshness posture without exposing any
+/// issuer or deployment-private state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssertionFreshnessDiscovery {
-    /// `"offline-jwt"` or `"current-status"`.
+    /// The wire string identifying the freshness class.
     pub class: FreshnessClassDiscovery,
-    /// `null` for `offline-jwt`; a tested positive integer for `current-status`.
+    /// `null` for `offline-jwt`; advertising a finite bound here requires a
+    /// live status witness that is not yet implemented.
     pub maximum_residual_upstream_revocation_seconds: Option<u64>,
 }
 
-/// The freshness class as a stable wire string.
+/// The freshness class as a stable NIP-FI wire string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FreshnessClassDiscovery {
-    /// Validates the JWT and JWKS snapshot only.
+    /// No revocation bound is claimed; JWKS snapshot validation only.
     OfflineJwt,
-    /// Additionally requires a current-status witness.
-    CurrentStatus,
 }
 
-/// The `federated_identity` NIP-11 discovery object.
-///
-/// Placed under `limitation.federated_identity = true` and the top-level
-/// `federated_identity` key in the NIP-11 relay information document.
-/// Fields never expose enrollment mode, issuer, audience, or private state.
+/// The `federated_identity` NIP-11 discovery object. Fields never expose
+/// enrollment mode, issuer, audience, or private state.
 /// [FI-TRACE-DISCOVERY-PRIVATE]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederatedIdentityDiscovery {
-    /// Always `"client-attached"` for core.
+    /// Fixed value `"client-attached"` for the core NIP-FI transport mode.
     pub core: String,
-    /// The assertion freshness contract claimed by this deployment.
+    /// The freshness contract claimed by this deployment.
     pub assertion_freshness: AssertionFreshnessDiscovery,
 }
 
 impl FederatedIdentityDiscovery {
-    /// Construct an offline-jwt discovery object. This is the minimal core
-    /// claim that carries no residual revocation bound.
+    /// The only supported posture: claims no residual revocation bound, which
+    /// is the honest description of JWKS-only assertion verification.
     pub fn offline_jwt() -> Self {
         Self {
             core: "client-attached".to_owned(),
@@ -63,23 +62,5 @@ impl FederatedIdentityDiscovery {
                 maximum_residual_upstream_revocation_seconds: None,
             },
         }
-    }
-
-    /// Construct a current-status discovery object with a tested positive
-    /// revocation bound (in seconds). The caller is responsible for ensuring
-    /// `revocation_bound_seconds` has been empirically verified.
-    ///
-    /// Returns `None` when `revocation_bound_seconds` is zero.
-    pub fn current_status(revocation_bound_seconds: u64) -> Option<Self> {
-        if revocation_bound_seconds == 0 {
-            return None;
-        }
-        Some(Self {
-            core: "client-attached".to_owned(),
-            assertion_freshness: AssertionFreshnessDiscovery {
-                class: FreshnessClassDiscovery::CurrentStatus,
-                maximum_residual_upstream_revocation_seconds: Some(revocation_bound_seconds),
-            },
-        })
     }
 }

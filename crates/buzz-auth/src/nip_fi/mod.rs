@@ -1,24 +1,11 @@
 //! NIP-FI federated-identity authorization — assertion verifier, JWKS runtime,
-//! startup validation, and discovery (Phase A, PRs 1–3).
-//!
-//! ## Module layout
-//!
-//! | Module | Introduced | Responsibility |
-//! |--------|-----------|----------------|
-//! | [`assertion`] | PR 1 | Sealed [`VerifiedAssertion`] result and its fields |
-//! | [`config`] | PR 1 | Multi-issuer policy, contract IDs, size/time bounds |
-//! | [`denial`] | PR 1 | Privacy-preserving four-class denial wire contract |
-//! | [`verifier`] | PR 1 | Single canonical [`FederatedAssertionVerifier`] |
-//! | [`jwks`] | PR 3 | JWKS fetch, cache, and [`ProductionJwksSource`] |
-//! | [`startup`] | PR 3 | Startup validation gate ([`validate_nip_fi_config`]) |
-//! | [`discovery`] | PR 3 | NIP-11 [`FederatedIdentityDiscovery`] object |
-//!
-//! Identity is issuer-qualified `(iss, sub)` throughout. No database schema,
-//! binding resolution, or request/proof binding is defined here — those belong
-//! to PRs 4–5.
+//! startup validation, and discovery.
 
-/// The exact client-attached header field ([NIP-FI.md](../../../docs/nips/NIP-FI.md),
-/// "Client-attached transport"). `Authorization` remains reserved for NIP-98.
+/// The client-attached transport header for federated-identity assertions.
+///
+/// `Authorization` remains reserved for NIP-98; this separate header avoids
+/// conflating authentication schemes at the relay ingress.
+/// ([NIP-FI.md](../../../docs/nips/NIP-FI.md), "Client-attached transport")
 pub const CLIENT_ATTACHED_HEADER: &str = "Nostr-Federated-Identity";
 
 pub mod assertion;
