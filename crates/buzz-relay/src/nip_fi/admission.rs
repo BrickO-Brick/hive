@@ -2058,14 +2058,614 @@ mod pg_integration {
         prepared: std::sync::Arc<std::sync::Mutex<Option<buzz_auth::nip_fi::VerifiedAssertion>>>,
     }
 
-    // NOTE: pg_integration tests below are marked #[ignore] and require
-    // BUZZ_TEST_DATABASE_URL or DATABASE_URL to be set.  They exercise the
-    // full SERIALIZABLE transaction path against a real migrated PostgreSQL
-    // database.
+    // ── PostgreSQL atomicity witnesses ────────────────────────────────────
     //
-    // The tests are written as sqlx::test fixtures but cannot be executed
-    // in this environment (no live database).  They are included as
-    // specification-grade test shapes that CI must green before PR5.
+    // Each test below opens a transaction, executes a subset of the NIP-FI
+    // admission SQL, then either rolls back explicitly or forces a PG error
+    // mid-tx.  After the rollback the test re-connects with a fresh connection
+    // (not the aborted transaction) and asserts every NIP-FI table returns
+    // zero rows for the test community.
+    //
+    // These tests do not call through the Rust admission functions — they work
+    // directly with the tables the admission code writes.  That keeps the
+    // atomicity proof decoupled from mock-verifier complexity while still
+    // exercising the real PostgreSQL semantics (FK deferral, SERIALIZABLE
+    // isolation, advisory locks, trigger guards).
+    //
+    // Run: DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz \
+    //        cargo test -p buzz-relay -- --ignored pg_nip_fi --nocapture
+
+    /// Helper: connect to the test database, returning None when unavailable.
+    fn pg_test_pool() -> Option<String> {
+        std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .ok()
+    }
+
+    /// Helper: count rows in a NIP-FI table for a given community_id.
+    async fn count_rows(pool: &sqlx::PgPool, table: &str, community_id: Uuid) -> i64 {
+        // SAFETY: `table` comes only from the compile-time `NIP_FI_TABLES` constant
+        // inside this #[cfg(test)] module — no user-supplied input reaches this path.
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE community_id = $1");
+        sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
+            .bind(community_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0)
+    }
+
+    /// ALL NIP-FI tables written by a single admission+use cycle.
+    const NIP_FI_TABLES: &[&str] = &[
+        "nip_fi_proof_replay_claims",
+        "authorization_operation_receipts",
+        "authorization_authority_epochs",
+        "protected_object_authority",
+        "authorization_admission_results",
+        "identity_bindings",
+        "identity_lifecycle_history",
+        "authorization_events",
+    ];
+
+    /// Assert every NIP-FI table has exactly 0 rows for `community_id`.
+    async fn assert_zero_nip_fi_rows(pool: &sqlx::PgPool, community_id: Uuid) {
+        for &table in NIP_FI_TABLES {
+            let n = count_rows(pool, table, community_id).await;
+            assert_eq!(
+                n, 0,
+                "expected 0 rows in {table} after rollback for community {community_id}; got {n}"
+            );
+        }
+    }
+
+    /// Insert the minimal prerequisite rows for a NIP-FI admission test in a
+    /// separate committed transaction, returning the channel_id and a valid
+    /// object_key (sha256 of the 16-byte channel UUID).
+    async fn setup_admission_prerequisites(
+        pool: &sqlx::PgPool,
+        community_id: Uuid,
+        actor_pubkey: &[u8; 32],
+    ) -> Uuid {
+        // Community row.
+        sqlx::query(
+            "INSERT INTO communities (id, host) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(community_id)
+        .bind(format!("nip-fi-test-{}.example", community_id.simple()))
+        .execute(pool)
+        .await
+        .expect("community insert");
+
+        // Enrollment policy — required by admission step 5.
+        sqlx::query(
+            r#"
+            INSERT INTO identity_enrollment_policies
+                (community_id, policy_revision, enrollment_mode, policy_digest, effective_at)
+            VALUES ($1, 1, 3, $2, NOW() - INTERVAL '1 hour')
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(community_id)
+        .bind([0x01u8; 32].as_slice())
+        .execute(pool)
+        .await
+        .expect("policy insert");
+
+        // Invalidation domain — required by admission step 7.
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_invalidation_domains
+                (community_id, current_generation, activated_at, updated_at)
+            VALUES ($1, 0, NOW(), NOW())
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(community_id)
+        .execute(pool)
+        .await
+        .expect("invalidation domain insert");
+
+        // Channel row — required by admission step 4.
+        let channel_id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO channels
+                (community_id, id, name, created_by)
+            VALUES ($1, $2, 'nip-fi-test', $3)
+            "#,
+        )
+        .bind(community_id)
+        .bind(channel_id)
+        .bind(actor_pubkey.as_slice())
+        .execute(pool)
+        .await
+        .expect("channel insert");
+
+        channel_id
+    }
+
+    /// Insert the core NIP-FI admission rows inside `tx` without committing.
+    ///
+    /// Writes:
+    ///   - `nip_fi_proof_replay_claims`
+    ///   - `authorization_operation_receipts` (operation_kind=11)
+    ///   - `identity_bindings`
+    ///   - `identity_lifecycle_history`
+    ///   - `authorization_events` (event_kind=1)
+    ///   - `authorization_operation_receipts` (operation_kind=1, enroll receipt)
+    ///   - `authorization_admission_results`
+    ///   - `authorization_authority_epochs`
+    ///   - `protected_object_authority`
+    ///
+    /// All FK constraints are `DEFERRABLE INITIALLY DEFERRED` — they are not
+    /// checked until commit time, so this function can be called inside a
+    /// transaction that will be rolled back without satisfying every FK.
+    async fn insert_nip_fi_admission_rows(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        community_id: Uuid,
+        actor_pubkey: &[u8; 32],
+        proof_event_id: &[u8; 32],
+        operation_id: Uuid,
+        object_key: &[u8; 32],
+    ) -> Result<(), sqlx::Error> {
+        let request_fp = [0xAAu8; 32];
+        let result_digest = [0xBBu8; 32];
+        let fence = generate_fence();
+        let binding_id = Uuid::new_v4();
+        let enroll_op_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+        let history_id = Uuid::new_v4();
+        let correlation_id = Uuid::new_v4();
+        let attempt_id = Uuid::new_v4();
+        let semantic_fp = {
+            let mut h = sha2::Sha256::new();
+            h.update(b"semantic");
+            h.update(operation_id.as_bytes());
+            let r: [u8; 32] = h.finalize().into();
+            r
+        };
+        let transition_digest = [0xCCu8; 32];
+        let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
+
+        // 1. Proof replay claim.
+        sqlx::query(
+            r#"
+            INSERT INTO nip_fi_proof_replay_claims
+                (community_id, proof_event_id, retained_until)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(community_id)
+        .bind(proof_event_id.as_slice())
+        .bind(deadline)
+        .execute(&mut **tx)
+        .await?;
+
+        // 2. Admission operation receipt (operation_kind=11).
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_operation_receipts
+                (community_id, operation_id, request_fingerprint,
+                 operation_kind, actor_fingerprint, outcome_code, result_digest)
+            VALUES ($1, $2, $3, 11, $4, 1, $5)
+            "#,
+        )
+        .bind(community_id)
+        .bind(operation_id)
+        .bind(request_fp.as_slice())
+        .bind(actor_pubkey.as_slice())
+        .bind(result_digest.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        // 3. Enrollment operation receipt (operation_kind=1, separate UUID).
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_operation_receipts
+                (community_id, operation_id, request_fingerprint,
+                 operation_kind, actor_fingerprint, outcome_code, result_digest)
+            VALUES ($1, $2, $3, 1, $4, 1, $5)
+            "#,
+        )
+        .bind(community_id)
+        .bind(enroll_op_id)
+        .bind(request_fp.as_slice())
+        .bind(actor_pubkey.as_slice())
+        .bind(result_digest.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        // 4. Identity binding.
+        sqlx::query(
+            r#"
+            INSERT INTO identity_bindings
+                (community_id, binding_id, issuer, subject,
+                 principal_fingerprint, event_author_pubkey,
+                 binding_state, lifecycle_revision,
+                 policy_revision, assertion_deadline,
+                 enrollment_mode, enrollment_provenance,
+                 enrolled_at, recorded_at)
+            VALUES ($1, $2, 'test-issuer', 'test-subject',
+                    $3, $4,
+                    1, 1,
+                    1, $5,
+                    3, 3,
+                    NOW(), NOW())
+            "#,
+        )
+        .bind(community_id)
+        .bind(binding_id)
+        .bind(actor_pubkey.as_slice()) // principal_fingerprint (using pubkey as placeholder)
+        .bind(actor_pubkey.as_slice()) // event_author_pubkey
+        .bind(deadline)
+        .execute(&mut **tx)
+        .await?;
+
+        // 5. Lifecycle history (enrollment transition_kind=1).
+        sqlx::query(
+            r#"
+            INSERT INTO identity_lifecycle_history
+                (community_id, history_id, transition_kind, outcome_code,
+                 successor_binding_id, successor_lifecycle_revision, successor_state,
+                 operation_id, request_fingerprint, transition_digest,
+                 recorded_at)
+            VALUES ($1, $2, 1, 1,
+                    $3, 1, 1,
+                    $4, $5, $6,
+                    NOW())
+            "#,
+        )
+        .bind(community_id)
+        .bind(history_id)
+        .bind(binding_id)
+        .bind(enroll_op_id)
+        .bind(request_fp.as_slice())
+        .bind(transition_digest.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        // 6. Authorization event (event_kind=1 enrollment).
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_events
+                (community_id, event_id, event_kind, outcome_code, reason_code,
+                 actor_kind, actor_fingerprint,
+                 operation_id, request_fingerprint,
+                 correlation_id, attempt_id,
+                 recorded_at)
+            VALUES ($1, $2, 1, 1, 1,
+                    1, $3,
+                    $4, $5,
+                    $6, $7,
+                    NOW())
+            "#,
+        )
+        .bind(community_id)
+        .bind(event_id)
+        .bind(actor_pubkey.as_slice())
+        .bind(enroll_op_id)
+        .bind(request_fp.as_slice())
+        .bind(correlation_id)
+        .bind(attempt_id)
+        .execute(&mut **tx)
+        .await?;
+
+        // 7. Admission result.
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_admission_results
+                (community_id, operation_id, request_fingerprint,
+                 semantic_fingerprint, object_kind, object_key,
+                 recorded_at)
+            VALUES ($1, $2, $3,
+                    $4, 2, $5,
+                    NOW())
+            "#,
+        )
+        .bind(community_id)
+        .bind(operation_id)
+        .bind(request_fp.as_slice())
+        .bind(semantic_fp.as_slice())
+        .bind(object_key.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        // 8. Authority epoch.
+        sqlx::query(
+            r#"
+            INSERT INTO authorization_authority_epochs
+                (community_id, object_kind, object_key,
+                 authority_epoch, fence,
+                 operation_id, request_fingerprint)
+            VALUES ($1, 2, $2,
+                    1, $3,
+                    $4, $5)
+            ON CONFLICT (community_id, object_kind, object_key) DO UPDATE
+                SET authority_epoch     = EXCLUDED.authority_epoch,
+                    fence               = EXCLUDED.fence,
+                    operation_id        = EXCLUDED.operation_id,
+                    request_fingerprint = EXCLUDED.request_fingerprint,
+                    updated_at          = transaction_timestamp()
+            "#,
+        )
+        .bind(community_id)
+        .bind(object_key.as_slice())
+        .bind(fence.as_slice())
+        .bind(operation_id)
+        .bind(request_fp.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        // 9. Protected object authority (upsert — requires binding_id / version
+        //    FK, which is DEFERRABLE INITIALLY DEFERRED; safe for rollback tests).
+        sqlx::query(
+            r#"
+            INSERT INTO protected_object_authority
+                (community_id, object_kind, object_key,
+                 capability, actor_pubkey,
+                 binding_id, binding_version,
+                 policy_revision, invalidation_generation,
+                 authority_epoch, fence,
+                 issued_at, expires_at,
+                 operation_id, request_fingerprint)
+            VALUES ($1, 2, $2,
+                    2, $3,
+                    $4, 1,
+                    1, 0,
+                    1, $5,
+                    NOW(), NOW() + INTERVAL '1 hour',
+                    $6, $7)
+            ON CONFLICT (community_id, object_kind, object_key) DO UPDATE
+                SET fence               = EXCLUDED.fence,
+                    authority_epoch     = EXCLUDED.authority_epoch,
+                    operation_id        = EXCLUDED.operation_id,
+                    request_fingerprint = EXCLUDED.request_fingerprint
+            "#,
+        )
+        .bind(community_id)
+        .bind(object_key.as_slice())
+        .bind(actor_pubkey.as_slice())
+        .bind(binding_id)
+        .bind(fence.as_slice())
+        .bind(operation_id)
+        .bind(request_fp.as_slice())
+        .execute(&mut **tx)
+        .await?;
+
+        Ok(())
+    }
+
+    /// FI-INV-09: an explicit rollback leaves zero rows in every NIP-FI table.
+    ///
+    /// This is the core atomicity witness: a rolled-back transaction must leave
+    /// no enrollment, replay claim, receipt, evidence, or fence rows behind.
+    /// No orphan authorization state must survive a transaction abort.
+    #[tokio::test]
+    #[ignore = "requires Postgres — FI-INV-09: rollback leaves zero NIP-FI rows"]
+    async fn pg_nip_fi_rollback_leaves_zero_rows() {
+        let db_url = match pg_test_pool() {
+            Some(u) => u,
+            None => {
+                eprintln!("SKIP: no DATABASE_URL / BUZZ_TEST_DATABASE_URL");
+                return;
+            }
+        };
+        let pool = sqlx::PgPool::connect(&db_url)
+            .await
+            .expect("connect to test DB");
+
+        let community_id = Uuid::new_v4();
+        let actor_pubkey = [0x42u8; 32];
+        let proof_event_id = [0x11u8; 32];
+        let operation_id = Uuid::new_v4();
+
+        // Compute object_key = sha256(16-byte UUID) — same as admission code.
+        let channel_id = setup_admission_prerequisites(&pool, community_id, &actor_pubkey).await;
+        let object_key: [u8; 32] = {
+            let mut h = sha2::Sha256::new();
+            h.update(channel_id.as_bytes());
+            h.finalize().into()
+        };
+
+        // Open a transaction, write all NIP-FI admission rows, then ROLLBACK.
+        {
+            let mut tx = pool.begin().await.expect("begin tx");
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                .execute(&mut *tx)
+                .await
+                .expect("set serializable");
+
+            insert_nip_fi_admission_rows(
+                &mut tx,
+                community_id,
+                &actor_pubkey,
+                &proof_event_id,
+                operation_id,
+                &object_key,
+            )
+            .await
+            .expect("insert NIP-FI rows inside tx");
+
+            // Explicit rollback — simulates any error before the final COMMIT.
+            tx.rollback().await.expect("rollback");
+        }
+
+        // After rollback: every NIP-FI table must have zero rows for this community.
+        // This proves FI-INV-09: no orphan enrollment/replay/receipt/evidence/fence
+        // rows survive a transaction abort.
+        assert_zero_nip_fi_rows(&pool, community_id).await;
+
+        // Cleanup: community row itself (not NIP-FI, but test isolation).
+        let _ = sqlx::query("DELETE FROM communities WHERE id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// FI-TRACE-FINAL-DENIAL-NO-MUTATION: a mid-transaction error (duplicate PK)
+    /// leaves zero NIP-FI rows after the aborted transaction is rolled back.
+    ///
+    /// This proves that a failure *after* admission writes (e.g., a duplicate
+    /// event insert that would abort the transaction) does not leave any
+    /// durable authorization state.  The admission mutations and the event write
+    /// must be atomic: either all commit or all roll back.
+    #[tokio::test]
+    #[ignore = "requires Postgres — FI-TRACE-FINAL-DENIAL-NO-MUTATION: mid-tx error clears all"]
+    async fn pg_nip_fi_failed_insert_clears_prior_nip_fi_writes() {
+        let db_url = match pg_test_pool() {
+            Some(u) => u,
+            None => {
+                eprintln!("SKIP: no DATABASE_URL / BUZZ_TEST_DATABASE_URL");
+                return;
+            }
+        };
+        let pool = sqlx::PgPool::connect(&db_url)
+            .await
+            .expect("connect to test DB");
+
+        let community_id = Uuid::new_v4();
+        let actor_pubkey = [0x43u8; 32];
+        let proof_event_id = [0x22u8; 32];
+        let operation_id = Uuid::new_v4();
+
+        let channel_id = setup_admission_prerequisites(&pool, community_id, &actor_pubkey).await;
+        let object_key: [u8; 32] = {
+            let mut h = sha2::Sha256::new();
+            h.update(channel_id.as_bytes());
+            h.finalize().into()
+        };
+
+        {
+            let mut tx = pool.begin().await.expect("begin tx");
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                .execute(&mut *tx)
+                .await
+                .expect("set serializable");
+
+            // Step A: write all NIP-FI admission rows inside the transaction.
+            insert_nip_fi_admission_rows(
+                &mut tx,
+                community_id,
+                &actor_pubkey,
+                &proof_event_id,
+                operation_id,
+                &object_key,
+            )
+            .await
+            .expect("insert NIP-FI rows inside tx");
+
+            // Step B: deliberately cause a PK violation that aborts the transaction.
+            // Re-inserting the same proof_event_id triggers the PK constraint on
+            // nip_fi_proof_replay_claims (community_id, proof_event_id).
+            let dup_result = sqlx::query(
+                r#"
+                INSERT INTO nip_fi_proof_replay_claims
+                    (community_id, proof_event_id, retained_until)
+                VALUES ($1, $2, NOW() + INTERVAL '1 hour')
+                "#,
+            )
+            .bind(community_id)
+            .bind(proof_event_id.as_slice())
+            .execute(&mut *tx)
+            .await;
+
+            assert!(
+                dup_result.is_err(),
+                "duplicate proof_event_id must violate PK constraint"
+            );
+
+            // The transaction is now in ABORTED state.  Roll it back.
+            tx.rollback().await.expect("rollback aborted tx");
+        }
+
+        // After the aborted transaction, every NIP-FI table must have zero rows.
+        // This proves FI-TRACE-FINAL-DENIAL-NO-MUTATION: admission mutations that
+        // precede a failing event write do not persist.
+        assert_zero_nip_fi_rows(&pool, community_id).await;
+
+        let _ = sqlx::query("DELETE FROM communities WHERE id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// FI-INV-09 happy path: a committed transaction persists all NIP-FI rows.
+    ///
+    /// Verifies that when the full atomic sequence commits, every NIP-FI table
+    /// has the expected row.  This is the positive control for the rollback tests.
+    #[tokio::test]
+    #[ignore = "requires Postgres — FI-INV-09 happy path: committed tx persists all NIP-FI rows"]
+    async fn pg_nip_fi_successful_commit_persists_all_rows() {
+        let db_url = match pg_test_pool() {
+            Some(u) => u,
+            None => {
+                eprintln!("SKIP: no DATABASE_URL / BUZZ_TEST_DATABASE_URL");
+                return;
+            }
+        };
+        let pool = sqlx::PgPool::connect(&db_url)
+            .await
+            .expect("connect to test DB");
+
+        let community_id = Uuid::new_v4();
+        let actor_pubkey = [0x44u8; 32];
+        let proof_event_id = [0x33u8; 32];
+        let operation_id = Uuid::new_v4();
+
+        let channel_id = setup_admission_prerequisites(&pool, community_id, &actor_pubkey).await;
+        let object_key: [u8; 32] = {
+            let mut h = sha2::Sha256::new();
+            h.update(channel_id.as_bytes());
+            h.finalize().into()
+        };
+
+        {
+            let mut tx = pool.begin().await.expect("begin tx");
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                .execute(&mut *tx)
+                .await
+                .expect("set serializable");
+
+            insert_nip_fi_admission_rows(
+                &mut tx,
+                community_id,
+                &actor_pubkey,
+                &proof_event_id,
+                operation_id,
+                &object_key,
+            )
+            .await
+            .expect("insert NIP-FI rows inside tx");
+
+            tx.commit().await.expect("commit");
+        }
+
+        // After commit: each NIP-FI table must have at least 1 row for this community.
+        // `authorization_operation_receipts` gets 2 rows (enroll + admission).
+        for &table in NIP_FI_TABLES {
+            let n = count_rows(&pool, table, community_id).await;
+            assert!(
+                n >= 1,
+                "expected ≥1 row in {table} after commit for community {community_id}; got {n}"
+            );
+        }
+
+        // Cleanup — order matters: child tables before parent.
+        for &table in NIP_FI_TABLES.iter().rev() {
+            let sql = format!("DELETE FROM {table} WHERE community_id = $1");
+            let _ = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(community_id)
+                .execute(&pool)
+                .await;
+        }
+        let _ = sqlx::query("DELETE FROM channels WHERE community_id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM communities WHERE id = $1")
+            .bind(community_id)
+            .execute(&pool)
+            .await;
+    }
 
     /// Verify that the canonical UUID bytes encoding matches PostgreSQL's
     /// sha256(uuid_send(c.id)).  This is a pure Rust unit test — no DB needed.

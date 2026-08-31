@@ -755,6 +755,8 @@ pub(crate) mod tests {
             cancel: CancellationToken::new(),
             backpressure_count: Arc::new(AtomicU8::new(0)),
             grace_limit: 3,
+            nip_fi_assertion: None,
+            nip_fi_proof_meta: std::sync::OnceLock::new(),
         };
         (Arc::new(conn), send_rx)
     }
