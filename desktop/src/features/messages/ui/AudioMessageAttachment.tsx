@@ -1,5 +1,5 @@
 import * as React from "react";
-import { X } from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 
 import {
@@ -56,14 +56,14 @@ function audioMimeForUrl(url: string): string {
   return "audio/wav";
 }
 
-async function decodePeaks(url: string, count: number): Promise<number[]> {
+async function decodeSamples(url: string): Promise<Float32Array> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Audio fetch failed (${response.status})`);
   const bytes = await response.arrayBuffer();
   const context = new AudioContext();
   try {
-    const buffer = await context.decodeAudioData(bytes.slice(0));
-    return waveformPeaks(buffer.getChannelData(0), count);
+    const buffer = await context.decodeAudioData(bytes);
+    return buffer.getChannelData(0);
   } finally {
     await context.close();
   }
@@ -95,17 +95,60 @@ export function AudioMessageAttachment({
       ? href
       : undefined,
   );
+  const [loadRequest, setLoadRequest] = React.useState<
+    { attempt: number; href: string } | undefined
+  >(
+    composer || href.startsWith("blob:") || href.startsWith("data:")
+      ? { attempt: 0, href }
+      : undefined,
+  );
   const [barCount, setBarCount] = React.useState(INITIAL_BAR_COUNT);
   const [duration, setDuration] = React.useState(taggedDuration ?? 0);
   const [currentTime, setCurrentTime] = React.useState(0);
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [playbackRate, setPlaybackRate] = React.useState(1);
+  const [playbackError, setPlaybackError] = React.useState(false);
+  const [waveformError, setWaveformError] = React.useState(false);
+  const [decodedSamples, setDecodedSamples] = React.useState<
+    Float32Array | undefined
+  >();
   const [peaks, setPeaks] = React.useState(() => dotPeaks(INITIAL_BAR_COUNT));
   const [waveformReady, setWaveformReady] = React.useState(false);
   useSmoothCorners(mediaRef);
   useSmoothCorners(playbackRateRef);
 
   React.useEffect(() => {
+    const localHref =
+      composer || href.startsWith("blob:") || href.startsWith("data:");
+    if (localHref) {
+      setLoadRequest({ attempt: 0, href });
+      return;
+    }
+
+    setLoadRequest(undefined);
+    const waveform = waveformRef.current;
+    if (!waveform || typeof IntersectionObserver === "undefined") {
+      setLoadRequest({ attempt: 0, href });
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setLoadRequest({ attempt: 0, href });
+        observer.disconnect();
+      },
+      { rootMargin: "240px 0px" },
+    );
+    observer.observe(waveform);
+    return () => observer.disconnect();
+  }, [composer, href]);
+
+  React.useEffect(() => {
+    if (loadRequest?.href !== href) {
+      setPlaybackHref(undefined);
+      return;
+    }
     if (composer || href.startsWith("blob:") || href.startsWith("data:")) {
       setPlaybackHref(href);
       return;
@@ -129,7 +172,7 @@ export function AudioMessageAttachment({
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [composer, href]);
+  }, [composer, href, loadRequest]);
 
   React.useEffect(() => {
     const waveform = waveformRef.current;
@@ -149,18 +192,29 @@ export function AudioMessageAttachment({
     if (!playbackHref) return;
     let active = true;
     setWaveformReady(false);
-    setPeaks(dotPeaks(barCount));
-    void decodePeaks(playbackHref, barCount)
-      .then((next) => {
+    setWaveformError(false);
+    setDecodedSamples(undefined);
+    void decodeSamples(playbackHref)
+      .then((samples) => {
         if (!active) return;
-        setPeaks(next);
-        setWaveformReady(true);
+        setDecodedSamples(samples);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active) setWaveformError(true);
+      });
     return () => {
       active = false;
     };
-  }, [barCount, playbackHref]);
+  }, [playbackHref]);
+
+  React.useEffect(() => {
+    setPeaks(
+      decodedSamples
+        ? waveformPeaks(decodedSamples, barCount)
+        : dotPeaks(barCount),
+    );
+    if (decodedSamples) setWaveformReady(true);
+  }, [barCount, decodedSamples]);
 
   React.useEffect(() => {
     const handleOtherPlayback = (event: Event) => {
@@ -216,13 +270,32 @@ export function AudioMessageAttachment({
   const togglePlayback = React.useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    if (!playbackHref) {
+      setLoadRequest((request) =>
+        request?.href === href ? request : { attempt: 0, href },
+      );
+      return;
+    }
     if (audio.paused) {
       window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: playbackId }));
-      void audio.play();
+      void audio.play().catch(() => {
+        setIsPlaying(false);
+        setPlaybackError(true);
+      });
     } else {
       audio.pause();
     }
-  }, [playbackId]);
+  }, [href, playbackHref, playbackId]);
+
+  const retryPlayback = React.useCallback(() => {
+    setPlaybackError(false);
+    setWaveformError(false);
+    setPlaybackHref(undefined);
+    setLoadRequest((request) => ({
+      attempt: request?.href === href ? request.attempt + 1 : 0,
+      href,
+    }));
+  }, [href]);
 
   const timeLabel = isPlaying
     ? formatVoiceNoteDuration(Math.max(0, duration - currentTime))
@@ -269,52 +342,75 @@ export function AudioMessageAttachment({
         data-testid="voice-note-playback-control"
       >
         <button
-          aria-label={isPlaying ? "Pause voice note" : "Play voice note"}
+          aria-label={
+            playbackError
+              ? "Retry voice note"
+              : isPlaying
+                ? "Pause voice note"
+                : "Play voice note"
+          }
           className="flex h-full w-full items-center justify-center rounded-md focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={togglePlayback}
+          onClick={playbackError ? retryPlayback : togglePlayback}
           type="button"
         >
-          <MorphingPlayPauseIcon isPlaying={isPlaying} />
+          {playbackError ? (
+            <AlertCircle aria-hidden="true" />
+          ) : (
+            <MorphingPlayPauseIcon isPlaying={isPlaying} />
+          )}
         </button>
       </AttachmentMedia>
       <AttachmentContent className="min-w-0">
         <AttachmentTitle className="sr-only">{filename}</AttachmentTitle>
-        <div
-          className="relative h-6 overflow-hidden rounded-sm focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1"
-          data-testid="voice-note-playback-waveform"
-          data-waveform-state={waveformReady ? "ready" : "loading"}
-          ref={waveformRef}
-        >
-          <div className="flex h-full items-center gap-0.5">
-            {waveformBars(false)}
+        {playbackError ? (
+          <div className="text-xs font-medium text-destructive" role="alert">
+            Audio unavailable. Retry playback.
           </div>
+        ) : (
           <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 flex items-center gap-0.5 will-change-[clip-path]"
-            data-testid="voice-note-progress-waveform"
-            ref={progressWaveformRef}
-            style={{ clipPath: "inset(0 100% 0 0)" }}
+            className="relative h-6 overflow-hidden rounded-sm focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1"
+            data-testid="voice-note-playback-waveform"
+            data-waveform-state={
+              waveformError ? "error" : waveformReady ? "ready" : "loading"
+            }
+            ref={waveformRef}
           >
-            {waveformBars(true)}
+            {waveformError ? (
+              <span className="sr-only" role="status">
+                Waveform preview unavailable. Playback may still work.
+              </span>
+            ) : null}
+            <div className="flex h-full items-center gap-0.5">
+              {waveformBars(false)}
+            </div>
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 flex items-center gap-0.5 will-change-[clip-path]"
+              data-testid="voice-note-progress-waveform"
+              ref={progressWaveformRef}
+              style={{ clipPath: "inset(0 100% 0 0)" }}
+            >
+              {waveformBars(true)}
+            </div>
+            <input
+              aria-label="Voice note playback position"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              max={Math.max(duration, 0.01)}
+              min="0"
+              onInput={(event) => {
+                const next = Number(event.currentTarget.value);
+                if (audioRef.current && Number.isFinite(next)) {
+                  audioRef.current.currentTime = next;
+                  setCurrentTime(next);
+                  paintProgress(next, Number(event.currentTarget.max));
+                }
+              }}
+              step="0.01"
+              type="range"
+              value={Math.min(currentTime, Math.max(duration, 0.01))}
+            />
           </div>
-          <input
-            aria-label="Voice note playback position"
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            max={Math.max(duration, 0.01)}
-            min="0"
-            onInput={(event) => {
-              const next = Number(event.currentTarget.value);
-              if (audioRef.current && Number.isFinite(next)) {
-                audioRef.current.currentTime = next;
-                setCurrentTime(next);
-                paintProgress(next, Number(event.currentTarget.max));
-              }
-            }}
-            step="0.01"
-            type="range"
-            value={Math.min(currentTime, Math.max(duration, 0.01))}
-          />
-        </div>
+        )}
       </AttachmentContent>
       <AttachmentActions className="grid min-w-9 place-items-center">
         <span
@@ -385,7 +481,14 @@ export function AudioMessageAttachment({
           paintProgress(0);
         }}
         onPause={() => setIsPlaying(false)}
-        onPlay={() => setIsPlaying(true)}
+        onPlay={() => {
+          setPlaybackError(false);
+          setIsPlaying(true);
+        }}
+        onError={() => {
+          setIsPlaying(false);
+          setPlaybackError(true);
+        }}
         onTimeUpdate={(event) =>
           setCurrentTime(event.currentTarget.currentTime)
         }

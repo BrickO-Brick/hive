@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   formatVoiceNoteDuration,
+  isAudioAttachment,
   isVoiceNoteAttachment,
   isVoiceNoteFile,
   nextVoiceNotePlaybackRate,
@@ -57,6 +58,7 @@ test("generic audio renders without triggering voice-note exclusivity", () => {
     m: "audio/mpeg",
   };
   assert.equal(isVoiceNoteAttachment(entry), false);
+  assert.equal(isAudioAttachment(entry), true);
   assert.deepEqual(
     resolveAudioAttachment(
       entry,

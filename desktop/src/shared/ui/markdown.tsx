@@ -7,7 +7,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { requestOpenSnapshotImport } from "@/features/agents/openSnapshotImportFromUrlEvent";
 import { parseChannelLink } from "@/features/messages/lib/channelLink";
-import { isVoiceNoteAttachment } from "@/features/messages/lib/audioAttachment";
+import { isAudioAttachment } from "@/features/messages/lib/audioAttachment";
 import {
   parseMessageLink,
   resolveMessageLinkRenderTarget,
@@ -1524,18 +1524,18 @@ export function createMarkdownComponents(
       // (the img component returns block-level wrappers for lightbox/video).
       const childArray = React.Children.toArray(children);
       const { imageChildren } = classifyChildren(childArray);
-      const hasVoiceNote = childArray.some(
+      const hasAudioAttachment = childArray.some(
         (child) =>
           React.isValidElement<{ href?: string }>(child) &&
           typeof child.props.href === "string" &&
-          isVoiceNoteAttachment(imetaByUrl?.get(child.props.href)),
+          isAudioAttachment(imetaByUrl?.get(child.props.href)),
       );
 
       if (isImageOnlyParagraph(childArray)) {
         return <ImageMosaic>{imageChildren}</ImageMosaic>;
       }
 
-      if (hasBlockMedia(childArray) || hasVoiceNote) {
+      if (hasBlockMedia(childArray) || hasAudioAttachment) {
         return <div>{children}</div>;
       }
 

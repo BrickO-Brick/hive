@@ -102,14 +102,17 @@ export function VoiceNoteRecorder({
       data-testid="voice-note-recorder"
     >
       <legend className="sr-only">
-        {requesting ? "Waiting for microphone access" : "Recording voice note"}
+        {requesting
+          ? "Waiting for microphone access"
+          : processing
+            ? "Preparing voice note"
+            : "Recording voice note"}
       </legend>
       <Tooltip disableHoverableContent>
         <TooltipTrigger asChild>
           <Button
             aria-label="Discard voice note"
             className="shrink-0"
-            disabled={processing}
             onClick={onCancel}
             size="icon"
             type="button"
@@ -121,9 +124,9 @@ export function VoiceNoteRecorder({
         <TooltipContent>Discard voice note</TooltipContent>
       </Tooltip>
       <div className="mx-1 h-5 w-px shrink-0 bg-border/60" />
-      {requesting ? (
+      {requesting || processing ? (
         <span className="shrink-0 whitespace-nowrap text-xs font-medium text-muted-foreground">
-          Waiting for microphone…
+          {requesting ? "Waiting for microphone…" : "Preparing voice note…"}
         </span>
       ) : (
         <span className="shrink-0 whitespace-nowrap text-xs font-medium tabular-nums text-foreground">

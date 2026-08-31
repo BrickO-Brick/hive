@@ -179,6 +179,216 @@ test("discards an active recording when entering edit mode", async ({
   await expect(page.getByTestId("composer-voice-note-card")).toHaveCount(0);
 });
 
+test("discards while voice-note processing is pending", async ({ page }) => {
+  await page.addInitScript(() => {
+    const pendingDecodes: Array<(buffer: AudioBuffer) => void> = [];
+    (
+      window as Window & {
+        __BUZZ_E2E_RESOLVE_VOICE_NOTE_DECODE__?: () => void;
+      }
+    ).__BUZZ_E2E_RESOLVE_VOICE_NOTE_DECODE__ = () => {
+      pendingDecodes.shift()?.({
+        duration: 1,
+        getChannelData: () => new Float32Array([0]),
+        numberOfChannels: 1,
+        sampleRate: 8_000,
+      } as AudioBuffer);
+    };
+    AudioContext.prototype.decodeAudioData = () =>
+      new Promise<AudioBuffer>((resolve) => pendingDecodes.push(resolve));
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  const discardPendingRecording = async (keyboard: boolean) => {
+    await page.getByRole("button", { name: "Record voice note" }).click();
+    await expect(page.getByTestId("voice-note-recorder")).toBeVisible();
+    await page.waitForTimeout(100);
+    await page.getByRole("button", { name: "Finish voice note" }).click();
+    await expect(page.getByText("Preparing voice note…")).toBeVisible();
+    const discard = page.getByRole("button", { name: "Discard voice note" });
+    await expect(discard).toBeEnabled();
+    if (keyboard) {
+      await discard.focus();
+      await page.keyboard.press("Enter");
+    } else {
+      await discard.click();
+    }
+    await expect(page.getByTestId("voice-note-recorder")).toHaveCount(0);
+    await page.evaluate(() =>
+      (
+        window as Window & {
+          __BUZZ_E2E_RESOLVE_VOICE_NOTE_DECODE__?: () => void;
+        }
+      ).__BUZZ_E2E_RESOLVE_VOICE_NOTE_DECODE__?.(),
+    );
+    await expect(page.getByTestId("composer-voice-note-card")).toHaveCount(0);
+  };
+
+  await discardPendingRecording(false);
+  await discardPendingRecording(true);
+});
+
+test("surfaces waveform and playback failures with retry", async ({ page }) => {
+  await page.addInitScript(() => {
+    AudioContext.prototype.decodeAudioData = () =>
+      Promise.reject(new DOMException("corrupt audio", "EncodingError"));
+    HTMLMediaElement.prototype.play = () =>
+      Promise.reject(new DOMException("playback denied", "NotAllowedError"));
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await waitForMockLiveSubscription(page, "general");
+  await page.evaluate(
+    ({ audioUrl }) => {
+      const emit = (
+        window as Window & {
+          __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: (input: {
+            channelName: string;
+            content: string;
+            extraTags: string[][];
+          }) => unknown;
+        }
+      ).__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      emit({
+        channelName: "general",
+        content: `[voice-note-123.mp4](${audioUrl})`,
+        extraTags: [
+          [
+            "imeta",
+            `url ${audioUrl}`,
+            "m video/mp4",
+            "duration 9.4",
+            "filename voice-note-123.mp4",
+          ],
+        ],
+      });
+    },
+    { audioUrl: AUDIO_URL },
+  );
+
+  const card = page.getByTestId("audio-message-attachment").last();
+  const waveform = card.getByTestId("voice-note-playback-waveform");
+  await expect(waveform).toHaveAttribute("data-waveform-state", "error");
+  await expect(card.getByRole("status")).toContainText(
+    "Waveform preview unavailable. Playback may still work.",
+  );
+
+  await card.getByRole("button", { name: "Play voice note" }).click();
+  await expect(card.getByRole("alert")).toContainText("Audio unavailable");
+  const retry = card.getByRole("button", { name: "Retry voice note" });
+  await retry.click();
+  await expect(
+    card.getByRole("button", { name: "Play voice note" }),
+  ).toBeVisible();
+  await card.locator("audio").dispatchEvent("error");
+  await expect(card.getByRole("alert")).toContainText("Audio unavailable");
+});
+
+test("bounds eager audio work to nearby cards and releases object URLs", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const originalCreate = URL.createObjectURL.bind(URL);
+    const originalRevoke = URL.revokeObjectURL.bind(URL);
+    const counters = { created: 0, revoked: 0 };
+    (
+      window as Window & {
+        __BUZZ_E2E_AUDIO_OBJECT_URLS__?: typeof counters;
+      }
+    ).__BUZZ_E2E_AUDIO_OBJECT_URLS__ = counters;
+    URL.createObjectURL = (object) => {
+      counters.created += 1;
+      return originalCreate(object);
+    };
+    URL.revokeObjectURL = (url) => {
+      counters.revoked += 1;
+      originalRevoke(url);
+    };
+  });
+  await page.setViewportSize({ width: 1280, height: 400 });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await waitForMockLiveSubscription(page, "general");
+  await page.evaluate(
+    ({ audioUrl }) => {
+      const emit = (
+        window as Window & {
+          __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: (input: {
+            channelName: string;
+            content: string;
+            extraTags: string[][];
+          }) => unknown;
+        }
+      ).__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
+      if (!emit) throw new Error("Mock message emitter is unavailable.");
+      for (let index = 0; index < 24; index += 1) {
+        emit({
+          channelName: "general",
+          content: `[voice-note-${index}.mp4](${audioUrl})`,
+          extraTags: [
+            [
+              "imeta",
+              `url ${audioUrl}`,
+              "m video/mp4",
+              "duration 9.4",
+              `filename voice-note-${index}.mp4`,
+            ],
+          ],
+        });
+      }
+    },
+    { audioUrl: AUDIO_URL },
+  );
+
+  const cards = page.getByTestId("audio-message-attachment");
+  await expect(cards).toHaveCount(24);
+  const readFetchCount = () =>
+    page.evaluate(
+      () =>
+        window.__BUZZ_E2E_COMMANDS__?.filter(
+          (command) => command === "fetch_media_bytes",
+        ).length ?? 0,
+    );
+  await expect.poll(readFetchCount).toBeGreaterThan(0);
+  const fetchCount = await readFetchCount();
+  expect(fetchCount).toBeLessThan(24);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_AUDIO_OBJECT_URLS__?: {
+                created: number;
+                revoked: number;
+              };
+            }
+          ).__BUZZ_E2E_AUDIO_OBJECT_URLS__?.created ?? 0,
+      ),
+    )
+    .toBeGreaterThan(0);
+
+  await page.getByTestId("channel-random").click();
+  await expect(cards).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const counters = (
+          window as Window & {
+            __BUZZ_E2E_AUDIO_OBJECT_URLS__?: {
+              created: number;
+              revoked: number;
+            };
+          }
+        ).__BUZZ_E2E_AUDIO_OBJECT_URLS__;
+        return counters ? counters.revoked === counters.created : false;
+      }),
+    )
+    .toBe(true);
+});
+
 test("records from the composer and renders an inline waveform card", async ({
   page,
 }) => {

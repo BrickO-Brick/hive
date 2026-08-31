@@ -33,7 +33,7 @@ export function isVoiceNoteAttachment(
   return mime === "video/mp4" && filename.endsWith(".mp4");
 }
 
-function isAudioAttachment(
+export function isAudioAttachment(
   entry: AudioAttachmentImetaEntry | undefined,
 ): boolean {
   const mime = entry?.m?.toLowerCase() ?? "";
