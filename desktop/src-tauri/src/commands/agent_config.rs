@@ -14,9 +14,8 @@ use crate::{
         },
         current_instance_id, is_reserved_env_key, is_safe_to_reveal, is_well_formed_env_key,
         known_acp_runtime, load_managed_agents, load_personas, resolve_effective_agent_env,
-        save_managed_agents, sync_managed_agent_processes, AgentDefinition, BackendKind,
-        GlobalAgentConfig, KnownAcpRuntime, ManagedAgentRecord, ManagedAgentRuntimeKey,
-        MAX_ENV_VALUE_BYTES,
+        save_managed_agents, sync_managed_agent_processes, AgentDefinition, GlobalAgentConfig,
+        KnownAcpRuntime, ManagedAgentRecord, ManagedAgentRuntimeKey, MAX_ENV_VALUE_BYTES,
     },
 };
 
@@ -533,61 +532,6 @@ fn parse_models(raw: Option<&serde_json::Value>) -> (Vec<AcpModelEntry>, Option<
         })
         .collect();
     (models, current_model)
-}
-
-/// Persist the canonical startup effort level for a local managed agent.
-///
-/// Persist the canonical startup effort for a local managed agent, outside the
-/// locked `update_managed_agent` transaction. Used by surfaces that save effort
-/// independently of the dialog (e.g. global/onboarding defaults). The
-/// `AgentInstanceEditDialog` embeds effort in the locked update payload instead
-/// and does NOT call this command; the standalone path is retained only for
-/// callers that need it separately.
-///
-/// The value is stored on the harness-agnostic `effort_level` record column;
-/// at spawn the launch projection (`config_bridge::effort`, invoked from
-/// `runtime.rs`) resolves the effective value and emits it under the runtime's
-/// native key (`GOOSE_THINKING_EFFORT`, `BUZZ_AGENT_THINKING_EFFORT`, or the
-/// `BUZZ_ACP_EFFORT_LEVEL` startup sentinel). Pass `None` to clear (reverts
-/// to the inherited/adapter default).
-///
-/// Rejects non-local backends: remote agents receive effort through the launch
-/// projection at deploy time (see `agents_deploy.rs`), never this local
-/// persistence path.
-#[tauri::command]
-pub fn persist_agent_effort_level(
-    pubkey: String,
-    effort_level: Option<String>,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let _store_guard = state
-        .managed_agents_store_lock
-        .lock()
-        .map_err(|e| e.to_string())?;
-    let mut records = load_managed_agents(&app)?;
-    let record = records
-        .iter_mut()
-        .find(|r| r.pubkey == pubkey)
-        .ok_or_else(|| format!("agent {pubkey} not found"))?;
-    if record.backend != BackendKind::Local {
-        return Err(format!(
-            "agent {pubkey} is not a local agent; remote effort is set at deploy time"
-        ));
-    }
-    // The picker is the single record-scope effort authority. Set the canonical
-    // column and strip every record-level effort env alias (all native keys +
-    // legacy + the sentinel) atomically: the launch projection ranks record
-    // native env (tier 1) ABOVE the canonical column (tier 2), so a leftover
-    // `GOOSE_THINKING_EFFORT` in `record.env_vars` would silently outrank the
-    // value the picker just set — the panel promises one thing, the spawn does
-    // another. This is the same sweep the Save-path pin→inherit transition
-    // applies (`remove_record_effort_aliases`); the picker's direct-write path
-    // must not skip it. Applies on clear too, so reverting to inherit drops any
-    // stale record-scope alias rather than resurrecting it.
-    apply_picker_effort_level(record, effort_level);
-    record.updated_at = crate::util::now_iso();
-    save_managed_agents(&app, &records)
 }
 
 /// Atomically set the record's canonical effort column and strip every stale

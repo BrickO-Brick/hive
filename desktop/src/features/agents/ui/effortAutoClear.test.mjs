@@ -28,9 +28,14 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>", {
 });
 
 let act;
+let render;
 let renderHook;
+let screen;
 let cleanup;
 let useEffortAutoClear;
+let EffortSelectField;
+let fromRawAcpRuntimeCatalogEntry;
+let createElement;
 
 before(async () => {
   // Set up JSDOM globals before importing React components.
@@ -59,8 +64,16 @@ before(async () => {
     writable: true,
   });
 
-  ({ act, renderHook, cleanup } = await import("@testing-library/react"));
-  ({ useEffortAutoClear } = await import("./buzzAgentModelTuningFields.tsx"));
+  ({ act, render, renderHook, screen, cleanup } = await import(
+    "@testing-library/react"
+  ));
+  ({ useEffortAutoClear, EffortSelectField } = await import(
+    "./buzzAgentModelTuningFields.tsx"
+  ));
+  ({ fromRawAcpRuntimeCatalogEntry } = await import(
+    "../../../shared/api/tauri.ts"
+  ));
+  ({ createElement } = await import("react"));
 });
 
 afterEach(() => {
@@ -131,4 +144,130 @@ test("useEffortAutoClear clears a value genuinely absent from the canonical list
     1,
     "useEffortAutoClear must not double-fire on re-render",
   );
+});
+
+// ── EffortSelectField renderer regression: Goose `off` as option + selected ──
+//
+// P3 blocker: EffortSelectField iterated only BUZZ_AGENT_THINKING_EFFORT_VALUES
+// (no "off"), so a saved currentEffort="off" fell back to the placeholder.
+// Fixed: option set is the union of effortValid (runtime canonical) and the
+// master list. These tests pin the wiring from catalog → effortCanonicalValues
+// → option presence + selection state.
+//
+// Mutation proofs:
+//   - Reverting EffortSelectField to iterate only BUZZ_AGENT_THINKING_EFFORT_VALUES
+//     removes "off" from the rendered options → optionValues won't contain "off".
+//   - Removing "off" from effortCanonicalValues in fromRawAcpRuntimeCatalogEntry
+//     removes it from effortValid → same failure.
+
+// The renderer symbols (render, screen, createElement) and production modules
+// (EffortSelectField, fromRawAcpRuntimeCatalogEntry) are imported in the same
+// `before` block above; they are referenced here from the outer scope.
+
+/** Minimal raw catalog entry for Goose with effort_canonical_values. */
+function rawGooseCatalogEntry() {
+  return {
+    id: "goose",
+    label: "Goose",
+    avatar_url: "",
+    availability: "available",
+    command: "goose",
+    binary_path: "/usr/local/bin/goose",
+    default_args: [],
+    mcp_command: null,
+    model_env_var: null,
+    provider_env_var: null,
+    thinking_env_var: "GOOSE_THINKING_EFFORT",
+    max_tokens_env_var: null,
+    context_limit_env_var: null,
+    max_rounds_env_var: null,
+    install_hint: "",
+    install_instructions_url: "",
+    can_auto_install: false,
+    requires_external_cli: false,
+    underlying_cli_path: null,
+    node_required: false,
+    auth_status: { status: "not_applicable" },
+    login_hint: null,
+    source: "builtin",
+    // Rust serializes these — the production fix that unlocked the values.
+    effort_canonical_values: ["off", "low", "medium", "high", "max"],
+  };
+}
+
+test("EffortSelectField: off is present as an option when fed Goose canonical values (mount)", async () => {
+  // Wire: fromRawAcpRuntimeCatalogEntry → effortCanonicalValues → effortValid →
+  // EffortSelectField option enumeration. Reverting EffortSelectField to
+  // iterate only the buzz-agent master list removes "off" and fails this test.
+  const runtime = fromRawAcpRuntimeCatalogEntry(rawGooseCatalogEntry());
+  const effortValid = runtime.effortCanonicalValues ?? [];
+  assert.ok(
+    effortValid.includes("off"),
+    "effortCanonicalValues must include off (catalog wiring check)",
+  );
+
+  const { unmount } = render(
+    createElement(EffortSelectField, {
+      currentEffort: "off",
+      effortDefault: null,
+      effortValid,
+      htmlFor: "test-effort",
+      label: "Effort",
+      onChange: () => {},
+      showUnavailableOptions: false,
+      testId: "test-effort-select",
+      useCustomSelect: false,
+    }),
+  );
+
+  // The select element must contain an <option value="off"> — visible to the
+  // renderer. Without the union fix, "off" is absent and currentEffort="off"
+  // has no matching option, so the control falls back to the placeholder.
+  const select = screen.getByTestId("test-effort-select");
+  const optionValues = Array.from(select.options).map((o) => o.value);
+  assert.ok(
+    optionValues.includes("off"),
+    `EffortSelectField must render off as an option for Goose; got: ${optionValues.join(",")}`,
+  );
+  // The select's value must be "off" (the option is selected, not placeholder).
+  assert.equal(
+    select.value,
+    "off",
+    'closed control must visibly select "off", not fall back to placeholder',
+  );
+  unmount();
+});
+
+test("EffortSelectField: off survives rerender (unrelated save simulation)", async () => {
+  // Confirm "off" remains selected after a re-render that simulates an
+  // unrelated settings/onboarding save (same props, second render cycle).
+  const runtime = fromRawAcpRuntimeCatalogEntry(rawGooseCatalogEntry());
+  const effortValid = runtime.effortCanonicalValues ?? [];
+
+  const props = {
+    currentEffort: "off",
+    effortDefault: null,
+    effortValid,
+    htmlFor: "test-effort2",
+    label: "Effort",
+    onChange: () => {},
+    showUnavailableOptions: false,
+    testId: "test-effort-select2",
+    useCustomSelect: false,
+  };
+
+  const { rerender, unmount } = render(createElement(EffortSelectField, props));
+  let select = screen.getByTestId("test-effort-select2");
+  assert.equal(select.value, "off", 'mount: "off" must be selected');
+
+  // Re-render with identical props — simulates the parent re-rendering on
+  // an unrelated config save without changing the effort value.
+  rerender(createElement(EffortSelectField, props));
+  select = screen.getByTestId("test-effort-select2");
+  assert.equal(
+    select.value,
+    "off",
+    'rerender: "off" must still be selected after unrelated save',
+  );
+  unmount();
 });

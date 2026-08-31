@@ -247,8 +247,8 @@ function effortConfigSurface() {
 // selection, never before the update settles. `failUpdate` makes
 // `update_managed_agent` reject immediately; `deferUpdate` holds it pending
 // until the returned `resolveUpdate()` is called.
-// Note: `persist_agent_effort_level` is NOT called from the dialog's Save path
-// (PR #4625 — effort is embedded in the locked update payload); no mock needed.
+// Note: `persist_agent_effort_level` has been removed (PR #4625 pass 3);
+// effort is embedded in the locked update payload — no mock needed.
 function installEffortIpc({ deferUpdate = false, failUpdate = false } = {}) {
   installIpc();
   const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
@@ -521,10 +521,9 @@ async function selectEffort(label) {
 }
 
 function effortCalls() {
-  // After P3 fix: effort is persisted inside the locked update_managed_agent
-  // payload (input.effortLevel) rather than a separate persist_agent_effort_level
-  // IPC call. This helper returns update_managed_agent calls that carry an
-  // effortLevel in their args.input — the canonical evidence that effort was persisted.
+  // Effort is persisted inside the locked update_managed_agent payload
+  // (input.effortLevel) — not a separate IPC call. This helper returns
+  // update_managed_agent calls that carry an effortLevel in their args.input.
   return ipcCalls.filter(
     (c) =>
       c.cmd === "update_managed_agent" &&

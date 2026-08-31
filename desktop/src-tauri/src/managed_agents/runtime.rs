@@ -743,11 +743,20 @@ pub fn spawn_agent_child(
         resolve_session_title(record.display_name.as_deref(), &record.name),
     );
     build_buzz_agent_provider_defaults(&mut command);
-    // Strip every known/legacy/transport effort key from the Command before the
-    // descriptor overlay. `Command` inherits the parent process env implicitly —
-    // an ambient effort key would survive into `descriptor.env` and leave two
-    // active effort authorities. The overlay emits exactly one projected key.
-    super::config_bridge::effort::strip_effort_keys_from_command(&mut command);
+    // Strip all known effort keys and emit exactly one projected key. `Command`
+    // inherits the parent env — an ambient effort key would leave two authorities.
+    // `apply_effort_launch_to_command` is the seam the process-boundary tests
+    // exercise; deleting or misordering it fails those child-env assertions.
+    let effort_launch = super::config_bridge::effort::effort_launch_projection(
+        record,
+        runtime_meta,
+        &personas,
+        record.persona_id.as_deref(),
+        &global.env_vars,
+        None, // harness_def: strip/emit is the goal; descriptor.env covers the full tier
+        &super::agent_env::baked_build_env(),
+    );
+    super::config_bridge::effort::apply_effort_launch_to_command(&mut command, &effort_launch);
     if let Some(meta) = runtime_meta {
         for (key, value) in runtime_metadata_env_vars(
             meta.model_env_var,
@@ -815,8 +824,8 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    // Effort authority is fully resolved: `descriptor.env` carries the single
-    // projected key. No further write is needed — adding one would double-write.
+    // Effort authority: `apply_effort_launch_to_command` above already emitted the
+    // projected key; `descriptor.env` re-writes the same value (no double authority).
 
     // A1: for local claude agents, ANTHROPIC_MODEL is the single startup model authority.
     // BUZZ_ACP_MODEL is removed (live ACP switches only; two authorities in the same env
@@ -847,10 +856,8 @@ pub fn spawn_agent_child(
         .env("BUZZ_MANAGED_AGENT", current_instance_id(app))
         .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce);
 
-    // Stamp the effective spawn config from the values that populated the
-    // `Command` above, BEFORE spawning. Re-resolving after `spawn()` would let
-    // a persona/harness/global edit landing in between stamp the NEW config
-    // onto a child running the OLD one, silently suppressing the badge.
+    // Stamp spawn config from values above, BEFORE spawning — a post-spawn
+    // re-resolve races config edits and would stamp the wrong values.
     let spawn_config = super::spawn_snapshot::SpawnConfigSnapshot::from_inputs(
         super::spawn_snapshot::SpawnConfigInputs {
             record,
@@ -864,8 +871,7 @@ pub fn spawn_agent_child(
         },
     );
 
-    // Spawn the harness in its own process group so we can kill the entire
-    // tree (harness + MCP servers + agent subprocesses) on shutdown.
+    // Spawn in its own process group (Unix) or with CREATE_NO_WINDOW (Windows).
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -889,14 +895,8 @@ pub fn spawn_agent_child(
         )
     })?;
 
-    // Stamp the adapter availability for runtimes with a version gate (codex
-    // only). The summary builder compares this against the current cached value
-    // to detect out-of-band adapter changes after spawn (Phase-2 badge fallback).
-    // Non-codex runtimes get `None` — nothing changes for them.
-    // When the cache is cold (e.g. Doctor just installed and cleared the cache),
-    // `adapter_availability_cached()` returns `None`, so the stamp is `None` and
-    // the drift check is skipped until discovery warms the cache — preventing a
-    // false restart badge immediately after auto-restart.
+    // Codex: stamp adapter availability for the Phase-2 badge drift check.
+    // Cold cache returns `None` → drift check skipped until discovery warms it.
     let spawned_adapter_availability = if runtime_meta.is_some_and(|r| r.id == "codex") {
         super::adapter_availability_cached()
     } else {

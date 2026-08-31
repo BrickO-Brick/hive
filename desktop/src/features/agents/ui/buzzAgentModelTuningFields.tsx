@@ -105,10 +105,23 @@ export function EffortSelectField({
     : effortDefault === null
       ? "Inherit (default)"
       : (inheritFallbackLabel ?? "Inherit");
+  // Build the option set as the union of the runtime's valid values and the
+  // buzz-agent master list. This ensures runtime-native values like Goose's
+  // "off" appear as options even though they are not in the buzz-agent list.
+  // Ordering: effortValid values (in their supplied order) come first; any
+  // remaining master-list values that are not in effortValid follow as
+  // disabled options. This preserves runtime-authored ordering for valid
+  // values while keeping buzz-agent unavailable options visible when the
+  // caller requests them (showUnavailableOptions).
+  const effortValidSet = new Set(effortValid as readonly string[]);
+  const allValues = [
+    ...(effortValid as readonly string[]),
+    ...BUZZ_AGENT_THINKING_EFFORT_VALUES.filter((v) => !effortValidSet.has(v)),
+  ];
   const effortOptions: AgentDropdownOption[] = [
     { label: emptyOptionLabel ?? inheritLabel, value: "" },
-    ...BUZZ_AGENT_THINKING_EFFORT_VALUES.flatMap((v) => {
-      const isValid = (effortValid as readonly string[]).includes(v);
+    ...allValues.flatMap((v) => {
+      const isValid = effortValidSet.has(v);
       if (!showUnavailableOptions && !isValid) return [];
       const isDefault = v === effortDefault;
       return [

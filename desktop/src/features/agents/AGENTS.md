@@ -211,9 +211,11 @@ with a TypeScript lookup table or an id comparison in a component.
    call — NOT via a separate `persistAgentEffortLevel` IPC. This guarantees
    that an access-policy-change restart snapshots the NEW effort atomically
    (the restart happens after the locked save that wrote it). The standalone
-   `persist_agent_effort_level` Tauri command still exists for global/onboarding
-   surfaces that do not go through the dialog, but the dialog's Save path does
-   not call it. It must NOT persist on selection — a direct-write on selection
+   `persist_agent_effort_level` Tauri command has been removed (PR #4625 pass 3);
+   global/onboarding surfaces persist effort through their own env-map save
+   path (`set_global_agent_config`) and do NOT write managed-agent records
+   through any standalone effort setter. It must NOT persist on selection — a
+   direct-write on selection
    races the dialog's own locked save (a delayed effort IPC can restore a pin
    the pin→inherit save just cleared) and can commit a write a Cancel or failed
    Save should have discarded. On the pin→inherit transition the locked save
@@ -225,8 +227,8 @@ with a TypeScript lookup table or an id comparison in a component.
    `agent.backend.type === "local"` **AND** a `thought_level` `effortConfigId`
    has been discovered from the running session (absent pre-first-session and
    for runtimes/models without effort support). Local-only is load-bearing, not
-   cosmetic — both `persist_agent_effort_level` and the locked `update_managed_agent`
-   reject non-local backends because remote effort is set at deploy time via
+   cosmetic — the locked `update_managed_agent`
+   rejects non-local backends because remote effort is set at deploy time via
    `policy_env`. The field owns no mutation: the dialog holds the pending
    selection and threads it as `value`/`onChange` props, and the single write
    lives in `handleSubmit` (effort embedded in the locked update), so there is

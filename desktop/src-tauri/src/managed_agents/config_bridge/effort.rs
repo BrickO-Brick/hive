@@ -268,6 +268,31 @@ pub(crate) fn strip_effort_keys_from_command(cmd: &mut std::process::Command) {
     }
 }
 
+/// Strip every known effort key and emit the projected effort value to a
+/// [`std::process::Command`].
+///
+/// This is the production command-boundary seam: call after
+/// `build_buzz_agent_provider_defaults` (which writes raw baked env) and
+/// before the `descriptor.env` loop (which overlays the projected key).
+/// Extracting both steps into one call lets tests exercise the full
+/// baked-write → strip → emit sequence and inspect the child's effective
+/// environment, making the test fail if either step is removed or misordered
+/// in production.
+///
+/// - Strip: removes all suppress-set keys (canonical + lowercase variant) so
+///   no ambient inherited or baked key shadows the projected authority.
+/// - Emit: writes exactly one projected key+value when `launch.value` is
+///   `Some`; emits nothing on `None` (no effort for this spawn).
+pub(crate) fn apply_effort_launch_to_command(
+    cmd: &mut std::process::Command,
+    launch: &EffortLaunch,
+) {
+    strip_effort_keys_from_command(cmd);
+    if let Some(ref value) = launch.value {
+        cmd.env(launch.key, value);
+    }
+}
+
 /// The effort keys the restart snapshot must strip from its captured launch env
 /// so effort keeps exactly ONE representation (`effort_level`), mirroring what
 /// [`effort_launch_projection`] actually suppressed for `runtime`:

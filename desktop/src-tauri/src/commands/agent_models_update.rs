@@ -35,10 +35,10 @@ fn ensure_access_policy_change_supported(
     Ok(())
 }
 
-/// Reject an effort mutation for a non-local record, mirroring the contract of
-/// `persist_agent_effort_level`. Remote effort is deployment-owned (set via
-/// `policy_env` at deploy time); persisting locally would make the canonical
-/// column diverge from the deployed runtime's actual effort.
+/// Reject an effort mutation for a non-local record. Remote effort is
+/// deployment-owned (set via `policy_env` at deploy time); persisting locally
+/// would make the canonical column diverge from the deployed runtime's actual
+/// effort.
 fn ensure_effort_change_supported(
     record: &ManagedAgentRecord,
     effort_level: &Option<Option<String>>,
@@ -48,6 +48,28 @@ fn ensure_effort_change_supported(
             "agent {} is not a local agent; remote effort is set at deploy time",
             record.pubkey
         ));
+    }
+    Ok(())
+}
+
+/// Guard + apply in one call: the production update seam for effort.
+///
+/// Rejects non-local records (same contract as the old standalone command),
+/// then delegates to `apply_picker_effort_level` for local records when a
+/// value is present. Absent `effort_level` (`None` outer) is a no-op.
+///
+/// Split from the Tauri command so tests can verify that deletion of the
+/// guard call makes a non-local set/clear pass through and mutate the record,
+/// and that deletion of the apply call leaves the column unchanged on a local
+/// set. Deleting either half in production leaves the other half untested by
+/// the predicate-only tests in `agent_models_update_tests.rs`.
+pub(crate) fn apply_effort_update(
+    record: &mut ManagedAgentRecord,
+    effort_level: Option<Option<String>>,
+) -> Result<(), String> {
+    ensure_effort_change_supported(record, &effort_level)?;
+    if let Some(effort_override) = effort_level {
+        crate::commands::agent_config::apply_picker_effort_level(record, effort_override);
     }
     Ok(())
 }
@@ -246,12 +268,9 @@ pub async fn update_managed_agent(
         // restart (above) snapshots and launches the new effort value, not the
         // old one. Present + Some(value) = set; Present + None = clear.
         // Absent = don't touch (the dialog sends it only when effortTouched).
-        // Uses the same alias-sweep as persist_agent_effort_level so no
-        // stale record-scope alias outranks the just-written column.
-        ensure_effort_change_supported(record, &input.effort_level)?;
-        if let Some(effort_override) = input.effort_level {
-            crate::commands::agent_config::apply_picker_effort_level(record, effort_override);
-        }
+        // Uses the same alias-sweep applied inside apply_picker_effort_level so
+        // no stale record-scope alias outranks the just-written column.
+        apply_effort_update(record, input.effort_level)?;
 
         record.updated_at = now_iso();
 

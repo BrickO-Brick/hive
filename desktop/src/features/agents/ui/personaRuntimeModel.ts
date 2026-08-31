@@ -92,11 +92,10 @@ export function resolveAgentCommandUpdate(input: {
 
 /**
  * Decide whether Save should persist the effort picker's selection, and with
- * what value. The effort write is a Save-gated standalone setter (mirrors
- * {@link resolveAgentCommandUpdate}'s Save-only sentinel and the
- * `setManagedAgentAutoRestart` precedent), so this runs only inside the submit
- * path — Cancel and a failed Save never reach it, and no write is dispatched
- * independently of the dialog outcome.
+ * what value. Effort is embedded in the locked `update_managed_agent` payload
+ * (PR #4625) — this runs only inside the submit path, so Cancel and a failed
+ * Save never reach it, and no write is dispatched independently of the dialog
+ * outcome.
  *
  * `inheritTransition` is the pin→inherit case (the empty-command sentinel
  * `resolveAgentCommandUpdate` returns). The locked `update_managed_agent` save
