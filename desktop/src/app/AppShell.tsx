@@ -147,7 +147,6 @@ export function AppShell() {
     goChannel,
     goHome,
     goNewMessage,
-    goProjects,
     goPulse,
     goSettings,
     goWorkflows,
@@ -886,7 +885,6 @@ export function AppShell() {
                             scopeSearchFocusRequest,
                           ]}
                           onSelectHome={() => void goHome()}
-                          onSelectProjects={() => void goProjects()}
                           onSelectPulse={() => void goPulse()}
                           onSelectSettings={handleOpenSettings}
                           onSelectWorkflows={() => void goWorkflows()}
@@ -903,9 +901,6 @@ export function AppShell() {
                             })
                           }
                           profile={profileQuery.data}
-                          projectsOverviewActive={
-                            location.pathname === "/projects"
-                          }
                           selfUserStatus={
                             deferredPubkey
                               ? (selfStatusQuery.data?.[

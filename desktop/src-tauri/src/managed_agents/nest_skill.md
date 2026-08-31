@@ -60,6 +60,7 @@ Output varies by command group — `--help` shows flags but not response shapes.
 | Command | Output |
 |---------|--------|
 | `canvas get` | raw markdown string or `null` — NOT a JSON envelope |
+| `canvas notify` | local JSON acknowledgment with `accepted`, `change`, `notificationId`, `projectId`, `revision`, `sourcePath`, and `widgetId` |
 | `social *`, `repos get/list` | raw Nostr event JSON INCLUDING `sig` — different contract than read commands above |
 | `repos protect list` | `{repo_id, protections: [{ref, rules}], unknown_rules, validation_error}` |
 | `upload file` | pretty-printed multi-line `BlobDescriptor`: `{url, sha256, size, type, uploaded}` |
@@ -71,6 +72,16 @@ Output varies by command group — `--help` shows flags but not response shapes.
 | `pack validate/inspect` | human-readable text, not JSON |
 
 **Errors** go to stderr as `{"error": "<category>", "message": "<detail>"}`. Exit codes: 0 = success, 1 = input/not-found, 2 = relay/network, 3 = auth, 4 = other, 5 = write conflict (value superseded).
+
+## Project Canvas Updates
+
+`canvas get/set` operate on relay-backed channel Canvas markdown. `canvas notify` instead tells the running local Buzz Desktop that an external project widget package changed.
+
+1. Read the active nest's `CANVASES/index.json`, match the exact community and canonical project coordinate, and edit only that entry's `sourcePath`. Never edit `index.json` or `.runtime/`.
+2. For widget values, edit `data/*.json`, then run `buzz canvas notify --source <sourcePath> --widget <widget-id> --change data`. The live iframe stays mounted. Object renderers may animate with `update(currentElement, nextData, previousData, api)`; function renderers receive a targeted content remount.
+3. For JavaScript, CSS, layout, assets, or manifest changes, run `buzz canvas notify --source <sourcePath> --widget <widget-id> --change presentation`. Buzz validates the package and activates a fresh sandboxed iframe through its last-known-good render gate.
+
+The source must be listed in that nest's index, the widget id must be unique in the package data, and Buzz Desktop must be running. This command is local-only and does not require `BUZZ_PRIVATE_KEY` or publish a relay event. The manual Reload Canvas button remains available.
 
 ## Compact Format
 

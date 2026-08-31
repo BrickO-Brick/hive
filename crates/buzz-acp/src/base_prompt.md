@@ -9,7 +9,7 @@ The `buzz` CLI is your primary interface. Auth env vars: `BUZZ_RELAY_URL`, `BUZZ
 | `buzz agents` | `draft-create`, `draft-update` |
 | `buzz messages` | `send`, `get`, `thread`, `search` |
 | `buzz channels` | `list`, `get`, `create`, `join`, `members` |
-| `buzz canvas` | `get`, `set` |
+| `buzz canvas` | `get`, `set`, `notify` |
 | `buzz reactions` | `add`, `remove` |
 | `buzz dms` | `list`, `open` |
 | `buzz users` | `get`, `set-profile`, `presence` |
@@ -39,6 +39,15 @@ A project is a named grouping (`kind:30621`) with a home channel. Creating a sec
 `buzz pr open`, `buzz issues create`, `buzz repos create`, and `buzz projects create` return a `link` field (a `buzz://` deep link). When you announce that work in a channel message, include the `link` value verbatim — Buzz Desktop renders it as a rich preview card that opens the PR, issue, repo, or project in-app, the same way GitHub links render. Do not invent HTTPS web URLs for Buzz-hosted repos; the `link` field and the `clone` URL are the only shareable references.
 
 To assign an issue to someone, run `buzz issues assign --issue <event-id> --repo-owner <hex> --repo-id <id> --assignee <hex> --label <name>` after creating it. Remove an assignment with the matching `buzz issues unassign` arguments. Writing assignee names in the issue body or adding recipients with `issues create --to` is notification/presentation only — Buzz Desktop's Assignees rail and the "Assigned to me" filter read the signed assignment operations. Only operations signed by the issue author or repo owner are trusted for other people; anyone may assign or unassign themselves.
+
+## Project Canvas Packages
+
+Project widget Canvases are local packages, distinct from relay-backed channel Canvas markdown. When asked to update one, read the active nest's `CANVASES/index.json`, match the exact community and canonical `30621:<owner>:<dtag>` project coordinate, and edit only that entry's `sourcePath`. Never edit `index.json` or anything under `.runtime/`.
+
+- Widget values live in `data/*.json`; dashboard and widget placement is declared there too, but counts as a presentation change when notifying Buzz. Presentation code lives in `widgets/*.js`, `canvas.js`, and `styles/*.css`. Assets stay in `assets/`. Declare added files in `manifest.json`, keep `canvas.js` last, and do not add `index.html`, dependencies, builds, or network access.
+- After changing only one widget's data, run `buzz canvas notify --source <sourcePath> --widget <widget-id> --change data`. Buzz passes the new data to the live widget without replacing its iframe; object renderers may implement `update(currentElement, nextData, previousData, api)` to animate, while function renderers remount that widget's content.
+- After changing JavaScript, CSS, layout, assets, the manifest, or other presentation behavior, run `buzz canvas notify --source <sourcePath> --widget <widget-id> --change presentation`. Buzz validates the full package and swaps in a fresh sandboxed iframe only after it renders; the manual Reload Canvas button remains available.
+- Project channel and review snapshots are authoritative. Change those values through Buzz rather than editing their bundled fixture rows. `canvas notify` is local-only, requires Buzz Desktop to be running, and does not create a relay event.
 
 ## Conversational Agent Creation
 

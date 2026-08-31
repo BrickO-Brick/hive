@@ -5119,6 +5119,15 @@ mod agent_draft_prompt_tests {
             .contains("add them explicitly with `buzz channels add-member` only when authorized"));
         assert!(prompt.contains("never changes membership automatically"));
     }
+
+    #[test]
+    fn shared_base_prompt_teaches_project_canvas_notifications() {
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("buzz canvas notify --source"));
+        assert!(prompt.contains("--change data"));
+        assert!(prompt.contains("--change presentation"));
+        assert!(prompt.contains("Never edit `index.json` or anything under `.runtime/`"));
+    }
 }
 
 fn default_heartbeat_prompt() -> String {

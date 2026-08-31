@@ -199,6 +199,12 @@ type E2eConfig = {
     pocketVoiceImportResult?: "success" | "cancel" | "invalid";
     /** Advertised HEAD for the first mock project without adding that branch. */
     projectHeadBranch?: string;
+    /** Override the built-in project's display name for project-channel specs. */
+    starterProjectName?: string;
+    /** Delay Canvas activation so navigation can exercise stale reload cleanup. */
+    projectCanvasActivationDelayMs?: number;
+    /** Reject the activated Canvas candidate's render commit. */
+    projectCanvasCandidateCommitError?: string;
     /** Override the repository access channel for project authorization states. */
     projectAccessChannelId?: string;
     /** Make remote project snapshots fail with this git-facing message. */
@@ -1247,6 +1253,9 @@ declare global {
       event: string,
       payload: unknown,
     ) => Promise<void>;
+    __BUZZ_E2E_SET_PROJECT_CANVAS_UPDATE__?: (
+      change: "data" | "presentation" | null,
+    ) => void;
     __BUZZ_E2E_SET_MOCK_HUDDLE_SNAPSHOT__?: (input: {
       members: MockHuddleMemberSeed[];
       transcriptionEnabled: boolean;
@@ -1626,6 +1635,16 @@ function cloneMembers(members: RawChannelMember[]): RawChannelMember[] {
   return members.map((member) => ({ ...member }));
 }
 
+function getEffectiveMockChannelName(
+  channel: MockChannel,
+  config?: E2eConfig,
+): string {
+  if (channel.id === STARTER_PROJECT_HOME_CHANNEL_ID) {
+    return config?.mock?.starterProjectName || channel.name;
+  }
+  return channel.name;
+}
+
 function toRawChannel(
   channel: MockChannel,
   config?: E2eConfig,
@@ -1634,7 +1653,7 @@ function toRawChannel(
 
   return {
     id: channel.id,
-    name: channel.name,
+    name: getEffectiveMockChannelName(channel, config),
     channel_type: channel.channel_type,
     visibility: channel.visibility,
     description: channel.description,
@@ -2406,7 +2425,9 @@ function resetMockRelayAgents(config?: E2eConfig) {
     const channels = mockChannels.filter((channel) => {
       return (
         seed.channelIds?.includes(channel.id) ||
-        seed.channelNames?.includes(channel.name)
+        seed.channelNames?.includes(
+          getEffectiveMockChannelName(channel, config),
+        )
       );
     });
     mockRelayAgents.push({
@@ -2414,7 +2435,9 @@ function resetMockRelayAgents(config?: E2eConfig) {
       owner_pubkey: seed.ownerPubkey ?? null,
       name: seed.name,
       agent_type: seed.agentType ?? "goose",
-      channels: channels.map((channel) => channel.name),
+      channels: channels.map((channel) =>
+        getEffectiveMockChannelName(channel, config),
+      ),
       channel_ids: channels.map((channel) => channel.id),
       capabilities: seed.capabilities ?? ["messages", "channels", "mcp"],
       status: seed.status ?? "online",
@@ -2455,7 +2478,9 @@ function resetMockManagedAgents(config?: E2eConfig) {
     for (const channel of mockChannels) {
       const isSeedChannel =
         seed.channelIds?.includes(channel.id) ||
-        seed.channelNames?.includes(channel.name);
+        seed.channelNames?.includes(
+          getEffectiveMockChannelName(channel, config),
+        );
       if (
         !isSeedChannel ||
         channel.members.some((member) => member.pubkey === seed.pubkey)
@@ -4113,12 +4138,104 @@ function getManagedAgentRelayMembership(pubkey: string) {
 
   return {
     channelIds: memberships.map((channel) => channel.id),
-    channels: memberships.map((channel) => channel.name),
+    channels: memberships.map((channel) =>
+      getEffectiveMockChannelName(channel, getConfig()),
+    ),
   };
 }
 
 function getConfig(): E2eConfig | undefined {
   return window.__BUZZ_E2E__;
+}
+
+const mockProjectCanvasCandidateLoads = new Set<string>();
+let mockProjectCanvasPendingUpdates: {
+  data: {
+    data: unknown;
+    notificationId: string;
+    revision: string;
+    widgetId: string;
+  } | null;
+  presentation: {
+    notificationId: string;
+    package: ReturnType<typeof mockProjectCanvasPackageDescriptor>;
+    widgetId: string;
+  } | null;
+} = { data: null, presentation: null };
+
+function mockProjectCanvasPackageDescriptor(candidate = false) {
+  const loadId = crypto.randomUUID().replaceAll("-", "");
+  const nonce = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll(
+    "-",
+    "",
+  );
+  const shell = `<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; media-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<style>html,body,#canvas-root{height:100%;margin:0}body{font-family:system-ui;background:#f7f7f8;color:#18181b}#canvas-root{display:grid;place-items:center}</style>
+</head><body><main id="canvas-root"></main><script>
+(() => {
+  const loadId = ${JSON.stringify(loadId)};
+  const nonce = ${JSON.stringify(nonce)};
+  const root = document.getElementById("canvas-root");
+  const connect = (event) => {
+    const message = event.data;
+    if (event.source !== parent || !message || message.type !== "host.connect" || message.protocolVersion !== 1 || message.loadId !== loadId || message.nonce !== nonce || event.ports.length !== 1) return;
+    removeEventListener("message", connect);
+    const port = event.ports[0];
+    Object.defineProperty(window, "buzzCanvas", { configurable: false, value: Object.freeze({ protocolVersion: 1, port }), writable: false });
+    port.onmessage = ({ data }) => {
+      if (!data || data.protocolVersion !== 1 || data.loadId !== loadId || data.nonce !== nonce) return;
+      if (data.type === "host.init") {
+        root.dataset.canvasReady = "true";
+        root.dataset.canvasMode = data.mode;
+        root.textContent = data.project.name;
+        try {
+          void parent.document.body;
+          root.dataset.parentDom = "allowed";
+        } catch {
+          root.dataset.parentDom = "blocked";
+        }
+        root.dataset.tauriIpc = typeof window.__TAURI_INTERNALS__ === "undefined" ? "blocked" : "allowed";
+        const popup = window.open("about:blank", "_blank");
+        root.dataset.popup = popup === null ? "blocked" : "allowed";
+        if (popup) popup.close();
+        root.dataset.network = "checking";
+        fetch("https://example.invalid/canvas-probe").then(
+          () => { root.dataset.network = "allowed"; },
+          () => { root.dataset.network = "blocked"; },
+        );
+        port.postMessage({ type: "canvas.rendered", protocolVersion: 1, loadId, nonce, dashboard: "e2e" });
+      } else if (data.type === "host.mode") {
+        root.dataset.canvasMode = data.mode;
+      } else if (data.type === "host.dataChanged") {
+        root.dataset.canvasDataChanged = "true";
+      } else if (data.type === "host.widgetDataChanged") {
+        root.dataset.canvasWidgetDataChanged = "true";
+        root.dataset.canvasWidgetId = data.widgetId;
+        root.dataset.canvasWidgetVersion = String(data.data?.version ?? "");
+      }
+    };
+    port.start();
+  };
+  addEventListener("message", connect);
+  parent.postMessage({ type: "canvas.ready", protocolVersion: 1, nonce }, "*");
+})();
+</script></body></html>`;
+  if (candidate) mockProjectCanvasCandidateLoads.add(loadId);
+  return {
+    capabilities: [
+      "project.metadata.read",
+      "project.channels.read",
+      "project.reviews.read",
+    ],
+    data: { dashboard: "e2e", version: 1 },
+    loadId,
+    nonce,
+    revision: loadId,
+    url: `data:text/html;charset=utf-8,${encodeURIComponent(shell)}`,
+  };
 }
 
 function readStoredIdentityOverride(): TestIdentity | undefined {
@@ -4690,7 +4807,8 @@ function prependMockHistory(input: {
   emit?: boolean;
 }) {
   const channel = mockChannels.find(
-    (candidate) => candidate.name === input.channelName,
+    (candidate) =>
+      getEffectiveMockChannelName(candidate, getConfig()) === input.channelName,
   );
   if (!channel) {
     throw new Error(`Unknown mock channel: ${input.channelName}`);
@@ -4719,7 +4837,10 @@ function prependMockHistory(input: {
       [["h", channel.id]],
       ALICE_PUBKEY,
       createdAtStart + offset,
-      `mock-older-${channel.name}-${index}`.replace(/[^a-zA-Z0-9]/g, ""),
+      `mock-older-${getEffectiveMockChannelName(channel, getConfig())}-${index}`.replace(
+        /[^a-zA-Z0-9]/g,
+        "",
+      ),
     );
   });
 
@@ -6129,7 +6250,7 @@ function buildMockProjectEvents(): RelayEvent[] {
         "",
         [
           ["d", "buzz"],
-          ["name", "buzz"],
+          ["name", getConfig()?.mock?.starterProjectName ?? "buzz"],
           ["description", "The complete Buzz community platform."],
           ["a", `${KIND_REPO_ANNOUNCEMENT}:${projectOwner}:buzz`],
           ["a", `${KIND_REPO_ANNOUNCEMENT}:${ALICE_PUBKEY}:relay-tools`],
@@ -9784,7 +9905,9 @@ async function handleSearchMessages(
           kind: event.kind,
           pubkey: event.pubkey,
           channel_id: channelId,
-          channel_name: channel?.name ?? null,
+          channel_name: channel
+            ? getEffectiveMockChannelName(channel, getConfig())
+            : null,
           created_at: event.created_at,
           score: 1,
         });
@@ -11183,7 +11306,8 @@ export function maybeInstallE2eTauriMocks() {
     id,
   }) => {
     const channel = mockChannels.find(
-      (candidate) => candidate.name === channelName,
+      (candidate) =>
+        getEffectiveMockChannelName(candidate, config) === channelName,
     );
     if (!channel) {
       throw new Error(`Mock channel ${channelName} not found.`);
@@ -11210,7 +11334,8 @@ export function maybeInstallE2eTauriMocks() {
     threadHeadId,
   }) => {
     const channel = mockChannels.find(
-      (candidate) => candidate.name === channelName,
+      (candidate) =>
+        getEffectiveMockChannelName(candidate, config) === channelName,
     );
     if (!channel) {
       throw new Error(`Mock channel ${channelName} not found.`);
@@ -11225,7 +11350,8 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__ = ({ channelName, kind }) => {
     const channel = mockChannels.find(
-      (candidate) => candidate.name === channelName,
+      (candidate) =>
+        getEffectiveMockChannelName(candidate, config) === channelName,
     );
     if (!channel) {
       throw new Error(`Mock channel ${channelName} not found.`);
@@ -14246,6 +14372,47 @@ export function maybeInstallE2eTauriMocks() {
         // Return the no-canvas success shape — content null means no canvas set.
         return { content: null, updated_at: null, author: null };
       }
+      case "get_project_canvas_package":
+        return mockProjectCanvasPackageDescriptor();
+      case "get_project_canvas_updates":
+        return mockProjectCanvasPendingUpdates;
+      case "activate_project_canvas_package": {
+        const delayMs = activeConfig?.mock?.projectCanvasActivationDelayMs ?? 0;
+        if (delayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        }
+        return mockProjectCanvasPackageDescriptor(true);
+      }
+      case "release_project_canvas_package": {
+        const loadId = (payload as { loadId?: string }).loadId;
+        if (loadId) mockProjectCanvasCandidateLoads.delete(loadId);
+        return null;
+      }
+      case "commit_project_canvas_package": {
+        const loadId = (payload as { loadId?: string }).loadId;
+        const commitError =
+          activeConfig?.mock?.projectCanvasCandidateCommitError;
+        if (
+          loadId &&
+          commitError &&
+          mockProjectCanvasCandidateLoads.delete(loadId)
+        ) {
+          throw new Error(commitError);
+        }
+        if (
+          loadId &&
+          mockProjectCanvasPendingUpdates.presentation?.package.loadId ===
+            loadId
+        ) {
+          mockProjectCanvasPendingUpdates = {
+            ...mockProjectCanvasPendingUpdates,
+            presentation: null,
+          };
+        }
+        return null;
+      }
+      case "open_project_canvas_source":
+        return null;
       // ── Local-save archive ──────────────────────────────────────────────
       // These stubs drive the LocalArchiveSettingsCard in screenshot / UI tests
       // without requiring a real SQLite backend. `mockSaveSubscriptions` is a
@@ -14612,6 +14779,32 @@ export function maybeInstallE2eTauriMocks() {
     handleMockCommand(command, payload ?? null);
   window.__BUZZ_E2E_EMIT_TAURI_EVENT__ = (event, payload) =>
     emit(event, payload);
+  window.__BUZZ_E2E_SET_PROJECT_CANVAS_UPDATE__ = (change) => {
+    if (!change) {
+      mockProjectCanvasPendingUpdates = { data: null, presentation: null };
+      return;
+    }
+    if (change === "data") {
+      mockProjectCanvasPendingUpdates = {
+        data: {
+          data: { dashboard: "e2e", version: 2 },
+          notificationId: "11111111111141118111111111111111",
+          revision: "a".repeat(64),
+          widgetId: "e2e-widget",
+        },
+        presentation: null,
+      };
+      return;
+    }
+    mockProjectCanvasPendingUpdates = {
+      data: null,
+      presentation: {
+        notificationId: "22222222222242228222222222222222",
+        package: mockProjectCanvasPackageDescriptor(true),
+        widgetId: "e2e-widget",
+      },
+    };
+  };
   mockIPC(handleMockCommand, { shouldMockEvents: true });
   const tauriInternals = (
     window as typeof window & {
