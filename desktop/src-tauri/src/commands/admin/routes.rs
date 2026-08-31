@@ -139,6 +139,10 @@ pub struct AdminQuery {
     pub after: Option<String>,
     pub before: Option<String>,
     pub limit: Option<i64>,
+    /// Visibility scope for the reports list.
+    /// `Some("all")` requests every status; `None` omits the parameter and
+    /// uses the relay's escalated-only default.
+    pub scope: Option<String>,
 }
 
 impl AdminQuery {
@@ -166,6 +170,9 @@ impl AdminQuery {
         }
         if let Some(v) = &self.limit {
             parts.push(format!("limit={v}"));
+        }
+        if let Some(v) = &self.scope {
+            parts.push(format!("scope={}", urlencoded(v)));
         }
         parts.join("&")
     }
@@ -337,5 +344,40 @@ mod tests {
         // & in value must be encoded so it doesn't split the query.
         assert!(!qs.contains("status=open&active"), "bare & leaked: {qs}");
         assert!(qs.contains("status="), "status key missing: {qs}");
+    }
+
+    #[test]
+    fn query_scope_all_serializes() {
+        let q = AdminQuery {
+            scope: Some("all".to_string()),
+            ..Default::default()
+        };
+        let qs = q.to_query_string();
+        assert_eq!(qs, "scope=all", "scope=all must serialize; got: {qs}");
+    }
+
+    #[test]
+    fn query_scope_none_omitted() {
+        let q = AdminQuery {
+            limit: Some(10),
+            ..Default::default()
+        };
+        let qs = q.to_query_string();
+        assert!(
+            !qs.contains("scope"),
+            "scope must be absent when None; got: {qs}"
+        );
+    }
+
+    #[test]
+    fn query_scope_all_with_limit() {
+        let q = AdminQuery {
+            scope: Some("all".to_string()),
+            limit: Some(50),
+            ..Default::default()
+        };
+        let qs = q.to_query_string();
+        assert!(qs.contains("scope=all"), "scope=all must appear; got: {qs}");
+        assert!(qs.contains("limit=50"), "limit=50 must appear; got: {qs}");
     }
 }

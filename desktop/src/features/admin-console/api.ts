@@ -210,6 +210,17 @@ export type AdminReportsQuery = {
   after?: string;
   before?: string;
   limit?: number;
+  /**
+   * Visibility scope for the reports list.
+   * - Omitted (default): relay returns escalated-only — the platform-safety
+   *   backstop queue for callers that want the narrow view.
+   * - `"all"`: relay returns every status (`open`, `processing`, `resolved`,
+   *   `dismissed`, `escalated`). The admin console always requests `"all"` so
+   *   operators can see and act on the full workflow queue.
+   *
+   * Ignored by the relay when an explicit `status` filter is present.
+   */
+  scope?: "all";
 };
 
 /** Fetch the deployment-wide reports list. */

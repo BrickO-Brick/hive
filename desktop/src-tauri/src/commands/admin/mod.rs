@@ -99,6 +99,11 @@ pub struct AdminReportsQuery {
     pub after: Option<String>,
     pub before: Option<String>,
     pub limit: Option<i64>,
+    /// Visibility scope forwarded to the relay's `scope` query parameter.
+    /// `Some("all")` requests every status; `None` uses the relay's default
+    /// (escalated-only). Only `"all"` is a valid value — the TypeScript layer
+    /// constrains the type to `"all" | undefined`.
+    pub scope: Option<String>,
 }
 
 // ── Probe ─────────────────────────────────────────────────────────────────
@@ -455,6 +460,7 @@ pub async fn admin_list_reports(
         after: query.after,
         before: query.before,
         limit: query.limit,
+        scope: query.scope,
     };
     let url = origin.route_url(&routes::AdminRoute::ReportsList, &q);
     let bytes = fetch_admin_json(&url, SUCCESS_JSON_CAP, &state).await?;

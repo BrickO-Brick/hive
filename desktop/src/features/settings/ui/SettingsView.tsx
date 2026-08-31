@@ -3,8 +3,6 @@ import { getVersion } from "@tauri-apps/api/app";
 import { AlertCircle, ArrowLeft, LoaderCircle, RefreshCw } from "lucide-react";
 
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
-import { useModerationNavResolution } from "@/features/admin-console/hooks";
-import { shouldShowModerationNav } from "@/features/admin-console/nav";
 import {
   canManageCommunityMembers,
   shouldWarnMissingMembershipSnapshot,
@@ -131,7 +129,6 @@ export function SettingsView({
 }: SettingsViewProps) {
   const { isMobile, open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const myMembershipQuery = useMyRelayMembershipLookupQuery();
-  const moderationNav = useModerationNavResolution();
   const featureState = useFeatureSnapshot();
   const visibleSections = React.useMemo(() => {
     return settingsSections.filter((s) => {
@@ -149,14 +146,16 @@ export function SettingsView({
       if (s.value === "community-members") {
         return canManageCommunityMembers(myMembershipQuery.data);
       }
-      // Moderation surfaces the relay admin console. Hidden until the origin
-      // resolves (no flash of a dead entry); then gated by origin + probe.
+      // Moderation surfaces the relay admin console. Always reachable so an
+      // operator can enter a manual origin even when NIP-11 discovery is
+      // absent, invalid, or pending — hiding the entry would lock them out of
+      // the only place to configure one. Auth still gates the panel itself.
       if (s.value === "moderation") {
-        return moderationNav != null && shouldShowModerationNav(moderationNav);
+        return true;
       }
       return true;
     });
-  }, [myMembershipQuery.data, moderationNav, featureState]);
+  }, [myMembershipQuery.data, featureState]);
 
   const [isLoaded, setIsLoaded] = React.useState(false);
   const [appVersion, setAppVersion] = React.useState<string | null>(null);
@@ -171,18 +170,10 @@ export function SettingsView({
   }, []);
 
   React.useEffect(() => {
-    // Defer section normalization while a direct link (`?section=moderation`)
-    // targets the Moderation entry and its visibility is still unresolved.
-    // That entry's visibility depends on an async origin+probe resolver
-    // (`moderationNav` is `undefined` until it resolves); redirecting first
-    // would bounce a valid direct link before the probe can authorize.
-    if (section === "moderation" && moderationNav === undefined) {
-      return;
-    }
     if (!visibleSections.some((entry) => entry.value === section)) {
       onSectionChange(visibleSections[0]?.value ?? "appearance");
     }
-  }, [moderationNav, onSectionChange, section, visibleSections]);
+  }, [onSectionChange, section, visibleSections]);
 
   React.useEffect(() => {
     if (!isMobile && !sidebarOpen) {

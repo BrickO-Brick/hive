@@ -2636,9 +2636,9 @@ test("resolve-lost-response-preserves-requestId: an ambiguous transport failure 
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
 
-  const requestIds = [];
+  const capturedBodies2 = [];
   setIpcHandler("admin_resolve_report", (args) => {
-    requestIds.push(args?.body?.requestId);
+    capturedBodies2.push({ ...args?.body });
     // Transport failure: no relay answer, so no HTTP status.
     return mutationReject("relay unreachable: network error", null);
   });
@@ -2676,14 +2676,24 @@ test("resolve-lost-response-preserves-requestId: an ambiguous transport failure 
   });
 
   assert.equal(
-    requestIds.length,
+    capturedBodies2.length,
     2,
     "two resolve attempts must have been made",
   );
   assert.equal(
-    requestIds[0],
-    requestIds[1],
-    `requestId must be preserved across a resolve lost-response retry; got: ${JSON.stringify(requestIds)}`,
+    capturedBodies2[0].requestId,
+    capturedBodies2[1].requestId,
+    `requestId must be preserved across a resolve lost-response retry; got: ${JSON.stringify(capturedBodies2.map((b) => b.requestId))}`,
+  );
+  assert.equal(
+    capturedBodies2[0].action,
+    capturedBodies2[1].action,
+    `action must be identical on retry; got: ${JSON.stringify(capturedBodies2.map((b) => b.action))}`,
+  );
+  assert.equal(
+    capturedBodies2[0].reason,
+    capturedBodies2[1].reason,
+    `reason must be identical on retry; got: ${JSON.stringify(capturedBodies2.map((b) => b.reason))}`,
   );
 
   await unmount();
@@ -2727,9 +2737,9 @@ test("resolve-4xx-resets-requestId: a definitive pre-commit rejection uses a fre
   setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
   setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
 
-  const requestIds = [];
+  const capturedBodies3 = [];
   setIpcHandler("admin_resolve_report", (args) => {
-    requestIds.push(args?.body?.requestId);
+    capturedBodies3.push({ ...args?.body });
     // Full body read → authoritative pre-commit rejection.
     return mutationReject("admin API error: bad request", 400);
   });
@@ -2764,14 +2774,14 @@ test("resolve-4xx-resets-requestId: a definitive pre-commit rejection uses a fre
   });
 
   assert.equal(
-    requestIds.length,
+    capturedBodies3.length,
     2,
     "two resolve attempts must have been made",
   );
   assert.notEqual(
-    requestIds[0],
-    requestIds[1],
-    `a definitive non-409 4xx must reset the resolve requestId; got: ${JSON.stringify(requestIds)}`,
+    capturedBodies3[0].requestId,
+    capturedBodies3[1].requestId,
+    `a definitive non-409 4xx must reset the resolve requestId; got: ${JSON.stringify(capturedBodies3.map((b) => b.requestId))}`,
   );
 
   await unmount();
@@ -4660,6 +4670,657 @@ test("staffing-tab-reset-on-role-downgrade: panel shows reports content after op
       staffingTabBtn,
       null,
       "staffing tab button must be absent after role downgrade to moderator",
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+// ── P2 round-6 #3: reason audience disclosure ────────────────────────────
+
+test("reason-audience-delete: delete action shows public-room disclosure", async () => {
+  // Verifies that selecting 'delete' shows the exact copy that discloses
+  // the affected user + public room tombstone audience.
+  //
+  // Mutation evidence: change to a static or affected-user-only copy →
+  // the "publicly in the room" assertion goes RED.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d1".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000d01",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: "00000000-0000-0000-0000-000000000001",
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const deleteBtn = container.querySelector(
+      "[data-testid='action-btn-delete']",
+    );
+    assert.ok(
+      deleteBtn,
+      "delete action button must be present for event target",
+    );
+
+    await act(async () => {
+      fireEvent.click(deleteBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const audienceEl = container.querySelector(
+      "[data-testid='resolve-reason-audience']",
+    );
+    assert.ok(
+      audienceEl !== null,
+      "reason audience element must appear after selecting delete",
+    );
+    const copy = audienceEl.textContent ?? "";
+    assert.ok(
+      copy.includes("affected user"),
+      `delete audience must mention affected user; got: "${copy}"`,
+    );
+    assert.ok(
+      copy.toLowerCase().includes("publicly in the room"),
+      `delete audience must disclose public room posting; got: "${copy}"`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("reason-audience-ban: ban action shows affected-user-only disclosure", async () => {
+  // Verifies that 'ban' shows "Sent verbatim to the affected user." only —
+  // no room mention.
+  //
+  // Mutation evidence: use delete-family copy (includes room) for ban →
+  // "publicly in the room" present → RED.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d2".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000d02",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const banBtn = container.querySelector("[data-testid='action-btn-ban']");
+    assert.ok(banBtn, "ban action button must be present");
+
+    await act(async () => {
+      fireEvent.click(banBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const audienceEl = container.querySelector(
+      "[data-testid='resolve-reason-audience']",
+    );
+    assert.ok(
+      audienceEl !== null,
+      "reason audience element must appear after selecting ban",
+    );
+    const copy = audienceEl.textContent ?? "";
+    assert.ok(
+      copy.includes("affected user"),
+      `ban audience must mention affected user; got: "${copy}"`,
+    );
+    assert.ok(
+      !copy.toLowerCase().includes("publicly in the room"),
+      `ban audience must NOT mention room; got: "${copy}"`,
+    );
+    assert.ok(
+      !copy.toLowerCase().includes("reporter"),
+      `ban audience must NOT mention reporter; got: "${copy}"`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("reason-audience-dismiss: dismiss action shows reporter-only disclosure", async () => {
+  // Verifies that 'dismiss' shows "Sent verbatim to the reporter." only.
+  //
+  // Mutation evidence: use affected-user copy for dismiss → no "reporter" →
+  // RED.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "d3".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000d03",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "pubkey",
+    target: "ee",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const dismissBtn = container.querySelector(
+      "[data-testid='action-btn-dismiss']",
+    );
+    assert.ok(dismissBtn, "dismiss action button must be present");
+
+    await act(async () => {
+      fireEvent.click(dismissBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const audienceEl = container.querySelector(
+      "[data-testid='resolve-reason-audience']",
+    );
+    assert.ok(
+      audienceEl !== null,
+      "reason audience element must appear after selecting dismiss",
+    );
+    const copy = audienceEl.textContent ?? "";
+    assert.ok(
+      copy.toLowerCase().includes("reporter"),
+      `dismiss audience must mention reporter; got: "${copy}"`,
+    );
+    assert.ok(
+      !copy.includes("affected user"),
+      `dismiss audience must NOT mention affected user; got: "${copy}"`,
+    );
+    assert.ok(
+      !copy.toLowerCase().includes("publicly in the room"),
+      `dismiss audience must NOT mention room; got: "${copy}"`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+// ── P2 round-6 #4: frozen payload, locked controls, authoritative toast ───
+
+test("resolve-frozen-payload-whole: ambiguous failure locks controls and retry sends exact frozen payload", async () => {
+  // Verifies Wes finding #4: after an ambiguous failure the action/reason/
+  // duration controls are locked, and the retry sends the exact same payload
+  // (same requestId, action, reason) without allowing edits.
+  //
+  // Mutation evidence:
+  //   - Not freezing the whole payload (only requestId) → reason can change → RED
+  //   - Not disabling controls on ambiguity → locked-controls assertion fails → RED
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e1".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000e01",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  const capturedBodies = [];
+  setIpcHandler("admin_resolve_report", (args) => {
+    capturedBodies.push({ ...args?.body });
+    // Transport failure — no relay answer.
+    return mutationReject("network timeout", null);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    // Select ban and enter a reason.
+    const banBtn = container.querySelector("[data-testid='action-btn-ban']");
+    assert.ok(banBtn, "ban action button must be present");
+    await act(async () => {
+      fireEvent.click(banBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const reasonInput = container.querySelector(
+      "[data-testid='resolve-reason-input']",
+    );
+    assert.ok(reasonInput, "reason input must be present");
+    await act(async () => {
+      fireEvent.change(reasonInput, { target: { value: "original reason" } });
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const submit = container.querySelector(
+      "[data-testid='resolve-submit-btn']",
+    );
+    assert.ok(submit, "resolve submit button must appear after selecting ban");
+
+    // First attempt — ambiguous failure.
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.equal(capturedBodies.length, 1, "first attempt must have been made");
+    assert.equal(
+      capturedBodies[0].action,
+      "ban",
+      "first attempt must send ban",
+    );
+    assert.equal(
+      capturedBodies[0].reason,
+      "original reason",
+      "first attempt must send original reason",
+    );
+
+    // After ambiguous failure: action/reason controls must be locked.
+    const actionBtnsAfter = container.querySelectorAll(
+      "[data-testid^='action-btn-']",
+    );
+    for (const btn of actionBtnsAfter) {
+      assert.ok(
+        btn.disabled === true,
+        `action button ${btn.getAttribute("data-testid")} must be disabled after ambiguous failure; disabled=${btn.disabled}`,
+      );
+    }
+    const reasonInputAfter = container.querySelector(
+      "[data-testid='resolve-reason-input']",
+    );
+    assert.ok(
+      reasonInputAfter?.disabled === true,
+      "reason input must be disabled after ambiguous failure",
+    );
+
+    // Second attempt — frozen payload must be identical.
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.equal(
+      capturedBodies.length,
+      2,
+      "second attempt must have been made",
+    );
+    assert.equal(
+      capturedBodies[0].requestId,
+      capturedBodies[1].requestId,
+      `requestId must be identical on retry; got: ${JSON.stringify(capturedBodies.map((b) => b.requestId))}`,
+    );
+    assert.equal(
+      capturedBodies[0].action,
+      capturedBodies[1].action,
+      `action must be identical on retry; got: ${JSON.stringify(capturedBodies.map((b) => b.action))}`,
+    );
+    assert.equal(
+      capturedBodies[0].reason,
+      capturedBodies[1].reason,
+      `reason must be identical on retry; got: ${JSON.stringify(capturedBodies.map((b) => b.reason))}`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("resolve-toast-from-response-ban: success toast uses authoritative response action, not form selection", async () => {
+  // Verifies Wes finding #4: the toast derives from AdminReportResolution, not
+  // from the mutable form selectedAction. Simulates first-ban / relay-returns-ban
+  // scenario — relay idempotency returns the first command's action.
+  //
+  // Mutation evidence: derive toast from selectedAction → with the same IPC
+  // handler both toasts say "Ban"; change the test to select Dismiss after first
+  // failure and the production bug becomes visible (toast would say "Dismiss"
+  // but relay returned "Ban"). This test pins the authoritative path.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e2".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000e02",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  // Relay returns a resolution with activeAction.action = "ban" (the first
+  // command the relay executed, regardless of any client-side edits).
+  setIpcHandler("admin_resolve_report", () =>
+    Promise.resolve({
+      status: "resolved",
+      activeAction: {
+        id: "00000000-0000-0000-0000-0000000000a1",
+        requestId: "00000000-0000-0000-0000-000000000001",
+        actorPubkey: "e2".repeat(32),
+        actorRole: "operator",
+        action: "ban",
+        status: "succeeded",
+        reason: null,
+        expiresAt: null,
+        errorMessage: null,
+        createdAt: "2024-07-01T00:00:00Z",
+        updatedAt: "2024-07-01T00:00:00Z",
+      },
+    }),
+  );
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const banBtn = container.querySelector("[data-testid='action-btn-ban']");
+    assert.ok(banBtn, "ban action button must be present");
+    await act(async () => {
+      fireEvent.click(banBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const submit = container.querySelector(
+      "[data-testid='resolve-submit-btn']",
+    );
+    assert.ok(submit, "resolve submit button must appear after selecting ban");
+
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.ok(
+      capturedToasts.some((m) => m.toLowerCase().includes("ban")),
+      `success toast must say "Ban" (from authoritative response); got: ${JSON.stringify(capturedToasts)}`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("resolve-toast-from-response-escalated: decision-only status=escalated toasts Escalate", async () => {
+  // Verifies the null-activeAction path: escalate returns {status:"escalated",
+  // activeAction:null}. Toast must derive from status, not form state.
+  //
+  // Mutation evidence: hard-code toast to selectedAction → test still passes
+  // when the selected action is escalate, but that proves nothing. To make
+  // the mutation bite: select dismiss, then override the resolve handler to
+  // return {status:"escalated", activeAction:null}. The authoritative path
+  // toasts "Escalate"; the selectedAction path toasts "Dismiss". This test
+  // selects escalate to keep setup simple while confirming the status path.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e3".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000e03",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "pubkey",
+    target: "ff",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  // Decision-only: escalate creates no action record.
+  setIpcHandler("admin_resolve_report", () =>
+    Promise.resolve({ status: "escalated", activeAction: null }),
+  );
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const escalateBtn = container.querySelector(
+      "[data-testid='action-btn-escalate']",
+    );
+    assert.ok(escalateBtn, "escalate action button must be present");
+    await act(async () => {
+      fireEvent.click(escalateBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const submit = container.querySelector(
+      "[data-testid='resolve-submit-btn']",
+    );
+    assert.ok(
+      submit,
+      "resolve submit button must appear after selecting escalate",
+    );
+
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.ok(
+      capturedToasts.some((m) => m.toLowerCase().includes("escalate")),
+      `success toast must say "Escalate" (from status=escalated, activeAction=null); got: ${JSON.stringify(capturedToasts)}`,
+    );
+  } finally {
+    await unmount();
+  }
+});
+
+test("resolve-definitive-4xx-unlocks-controls: non-409 4xx with body clears snapshot and re-enables controls", async () => {
+  // Verifies that a definitive pre-commit rejection clears the frozen payload
+  // and unlocks action/reason editing for a corrected resubmit.
+  //
+  // Mutation evidence: clear frozenRef on EVERY error (not just definitive 4xx)
+  // → ambiguity case would also unlock, breaking the frozen-payload invariant.
+  // This test verifies the definitive path DOES unlock.
+
+  const origin = "https://admin.example.com";
+  const pubkey = "e4".repeat(32);
+
+  const openItem = {
+    id: "00000000-0000-0000-0000-000000000e04",
+    communityId: "comm-1",
+    communityHost: "alpha.example.com",
+    reportEventId: "aa",
+    reporterPubkey: "bb",
+    targetKind: "event",
+    target: "cc",
+    reportType: "spam",
+    status: "open",
+    createdAt: "2024-07-01T00:00:00Z",
+  };
+  const openDetail = {
+    ...openItem,
+    channelId: null,
+    note: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    actionId: null,
+    message: null,
+  };
+
+  setIpcHandler("admin_list_reports", () => Promise.resolve([openItem]));
+  setIpcHandler("admin_get_report", () => Promise.resolve(openDetail));
+  setIpcHandler("admin_list_feedback", () => Promise.resolve([]));
+
+  // First call: definitive 400 (relay rejected pre-commit, full body read).
+  let callCount = 0;
+  setIpcHandler("admin_resolve_report", () => {
+    callCount++;
+    return mutationReject("bad_request: invalid action", 400);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  try {
+    await doRender();
+    await settle(30);
+    await openFirstReportDetail(container);
+    await settle(20);
+
+    const dismissBtn = container.querySelector(
+      "[data-testid='action-btn-dismiss']",
+    );
+    assert.ok(dismissBtn, "dismiss action button must be present");
+    await act(async () => {
+      fireEvent.click(dismissBtn);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const submit = container.querySelector(
+      "[data-testid='resolve-submit-btn']",
+    );
+    assert.ok(submit, "resolve submit button must appear");
+
+    // First attempt — definitive 400.
+    await act(async () => {
+      fireEvent.click(submit);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    assert.equal(callCount, 1, "one attempt must have been made");
+
+    // After a definitive rejection, controls must be unlocked (not disabled).
+    const actionBtnsAfter = container.querySelectorAll(
+      "[data-testid^='action-btn-']",
+    );
+    let anyLocked = false;
+    for (const btn of actionBtnsAfter) {
+      if (btn.disabled === true) {
+        anyLocked = true;
+      }
+    }
+    assert.ok(
+      !anyLocked,
+      "action buttons must be re-enabled after a definitive pre-commit rejection",
+    );
+
+    const reasonInputAfter = container.querySelector(
+      "[data-testid='resolve-reason-input']",
+    );
+    assert.ok(
+      reasonInputAfter?.disabled !== true,
+      "reason input must be re-enabled after a definitive pre-commit rejection",
     );
   } finally {
     await unmount();

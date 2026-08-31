@@ -46,6 +46,7 @@ import {
   type AdminReportAction,
   type AdminReportDetailDto,
   type AdminReportDto,
+  type AdminReportResolution,
 } from "./api";
 import {
   DetailRow,
@@ -263,6 +264,63 @@ function EnforcementStateBlock({
 // ── Resolve report form ───────────────────────────────────────────────────
 
 /**
+ * Disclose where the reason travels for each action family so operators
+ * understand the privacy and public-notice implications before submitting.
+ *
+ * - delete: verbatim to the affected user AND publicly in the room tombstone.
+ * - kick / ban / timeout: verbatim to the affected user only.
+ * - dismiss / escalate: verbatim to the reporter (no affected-user notice).
+ *
+ * Source: relay_admin_actions.rs and admin_outbox_worker.rs notice paths.
+ */
+function reasonAudienceCopy(action: AdminReportAction): string {
+  switch (action) {
+    case "delete":
+      return "Sent verbatim to the affected user and posted publicly in the room.";
+    case "kick":
+    case "ban":
+    case "timeout":
+      return "Sent verbatim to the affected user.";
+    case "dismiss":
+    case "escalate":
+      return "Sent verbatim to the reporter.";
+  }
+}
+
+/**
+ * Derive a human-readable action label from an `AdminReportResolution`.
+ *
+ * `activeAction.action` is authoritative for enforcement actions. For
+ * decision-only resolutions (dismiss/escalate), `activeAction` is null;
+ * the terminal `status` encodes the outcome. Never falls back to form state.
+ */
+function resolutionLabel(resolution: AdminReportResolution): string {
+  if (resolution.activeAction?.action) {
+    return actionLabel(resolution.activeAction.action);
+  }
+  switch (resolution.status) {
+    case "dismissed":
+      return actionLabel("dismiss");
+    case "escalated":
+      return actionLabel("escalate");
+    default:
+      return resolution.status;
+  }
+}
+
+/**
+ * Frozen submit payload — the whole command sent on first attempt. Retained
+ * across ambiguous failures for byte-for-byte retry; cleared only on a
+ * definitive pre-commit rejection (non-409 4xx with full body).
+ */
+type FrozenPayload = {
+  requestId: string;
+  action: AdminReportAction;
+  reason: string | undefined;
+  expirationSecs: number | undefined;
+};
+
+/**
  * Resolution form — shown on open reports (not `processing`). Presents the
  * action matrix for the report's target_kind, collects optional reason and
  * (for timeout) expiration_secs, then calls the resolve endpoint.
@@ -285,8 +343,13 @@ function ResolveReportForm({
   const [reason, setReason] = useState("");
   const [expirationSecs, setExpirationSecs] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // Stable requestId per submission; regenerated on each new submit attempt.
-  const requestIdRef = useRef<string | null>(null);
+  // Frozen whole-payload snapshot. Set on first submit; retained across
+  // ambiguous failures; cleared on a definitive pre-commit rejection.
+  const frozenRef = useRef<FrozenPayload | null>(null);
+
+  // Locked between attempts: snapshot held but not actively submitting.
+  // Prevents edits that would diverge from the frozen idempotency payload.
+  const isLocked = frozenRef.current !== null && !isSubmitting;
 
   // Kick removes the target from the report's associated channel, so the
   // relay rejects it (400 invalid_action_for_target) when the report carries
@@ -299,31 +362,39 @@ function ResolveReportForm({
     if (!selectedAction) return;
     setIsSubmitting(true);
 
-    // Generate a fresh requestId for this submission attempt (v4 amendment 2).
-    if (!requestIdRef.current) {
-      requestIdRef.current = crypto.randomUUID();
-    }
-
-    try {
-      await resolveAdminReport(origin, report.id, {
+    // On first attempt freeze the whole payload; on retry reuse it byte-for-byte.
+    if (!frozenRef.current) {
+      frozenRef.current = {
+        requestId: crypto.randomUUID(),
         action: selectedAction,
-        requestId: requestIdRef.current,
+        reason: reason.trim() || undefined,
         expirationSecs:
           selectedAction === "timeout" && expirationSecs
             ? Number(expirationSecs)
             : undefined,
-        reason: reason.trim() || undefined,
+      };
+    }
+    const payload = frozenRef.current;
+
+    try {
+      const resolution = await resolveAdminReport(origin, report.id, {
+        action: payload.action,
+        requestId: payload.requestId,
+        expirationSecs: payload.expirationSecs,
+        reason: payload.reason,
       });
-      toast.success(`Report resolved: ${actionLabel(selectedAction)}`);
+      // Derive toast from the authoritative relay response, not mutable form
+      // state — relay idempotency executes the first command even on retry.
+      toast.success(`Report resolved: ${resolutionLabel(resolution)}`);
       onResolved();
     } catch (e) {
-      // Preserve the requestId whenever the outcome is ambiguous (409,
+      // Preserve the frozen payload whenever the outcome is ambiguous (409,
       // 5xx, a lost response, or a transport failure with no relay answer)
       // so a retry reuses the same idempotency key and the relay dedupes.
-      // Reset only on a definitive pre-commit rejection (a non-409 4xx), where
-      // a corrected resubmission is a genuinely new command.
+      // Discard only on a definitive pre-commit rejection (a non-409 4xx with
+      // full body), where a corrected resubmission is a genuinely new command.
       if (!preserveRequestIdOnError(e)) {
-        requestIdRef.current = null;
+        frozenRef.current = null;
       }
       toast.error(adminErrorMessage(e));
     } finally {
@@ -347,6 +418,7 @@ function ResolveReportForm({
               selectedAction === action && "ring-2 ring-ring ring-offset-1",
             )}
             data-testid={`action-btn-${action}`}
+            disabled={isLocked || isSubmitting}
             key={action}
             onClick={() =>
               setSelectedAction(action === selectedAction ? null : action)
@@ -371,6 +443,7 @@ function ResolveReportForm({
           <input
             className="flex-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-mono"
             data-testid="timeout-duration-input"
+            disabled={isLocked || isSubmitting}
             id="timeout-duration-input"
             min="1"
             onChange={(e) => setExpirationSecs(e.target.value)}
@@ -385,18 +458,30 @@ function ResolveReportForm({
         <input
           className="w-full rounded-md border border-border/60 bg-background px-2 py-1 text-xs"
           data-testid="resolve-reason-input"
+          disabled={isLocked || isSubmitting}
           onChange={(e) => setReason(e.target.value)}
           placeholder="Reason (optional)"
           type="text"
           value={reason}
         />
+        {selectedAction && (
+          <p
+            className="mt-1 text-xs text-muted-foreground"
+            data-testid="resolve-reason-audience"
+          >
+            {reasonAudienceCopy(selectedAction)}
+          </p>
+        )}
       </div>
 
       {selectedAction && (
         <Button
           data-testid="resolve-submit-btn"
           disabled={
-            isSubmitting || (selectedAction === "timeout" && !expirationSecs)
+            isSubmitting ||
+            (selectedAction === "timeout" &&
+              !expirationSecs &&
+              !frozenRef.current)
           }
           onClick={() => void handleSubmit()}
           size="sm"
@@ -405,7 +490,7 @@ function ResolveReportForm({
           {isSubmitting ? (
             <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            `Confirm: ${actionLabel(selectedAction)}`
+            `Confirm: ${actionLabel(frozenRef.current?.action ?? selectedAction)}`
           )}
         </Button>
       )}
@@ -536,7 +621,11 @@ function ReportsTab({
   const [listGen, setListGen] = useState(0);
 
   const listState = useAsyncLoad(
-    () => listAdminReports(origin),
+    // Request the full workflow queue: open, processing, resolved, dismissed,
+    // escalated. The relay's omitted-scope default is escalated-only (the
+    // platform-safety backstop); scope=all gives this console access to the
+    // states its own resolve/cancel/reopen controls act on.
+    () => listAdminReports(origin, { scope: "all" }),
     [origin, pubkey],
     generation + listGen,
   );

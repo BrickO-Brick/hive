@@ -205,7 +205,7 @@ async fn reports(
     .await?;
     validate(
         query.status.as_deref(),
-        &["open", "resolved", "dismissed", "escalated"],
+        &["open", "processing", "resolved", "dismissed", "escalated"],
         "invalid_status",
     )?;
     validate(query.scope.as_deref(), &["all"], "invalid_scope")?;

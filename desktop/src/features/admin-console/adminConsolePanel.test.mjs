@@ -1369,3 +1369,90 @@ test("aria-pressed: applyAttachmentBudget is a pure function — budget API cont
   const result = applyAttachmentBudget([], 5, 50 * 1024 * 1024);
   assert.ok("shown" in result && "truncated" in result);
 });
+
+// ── P2 round-6 #2: reports-list always calls scope=all ───────────────────
+
+test("reports-tab-scope-all: admin_list_reports IPC call includes scope=all", async () => {
+  // Verifies that the ReportsTab always requests the full workflow queue via
+  // scope=all, not the relay's escalated-only default (scope omitted).
+  //
+  // Mutation evidence: remove `{ scope: "all" }` from the listAdminReports
+  // call → this test goes RED (captured query has no scope).
+
+  const pubkey = "a9".repeat(32);
+  const origin = "https://admin-scope.example.com";
+
+  let capturedQuery = null;
+  setIpcHandler("admin_list_reports", (args) => {
+    capturedQuery = args?.query ?? null;
+    return Promise.resolve([]);
+  });
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  assert.ok(capturedQuery !== null, "admin_list_reports must have been called");
+  assert.equal(
+    capturedQuery?.scope,
+    "all",
+    `reports-tab IPC query must include scope="all"; got: ${JSON.stringify(capturedQuery)}`,
+  );
+
+  await unmount();
+});
+
+test("reports-tab-scope-all-renders-non-escalated: open and resolved rows are reachable", async () => {
+  // Verifies that non-escalated rows returned by scope=all are rendered in the list.
+  //
+  // Mutation evidence: change scope to undefined → relay would return only
+  // escalated rows, open/resolved rows would not appear in the list.
+
+  const pubkey = "b8".repeat(32);
+  const origin = "https://admin-scope2.example.com";
+
+  setIpcHandler("admin_list_reports", () =>
+    Promise.resolve([
+      {
+        id: "00000000-0000-0000-0000-000000000010",
+        communityId: "00000000-0000-0000-0000-000000000001",
+        communityHost: "relay.example.com",
+        reportEventId: "aabb",
+        reporterPubkey: "ccdd",
+        targetKind: "event",
+        target: "eeff",
+        reportType: "spam",
+        status: "open",
+        createdAt: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "00000000-0000-0000-0000-000000000011",
+        communityId: "00000000-0000-0000-0000-000000000001",
+        communityHost: "relay.example.com",
+        reportEventId: "1122",
+        reporterPubkey: "3344",
+        targetKind: "event",
+        target: "5566",
+        reportType: "profanity",
+        status: "resolved",
+        createdAt: "2024-01-02T00:00:00Z",
+      },
+    ]),
+  );
+
+  const { container, doRender, unmount } = mountPanel({ origin, pubkey });
+  await doRender();
+  await settle(30);
+
+  const text = container.textContent ?? "";
+  assert.ok(
+    text.includes("open"),
+    `open status row must render in the list; got: ${text.slice(0, 400)}`,
+  );
+  assert.ok(
+    text.includes("resolved"),
+    `resolved status row must render in the list; got: ${text.slice(0, 400)}`,
+  );
+
+  await unmount();
+});
