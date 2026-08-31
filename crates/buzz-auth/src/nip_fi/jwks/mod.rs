@@ -47,8 +47,9 @@ pub const MAX_JWKS_RESPONSE_BYTES: usize = 512 * 1024; // 512 KiB
 /// range panics when computing snapshot deadlines.
 pub const MAX_JWKS_TIMING_SECONDS: u64 = 365 * 24 * 3600; // 1 year
 
-/// Per-request deadline for the complete JWKS fetch (connect + headers + body),
-/// enforced inside `fetch_jwks` independently of any client-level timeout.
+/// Hard deadline for the complete JWKS fetch: hostname resolution, connect,
+/// headers, and body streaming combined. Applied via `tokio::time::timeout`
+/// so a stalled resolver cannot keep `fetch_jwks` pending indefinitely.
 pub const JWKS_REQUEST_TIMEOUT_SECS: u64 = 10;
 
 /// Validate that a JWKS URI is safe to fetch: HTTPS scheme, no credentials,
@@ -89,14 +90,31 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
 /// Returns the first safe address for DNS pinning. Blocks on the OS resolver
 /// via `spawn_blocking` to avoid blocking the async runtime.
 ///
+/// Uses the `(host, port)` tuple form of `ToSocketAddrs` — not
+/// `format!("{host}:{port}")` — so IPv6 literal hosts (returned without
+/// brackets by `Url::host_str()`) are handled correctly without socket-address
+/// ambiguity.
+///
 /// Rejecting *any* resolved address (not just the first) closes split-horizon
 /// DNS attacks: if an attacker can cause one DNS record to resolve to a private
 /// address, the entire request is blocked even when other records are public.
-async fn resolve_and_check_ssrf(host: &str, port: u16) -> Result<std::net::IpAddr, JwksFetchError> {
-    let addr_str = format!("{host}:{port}");
+pub(crate) async fn resolve_and_check_ssrf(
+    host: &str,
+    port: u16,
+) -> Result<std::net::IpAddr, JwksFetchError> {
+    // Fast path: if the host is already a parsed IP literal, skip the resolver.
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_private_ip(&ip) {
+            return Err(JwksFetchError::InvalidUri);
+        }
+        return Ok(ip);
+    }
+
+    // Hostname path: use the tuple form to avoid IPv6-bracket ambiguity.
+    let host_owned = host.to_owned();
     let addrs: Vec<std::net::IpAddr> = tokio::task::spawn_blocking(move || {
         use std::net::ToSocketAddrs;
-        addr_str
+        (host_owned.as_str(), port)
             .to_socket_addrs()
             .map(|iter| iter.map(|sa| sa.ip()).collect::<Vec<_>>())
     })
@@ -191,9 +209,12 @@ pub enum JwksFetchError {
 /// may implement it — external types cannot name the private supertrait.
 ///
 /// Implementations MUST:
+/// - validate the URI (scheme, credentials, fragment, bare private-IP host)
+///   before any I/O;
 /// - resolve hostname targets and reject any private/reserved resolved address;
 /// - deny redirects (3xx responses rejected as `NetworkError`);
-/// - enforce a finite per-fetch deadline ([`JWKS_REQUEST_TIMEOUT_SECS`]);
+/// - enforce a finite per-fetch deadline covering resolution, connect, headers,
+///   and body streaming — the entire operation must be bounded;
 /// - enforce [`MAX_JWKS_RESPONSE_BYTES`] via incremental streaming;
 /// - reject non-2xx responses.
 pub trait JwksFetcher: super::verifier::sealed::Sealed + Send + Sync + 'static {
@@ -212,8 +233,8 @@ pub trait JwksFetcher: super::verifier::sealed::Sealed + Send + Sync + 'static {
 ///   `buzz_core::network::is_private_ip` before the request is sent;
 /// - the request is pinned to the validated address to prevent DNS rebinding
 ///   TOCTOU (the OS resolver is called once per fetch, not once per URL);
-/// - a per-request timeout of [`JWKS_REQUEST_TIMEOUT_SECS`] is applied via
-///   `RequestBuilder::timeout`;
+/// - the complete operation (resolution, connect, headers, body streaming) is
+///   bounded by [`JWKS_REQUEST_TIMEOUT_SECS`] via `tokio::time::timeout`;
 /// - 3xx responses are rejected as `NetworkError` — redirects are never followed;
 /// - the body is streamed incrementally and stopped at
 ///   [`MAX_JWKS_RESPONSE_BYTES`] + 1.
@@ -238,62 +259,86 @@ impl super::verifier::sealed::Sealed for HttpJwksFetcher {}
 
 impl JwksFetcher for HttpJwksFetcher {
     async fn fetch_jwks<'a>(&'a self, uri: &'a str) -> Result<String, JwksFetchError> {
-        let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
-        let host = parsed.host_str().ok_or(JwksFetchError::InvalidUri)?;
-        let port = parsed.port_or_known_default().unwrap_or(443);
-
-        // Resolve and check every IP before sending. Pins DNS to the validated
-        // address to prevent rebinding TOCTOU between check and connect.
-        let safe_ip = resolve_and_check_ssrf(host, port).await?;
-
-        // Build a per-request client that:
-        // - denies redirects (a 3xx to an internal host bypasses the URI check);
-        // - has no system proxy (proxy would resolve the original hostname itself);
-        // - pins this request to the validated IP.
-        // The connection pool from self.client is not reused here by design —
-        // DNS pinning requires a fresh client for each pinned address.
-        let pinned_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .resolve(host, std::net::SocketAddr::new(safe_ip, port))
-            .build()
-            .map_err(|_| JwksFetchError::NetworkError)?;
-
-        let response = pinned_client
-            .get(uri)
-            .timeout(std::time::Duration::from_secs(JWKS_REQUEST_TIMEOUT_SECS))
-            .send()
-            .await
-            .map_err(|_| JwksFetchError::NetworkError)?;
-
-        // Reject non-2xx. A 3xx here means our no-redirect policy was somehow
-        // bypassed — treat as a network error.
-        if !response.status().is_success() {
-            return Err(JwksFetchError::NetworkError);
-        }
-
-        // Early-exit on Content-Length before streaming. A lying or absent
-        // Content-Length is caught by the incremental counter below.
-        if let Some(content_length) = response.content_length() {
-            if content_length as usize > MAX_JWKS_RESPONSE_BYTES {
-                return Err(JwksFetchError::ResponseTooLarge);
-            }
-        }
-
-        // Stream incrementally; stop at MAX_JWKS_RESPONSE_BYTES + 1 so we
-        // never buffer more than the limit before rejecting.
-        let mut body = Vec::with_capacity(MAX_JWKS_RESPONSE_BYTES.min(64 * 1024));
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| JwksFetchError::NetworkError)?;
-            if body.len().saturating_add(chunk.len()) > MAX_JWKS_RESPONSE_BYTES {
-                return Err(JwksFetchError::ResponseTooLarge);
-            }
-            body.extend_from_slice(&chunk);
-        }
-
-        String::from_utf8(body).map_err(|_| JwksFetchError::ParseError)
+        with_deadline(
+            fetch_jwks_inner(uri),
+            std::time::Duration::from_secs(JWKS_REQUEST_TIMEOUT_SECS),
+        )
+        .await
     }
+}
+
+/// Bound `fut` with a hard `tokio::time::timeout`. Elapsed maps to
+/// `NetworkError`. Production passes `fetch_jwks_inner(uri)`; tests pass
+/// `std::future::pending()` to verify the seam deterministically.
+async fn with_deadline<F>(fut: F, timeout: std::time::Duration) -> Result<String, JwksFetchError>
+where
+    F: std::future::Future<Output = Result<String, JwksFetchError>>,
+{
+    tokio::time::timeout(timeout, fut)
+        .await
+        .map_err(|_| JwksFetchError::NetworkError)?
+}
+
+/// Inner fetch logic. Called only by `HttpJwksFetcher::fetch_jwks` via `with_deadline`.
+async fn fetch_jwks_inner(uri: &str) -> Result<String, JwksFetchError> {
+    // Full URI validation first — scheme, credentials, fragment, bare
+    // private-IP host. This enforces the JwksFetcher contract for direct
+    // callers of HttpJwksFetcher regardless of whether ProductionJwksSource
+    // pre-validated the URI.
+    validate_jwks_uri(uri)?;
+
+    let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
+    let host = parsed.host_str().ok_or(JwksFetchError::InvalidUri)?;
+    let port = parsed.port_or_known_default().unwrap_or(443);
+
+    // Resolve and check every IP before sending. Pins DNS to the validated
+    // address to prevent rebinding TOCTOU between check and connect.
+    let safe_ip = resolve_and_check_ssrf(host, port).await?;
+
+    // Build a per-request client that:
+    // - denies redirects (a 3xx to an internal host bypasses the URI check);
+    // - has no system proxy (proxy would resolve the original hostname itself);
+    // - pins this request to the validated IP.
+    let pinned_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .resolve(host, std::net::SocketAddr::new(safe_ip, port))
+        .build()
+        .map_err(|_| JwksFetchError::NetworkError)?;
+
+    let response = pinned_client
+        .get(uri)
+        .send()
+        .await
+        .map_err(|_| JwksFetchError::NetworkError)?;
+
+    // Reject non-2xx. A 3xx here means our no-redirect policy was somehow
+    // bypassed — treat as a network error.
+    if !response.status().is_success() {
+        return Err(JwksFetchError::NetworkError);
+    }
+
+    // Early-exit on Content-Length before streaming. A lying or absent
+    // Content-Length is caught by the incremental counter below.
+    if let Some(content_length) = response.content_length() {
+        if content_length as usize > MAX_JWKS_RESPONSE_BYTES {
+            return Err(JwksFetchError::ResponseTooLarge);
+        }
+    }
+
+    // Stream incrementally; stop at MAX_JWKS_RESPONSE_BYTES + 1 so we
+    // never buffer more than the limit before rejecting.
+    let mut body = Vec::with_capacity(MAX_JWKS_RESPONSE_BYTES.min(64 * 1024));
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| JwksFetchError::NetworkError)?;
+        if body.len().saturating_add(chunk.len()) > MAX_JWKS_RESPONSE_BYTES {
+            return Err(JwksFetchError::ResponseTooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    String::from_utf8(body).map_err(|_| JwksFetchError::ParseError)
 }
 
 fn parse_and_bound_jwks(body: &str) -> Result<JwkSet, JwksFetchError> {

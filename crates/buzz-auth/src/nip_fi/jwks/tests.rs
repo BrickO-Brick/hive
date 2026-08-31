@@ -395,6 +395,11 @@ fn validate_uri_accepts_valid_https() {
 }
 
 #[test]
+fn validate_uri_accepts_public_ipv6() {
+    assert!(validate_jwks_uri("https://[2606:4700::1]/.well-known/jwks.json").is_ok());
+}
+
+#[test]
 fn validate_uri_rejects_http() {
     assert_eq!(
         validate_jwks_uri("http://id.example/.well-known/jwks.json").unwrap_err(),
@@ -447,5 +452,78 @@ fn validate_uri_rejects_unparseable() {
     assert_eq!(
         validate_jwks_uri("not a url").unwrap_err(),
         JwksFetchError::InvalidUri
+    );
+}
+
+#[tokio::test]
+async fn http_fetcher_rejects_http_uri_before_connection() {
+    let fetcher = HttpJwksFetcher::new();
+    // Would resolve DNS and return NetworkError if validation ran after I/O.
+    let err = fetcher
+        .fetch_jwks("http://id.example/.well-known/jwks.json")
+        .await
+        .unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
+#[tokio::test]
+async fn http_fetcher_rejects_credentials_uri_before_connection() {
+    let fetcher = HttpJwksFetcher::new();
+    let err = fetcher
+        .fetch_jwks("https://user:pass@id.example/.well-known/jwks.json")
+        .await
+        .unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
+#[tokio::test]
+async fn http_fetcher_rejects_fragment_uri_before_connection() {
+    let fetcher = HttpJwksFetcher::new();
+    let err = fetcher
+        .fetch_jwks("https://id.example/.well-known/jwks.json#section")
+        .await
+        .unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
+#[tokio::test]
+async fn http_fetcher_rejects_private_ip_uri_before_connection() {
+    let fetcher = HttpJwksFetcher::new();
+    let err = fetcher
+        .fetch_jwks("https://10.0.0.1/.well-known/jwks.json")
+        .await
+        .unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
+#[tokio::test]
+async fn resolve_ssrf_rejects_ipv6_loopback_fast_path() {
+    let err = super::resolve_and_check_ssrf("::1", 443).await.unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
+#[tokio::test]
+async fn resolve_ssrf_accepts_public_ipv6_fast_path() {
+    let ip = super::resolve_and_check_ssrf("2606:4700::1", 443)
+        .await
+        .unwrap();
+    assert_eq!(ip, "2606:4700::1".parse::<std::net::IpAddr>().unwrap());
+}
+
+/// `with_deadline` must fire before the outer guard when the inner future
+/// never resolves. Uses `std::future::pending()` so no DNS or I/O occurs.
+/// Removing the `tokio::time::timeout` inside `with_deadline` leaves the
+/// future permanently pending — the outer guard fires and the test fails.
+#[tokio::test(start_paused = true)]
+async fn with_deadline_fires_before_outer_guard() {
+    let inner = super::with_deadline(
+        std::future::pending::<Result<String, JwksFetchError>>(),
+        std::time::Duration::ZERO,
+    );
+    // Independent 1-second outer guard. Must not be the one that fires.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), inner).await;
+    assert_eq!(
+        result.expect("outer guard fired — with_deadline timeout seam missing"),
+        Err(JwksFetchError::NetworkError),
     );
 }
