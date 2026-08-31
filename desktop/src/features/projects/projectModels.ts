@@ -130,6 +130,11 @@ export function isValidProjectChannelId(value: string): boolean {
   );
 }
 
+function normalizedProjectChannelId(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  return isValidProjectChannelId(normalized) ? normalized : null;
+}
+
 /** Repeatable project tag naming an extra stream besides `buzz-channel`. */
 export const PROJECT_RELATED_CHANNEL_TAG = "buzz-related-channel";
 
@@ -366,14 +371,15 @@ export function eventToExplicitProject(
   const visibility =
     rawVisibility === "unlisted" ? ("unlisted" as const) : ("listed" as const);
   const channel = getTag(event, "buzz-channel");
-  const projectChannelId =
-    channel && isValidProjectChannelId(channel) ? channel : null;
+  const projectChannelId = channel ? normalizedProjectChannelId(channel) : null;
   const relatedChannelIds = [
     ...new Set(
-      getAllTags(event, PROJECT_RELATED_CHANNEL_TAG).filter(
-        (channelId) =>
-          isValidProjectChannelId(channelId) && channelId !== projectChannelId,
-      ),
+      getAllTags(event, PROJECT_RELATED_CHANNEL_TAG).flatMap((channelId) => {
+        const normalized = normalizedProjectChannelId(channelId);
+        return normalized && normalized !== projectChannelId
+          ? [normalized]
+          : [];
+      }),
     ),
   ].slice(0, MAX_PROJECT_RELATED_CHANNELS);
   return {
@@ -559,8 +565,11 @@ export function applyProjectRevisionEvents(
     );
     if (!next) break;
     const operation = singletonRevisionTag(next, "op");
-    const channelId = singletonRevisionTag(next, "channel");
-    if (!channelId || !isValidProjectChannelId(channelId)) break;
+    const rawChannelId = singletonRevisionTag(next, "channel");
+    const channelId = rawChannelId
+      ? normalizedProjectChannelId(rawChannelId)
+      : null;
+    if (!channelId) break;
     if (operation === "add-related-channel") {
       if (
         channelId === project.projectChannelId ||
@@ -656,11 +665,16 @@ export function addRelatedChannelToProject(
   channelId: string,
   createdAt: number,
 ): Project {
+  const normalizedChannelId = normalizedProjectChannelId(channelId);
   const relatedChannelIds = [
-    ...new Set([...(project.relatedChannelIds ?? []), channelId]),
-  ].filter(
-    (id) => id !== project.projectChannelId && isValidProjectChannelId(id),
-  );
+    ...new Set([
+      ...(project.relatedChannelIds ?? []).flatMap((id) => {
+        const normalized = normalizedProjectChannelId(id);
+        return normalized ? [normalized] : [];
+      }),
+      ...(normalizedChannelId ? [normalizedChannelId] : []),
+    ]),
+  ].filter((id) => id !== project.projectChannelId?.toLowerCase());
   return {
     ...project,
     createdAt,

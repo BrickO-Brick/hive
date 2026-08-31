@@ -7,6 +7,7 @@ import { useChannelMembersQuery } from "@/features/channels/hooks";
 import type { Project } from "@/features/projects/hooks";
 import { useAddProjectChannelMutation } from "@/features/projects/useAddProjectChannel";
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
+import type { ChannelMember } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 
 export function ProjectChannelManagement({
@@ -70,6 +71,14 @@ export function useCanManageProjectChannels(
   const viewerHomeRole = homeMembersQuery.data?.find(
     (member) => member.pubkey.toLowerCase() === identityPubkey?.toLowerCase(),
   )?.role;
+  return canManageProjectChannels(project, identityPubkey, viewerHomeRole);
+}
+
+export function canManageProjectChannels(
+  project: Project,
+  identityPubkey?: string,
+  viewerHomeRole?: ChannelMember["role"],
+): boolean {
   return (
     !project.legacy &&
     (identityPubkey?.toLowerCase() === project.owner.toLowerCase() ||

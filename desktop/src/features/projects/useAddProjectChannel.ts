@@ -23,7 +23,6 @@ import { KIND_PROJECT_ANNOUNCEMENT } from "@/shared/constants/kinds";
 export type AddProjectChannelInput = {
   description?: string;
   name: string;
-  ownerControlAgentPubkey?: string;
   project: Project;
   templateId?: string;
   ttlSeconds?: number;

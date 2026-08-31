@@ -781,6 +781,7 @@ export function ProjectsView() {
           <ProjectsCategoryCreateDialogs
             channelOpen={createChannelOpen}
             editableProjects={editableProjects}
+            identityPubkey={currentPubkey}
             onChannelOpenChange={setCreateChannelOpen}
             onRepositoryOpenChange={setCreateRepositoryOpen}
             ownerControlAgentPubkeyFor={ownerControlAgentPubkeyFor}

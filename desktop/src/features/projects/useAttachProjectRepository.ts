@@ -57,6 +57,7 @@ async function attachProjectRepository({
   const template = buildProjectPatchTemplate({
     liveHead,
     ownerPubkey: targetOwner,
+    relatedChannelIds: project.relatedChannelIds,
     repositoryAddresses: [...liveAddresses, repository.repoAddress],
   });
   const createdAt = Math.max(

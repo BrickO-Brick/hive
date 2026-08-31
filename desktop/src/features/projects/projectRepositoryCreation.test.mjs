@@ -88,6 +88,33 @@ test("buildProjectPatchTemplate preserves unknown tags from the live head", () =
   assert.deepEqual(memberTags.sort(), [existingAddress, newAddress].sort());
 });
 
+test("buildProjectPatchTemplate carries folded related channels into a new base", () => {
+  const related = "22222222-2222-4222-8222-222222222222";
+  const liveHead = {
+    id: "e".repeat(64),
+    kind: 30621,
+    pubkey: OWNER,
+    created_at: 100,
+    content: "",
+    tags: [
+      ["d", "platform"],
+      ["buzz-channel", "11111111-1111-4111-8111-111111111111"],
+    ],
+  };
+
+  const template = buildProjectPatchTemplate({
+    liveHead,
+    ownerPubkey: OWNER,
+    relatedChannelIds: [related.toUpperCase()],
+    repositoryAddresses: [],
+  });
+
+  assert.deepEqual(
+    template.tags.filter((tag) => tag[0] === "buzz-related-channel"),
+    [["buzz-related-channel", related]],
+  );
+});
+
 test("buildProjectPatchTemplate preserves relay hints on existing members", () => {
   const OWNER = "a".repeat(64);
   const OTHER = "b".repeat(64);

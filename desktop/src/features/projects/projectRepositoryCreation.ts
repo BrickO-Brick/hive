@@ -3,6 +3,8 @@ import type { Repository } from "@/features/projects/hooks";
 import {
   isValidProjectChannelId,
   MAX_PROJECT_MEMBERS,
+  MAX_PROJECT_RELATED_CHANNELS,
+  PROJECT_RELATED_CHANNEL_TAG,
   validateProjectEventEnvelope,
 } from "@/features/projects/projectModels";
 import {
@@ -22,10 +24,11 @@ export { repositoryDtagFromName };
 
 /**
  * Creates a project-replacement event template from a live, signed raw head
- * (fetched immediately before the mutation). Only the `a` membership tags are
- * patched; every other tag and the `content` field are preserved verbatim,
- * satisfying NIP-MP's extension-tag preservation rule and preventing a cached
- * UI projection from silently erasing unknown tags.
+ * (fetched immediately before the mutation). Repository membership is patched,
+ * and callers with a folded Project model carry its effective related channels
+ * into the new base. Every other tag and the `content` field are preserved
+ * verbatim, satisfying NIP-MP's extension-tag preservation rule and preventing
+ * a cached UI projection from silently erasing unknown tags.
  *
  * Performs full NIP-MP envelope validation on the patched output via the shared
  * `validateProjectEventEnvelope` validator — the same checks applied by the
@@ -35,10 +38,12 @@ export { repositoryDtagFromName };
 function buildProjectPatchTemplate({
   liveHead,
   ownerPubkey,
+  relatedChannelIds,
   repositoryAddresses,
 }: {
   liveHead: RelayEvent;
   ownerPubkey: string;
+  relatedChannelIds?: string[];
   repositoryAddresses: string[];
 }): ProjectEventTemplate {
   const normalizedOwner = ownerPubkey.trim().toLowerCase();
@@ -64,7 +69,12 @@ function buildProjectPatchTemplate({
   // Replace all existing `a` tags with the new set, preserving everything else
   // (d, name, description, buzz-channel, buzz-visibility, relay hints embedded
   // in `a` tags, and any future/unknown tags).
-  const nonMemberTags = liveHead.tags.filter((tag) => tag[0] !== "a");
+  const nonMemberTags = liveHead.tags.filter(
+    (tag) =>
+      tag[0] !== "a" &&
+      (relatedChannelIds === undefined ||
+        tag[0] !== PROJECT_RELATED_CHANNEL_TAG),
+  );
   const existingHints = new Map<string, string>();
   for (const tag of liveHead.tags) {
     if (tag[0] === "a" && tag[1] && tag[2]) {
@@ -76,7 +86,27 @@ function buildProjectPatchTemplate({
     return hint ? ["a", address, hint] : ["a", address];
   });
 
-  const patchedTags = [...nonMemberTags, ...memberTags];
+  const homeChannelId = liveHead.tags
+    .find((tag) => tag[0] === "buzz-channel")?.[1]
+    ?.toLowerCase();
+  const relatedChannelTags = [
+    ...new Set(
+      (relatedChannelIds ?? []).map((channelId) =>
+        channelId.trim().toLowerCase(),
+      ),
+    ),
+  ]
+    .filter(
+      (channelId) =>
+        isValidProjectChannelId(channelId) && channelId !== homeChannelId,
+    )
+    .slice(0, MAX_PROJECT_RELATED_CHANNELS)
+    .map((channelId) => [PROJECT_RELATED_CHANNEL_TAG, channelId]);
+  const patchedTags = [
+    ...nonMemberTags,
+    ...(relatedChannelIds === undefined ? [] : relatedChannelTags),
+    ...memberTags,
+  ];
   const content = liveHead.content;
 
   // Validate the full patched envelope against NIP-MP rules. This catches
@@ -161,6 +191,7 @@ export function buildAddedRepositoryEventTemplatesFromHead({
   liveHead,
   name,
   ownerPubkey,
+  relatedChannelIds,
   repositoryHeadExists = true,
   webUrl,
 }: {
@@ -171,6 +202,7 @@ export function buildAddedRepositoryEventTemplatesFromHead({
   liveHead: RelayEvent;
   name: string;
   ownerPubkey: string;
+  relatedChannelIds?: string[];
   /**
    * Whether a kind-30617 head already exists at the new coordinate. When the
    * live project head references the coordinate but no repository head exists
@@ -248,6 +280,7 @@ export function buildAddedRepositoryEventTemplatesFromHead({
   const projectTemplate = buildProjectPatchTemplate({
     liveHead,
     ownerPubkey,
+    relatedChannelIds,
     repositoryAddresses: newAddresses,
   });
 

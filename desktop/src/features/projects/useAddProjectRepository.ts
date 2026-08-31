@@ -107,6 +107,7 @@ export async function addProjectRepository(
     existingRepositoryAddresses: project.repositoryAddresses,
     liveHead,
     ownerPubkey: targetOwner,
+    relatedChannelIds: project.relatedChannelIds,
     repositoryHeadExists: existingRepoHeads.length > 0,
   });
 

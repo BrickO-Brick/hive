@@ -134,6 +134,35 @@ test("buildProjectReadModels keeps extra related channel ids", () => {
   assert.deepEqual(projects[0].relatedChannelIds, [relatedA, relatedB]);
 });
 
+test("buildProjectReadModels normalizes channel UUID tags before folding revisions", () => {
+  const home = "11111111-1111-4111-8111-111111111111";
+  const related = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+  const base = projectEvent([["buzz-related-channel", related.toUpperCase()]], {
+    id: "a".repeat(64),
+    tags: [
+      ["d", "sprout"],
+      ["buzz-channel", home.toUpperCase()],
+      ["buzz-related-channel", related.toUpperCase()],
+    ],
+  });
+  const [project] = buildProjectReadModels({
+    projectEvents: [base],
+    projectRevisionEvents: [
+      projectRevision(
+        "b".repeat(64),
+        base.id,
+        "remove-related-channel",
+        related.toUpperCase(),
+      ),
+    ],
+    repositoryEvents: [],
+    relayOrigin: RELAY_ORIGIN,
+  });
+
+  assert.equal(project.projectChannelId, home);
+  assert.deepEqual(project.relatedChannelIds, []);
+});
+
 test("buildProjectReadModels folds the relay-authorized related-channel revision chain", () => {
   const relatedA = "22222222-2222-4222-8222-222222222222";
   const relatedB = "33333333-3333-4333-8333-333333333333";

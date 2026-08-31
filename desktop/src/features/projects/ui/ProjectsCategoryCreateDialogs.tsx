@@ -1,17 +1,25 @@
+import { useQueries } from "@tanstack/react-query";
 import * as React from "react";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelsQuery } from "@/features/channels/hooks";
+import {
+  CHANNEL_MEMBERS_STALE_TIME_MS,
+  channelMembersQueryKey,
+} from "@/features/channels/rosterFreshness";
 import type { Project } from "@/features/projects/hooks";
 import { useAddProjectChannelMutation } from "@/features/projects/useAddProjectChannel";
 import { useAddProjectRepositoryMutation } from "@/features/projects/useAddProjectRepository";
 import { AddProjectRepositoryDialog } from "@/features/projects/ui/AddProjectRepositoryDialog";
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
+import { getChannelMembers } from "@/shared/api/tauri";
+import { canManageProjectChannels } from "@/features/projects/ui/ProjectChannelManagement";
 
 export function ProjectsCategoryCreateDialogs({
   channelOpen,
   editableProjects,
+  identityPubkey,
   onChannelOpenChange,
   onRepositoryOpenChange,
   ownerControlAgentPubkeyFor,
@@ -19,16 +27,40 @@ export function ProjectsCategoryCreateDialogs({
 }: {
   channelOpen: boolean;
   editableProjects: Project[];
+  identityPubkey?: string;
   onChannelOpenChange: (open: boolean) => void;
   onRepositoryOpenChange: (open: boolean) => void;
   ownerControlAgentPubkeyFor: (project: Project) => string | undefined;
   repositoryOpen: boolean;
 }) {
   const { goChannel, goProject } = useAppNavigation();
+  const homeRosterQueries = useQueries({
+    queries: editableProjects.map((project) => {
+      const homeChannelId = project.projectChannelId;
+      return {
+        enabled:
+          channelOpen &&
+          Boolean(homeChannelId) &&
+          project.owner.toLowerCase() !== identityPubkey?.toLowerCase(),
+        queryFn: () => {
+          if (!homeChannelId) throw new Error("Project has no home channel.");
+          return getChannelMembers(homeChannelId);
+        },
+        queryKey: channelMembersQueryKey(homeChannelId ?? "none"),
+        staleTime: CHANNEL_MEMBERS_STALE_TIME_MS,
+      };
+    }),
+  });
+  const channelProjects = editableProjects.filter((project, index) => {
+    const role = homeRosterQueries[index]?.data?.find(
+      (member) => member.pubkey.toLowerCase() === identityPubkey?.toLowerCase(),
+    )?.role;
+    return canManageProjectChannels(project, identityPubkey, role);
+  });
   const [channelProjectId, setChannelProjectId] = React.useState("");
   const channelProject =
-    editableProjects.find((project) => project.id === channelProjectId) ??
-    editableProjects[0];
+    channelProjects.find((project) => project.id === channelProjectId) ??
+    channelProjects[0];
   const createChannelMutation = useAddProjectChannelMutation();
   const createRepositoryMutation = useAddProjectRepositoryMutation();
   const channelsQuery = useChannelsQuery({ enabled: repositoryOpen });
@@ -57,7 +89,6 @@ export function ProjectsCategoryCreateDialogs({
           if (!channelProject) throw new Error("Choose a project.");
           const result = await createChannelMutation.mutateAsync({
             ...input,
-            ownerControlAgentPubkey: ownerControlAgentPubkeyFor(channelProject),
             project: channelProject,
           });
           toast.success(`Channel "#${result.channel.name}" created.`);
@@ -76,7 +107,7 @@ export function ProjectsCategoryCreateDialogs({
             onChange={(event) => setChannelProjectId(event.target.value)}
             value={channelProject?.id ?? ""}
           >
-            {editableProjects.map((project) => (
+            {channelProjects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
               </option>
