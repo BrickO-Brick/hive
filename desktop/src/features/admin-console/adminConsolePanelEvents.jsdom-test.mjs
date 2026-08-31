@@ -5446,29 +5446,33 @@ test("resolve-definitive-4xx-unlocks-controls: non-409 4xx clears snapshot; corr
 
 // ── Resolve-path whole-payload freeze: 409 / 5xx / truncated ─────────────────
 //
-// Each ambiguity class (409, 5xx, transport/null, truncated body) must
-// independently freeze the whole payload and carry it byte-for-byte on retry.
-// Table-driven over a shared fixture so there is no copied setup block.
+// Each ambiguity class (409, 5xx, truncated body) must independently freeze
+// the complete Timeout command — requestId, action, reason, and expirationSecs
+// — and carry it byte-for-byte on retry.  Using Timeout with a nontrivial
+// duration makes expirationSecs a load-bearing field in every case; dropping
+// it from the production IPC writer makes all three RED.
 //
-// Mutation evidence: removing "processing" from the 409 message, or making
-// any case reset the frozenRef (instead of preserving), causes the ids to
-// differ on the second attempt → test goes RED.
+// Mutation evidence:
+//   - Always sending expirationSecs: undefined → deepEqual fails on every case
+//   - Resetting frozenRef on ambiguity → requestId differs on second attempt
+
+const FREEZE_DURATION_SECS = 3600;
 
 const RESOLVE_FREEZE_CASES = [
   {
     name: "409-whole-payload",
-    desc: "a 409 Conflict is ambiguous: freezes whole payload, retries byte-for-byte",
+    desc: "a 409 Conflict is ambiguous: freezes complete Timeout payload, retries byte-for-byte",
     reject: () => mutationReject("admin API error: 409 conflict", 409),
   },
   {
     name: "5xx-whole-payload",
-    desc: "a 5xx is ambiguous: freezes whole payload, retries byte-for-byte",
+    desc: "a 5xx is ambiguous: freezes complete Timeout payload, retries byte-for-byte",
     reject: () =>
       mutationReject("admin API error: 500 internal server error", 500),
   },
   {
     name: "truncated-body-whole-payload",
-    desc: "a truncated/incomplete body (bodyComplete=false) is ambiguous: freezes whole payload",
+    desc: "a truncated/incomplete body (bodyComplete=false) is ambiguous: freezes complete Timeout payload",
     reject: () =>
       mutationReject("admin API error: 400 partial read", 400, false),
   },
@@ -5518,10 +5522,24 @@ for (const { name, desc, reject: makeReject } of RESOLVE_FREEZE_CASES) {
       await openFirstReportDetail(container);
       await settle(20);
 
-      const banBtn = container.querySelector("[data-testid='action-btn-ban']");
-      assert.ok(banBtn, "ban action button must be present");
+      // Select Timeout so expirationSecs is part of the frozen payload.
+      const timeoutBtn = container.querySelector(
+        "[data-testid='action-btn-timeout']",
+      );
+      assert.ok(timeoutBtn, "timeout action button must be present");
       await act(async () => {
-        fireEvent.click(banBtn);
+        fireEvent.click(timeoutBtn);
+        await new Promise((r) => setTimeout(r, 10));
+      });
+
+      const durationInput = container.querySelector(
+        "[data-testid='timeout-duration-input']",
+      );
+      assert.ok(durationInput, "timeout duration input must appear");
+      await act(async () => {
+        fireEvent.change(durationInput, {
+          target: { value: String(FREEZE_DURATION_SECS) },
+        });
         await new Promise((r) => setTimeout(r, 10));
       });
 
@@ -5541,15 +5559,57 @@ for (const { name, desc, reject: makeReject } of RESOLVE_FREEZE_CASES) {
       );
       assert.ok(
         submit,
-        "resolve submit button must appear after selecting ban",
+        "resolve submit button must appear after selecting timeout",
       );
 
-      // First attempt — ambiguous failure.
+      // First attempt — ambiguous failure freezes the complete payload.
       await act(async () => {
         fireEvent.click(submit);
         await new Promise((r) => setTimeout(r, 20));
       });
-      // Second attempt — retry must send frozen payload.
+
+      assert.equal(
+        capturedFreezeBodies.length,
+        1,
+        `[${name}] first attempt must have been made`,
+      );
+      assert.equal(
+        capturedFreezeBodies[0].action,
+        "timeout",
+        `[${name}] first attempt must send timeout`,
+      );
+      assert.equal(
+        capturedFreezeBodies[0].expirationSecs,
+        FREEZE_DURATION_SECS,
+        `[${name}] first attempt must include expirationSecs=${FREEZE_DURATION_SECS}`,
+      );
+
+      // After ambiguous failure: action, reason, and duration controls must be locked.
+      const actionBtnsAfter = container.querySelectorAll(
+        "[data-testid^='action-btn-']",
+      );
+      for (const btn of actionBtnsAfter) {
+        assert.ok(
+          btn.disabled === true,
+          `[${name}] action button ${btn.getAttribute("data-testid")} must be disabled after ambiguous failure`,
+        );
+      }
+      const reasonInputAfter = container.querySelector(
+        "[data-testid='resolve-reason-input']",
+      );
+      assert.ok(
+        reasonInputAfter?.disabled === true,
+        `[${name}] reason input must be disabled after ambiguous failure`,
+      );
+      const durationInputAfter = container.querySelector(
+        "[data-testid='timeout-duration-input']",
+      );
+      assert.ok(
+        durationInputAfter?.disabled === true,
+        `[${name}] duration input must be disabled after ambiguous failure`,
+      );
+
+      // Second attempt — retry must send the complete frozen payload byte-for-byte.
       await act(async () => {
         fireEvent.click(submit);
         await new Promise((r) => setTimeout(r, 20));
@@ -5560,20 +5620,10 @@ for (const { name, desc, reject: makeReject } of RESOLVE_FREEZE_CASES) {
         2,
         `[${name}] two attempts must have been made`,
       );
-      assert.equal(
-        capturedFreezeBodies[0].requestId,
-        capturedFreezeBodies[1].requestId,
-        `[${name}] requestId must be preserved on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.requestId))}`,
-      );
-      assert.equal(
-        capturedFreezeBodies[0].action,
-        capturedFreezeBodies[1].action,
-        `[${name}] action must be identical on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.action))}`,
-      );
-      assert.equal(
-        capturedFreezeBodies[0].reason,
-        capturedFreezeBodies[1].reason,
-        `[${name}] reason must be identical on retry; got: ${JSON.stringify(capturedFreezeBodies.map((b) => b.reason))}`,
+      assert.deepEqual(
+        capturedFreezeBodies[1],
+        capturedFreezeBodies[0],
+        `[${name}] retry must send the complete frozen payload (requestId+action+reason+expirationSecs); got: ${JSON.stringify(capturedFreezeBodies)}`,
       );
     } finally {
       await unmount();
