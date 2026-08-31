@@ -85,6 +85,7 @@ function MessageComposerImpl({
   onAutoSubmitComplete,
   editTarget = null,
   isSending = false,
+  onAttachmentAcceptanceChange,
   onDeferredEditPendingChange,
   onCancelEdit,
   onCancelReply,
@@ -167,6 +168,9 @@ function MessageComposerImpl({
     setFormattingOpen: setIsFormattingOpen,
     setEmojiPickerOpen: setIsEmojiPickerOpen,
   });
+  React.useEffect(() => {
+    onAttachmentAcceptanceChange?.(voiceNote.acceptsAttachment);
+  }, [onAttachmentAcceptanceChange, voiceNote.acceptsAttachment]);
   const {
     handleAttachmentEditSave,
     handleAttachmentRevert,
@@ -776,7 +780,7 @@ function MessageComposerImpl({
   useComposerPasteHandler({
     editor: richText.editor,
     scrollToBottom: scrollComposerToBottom,
-    setPendingImeta: media.setPendingImeta,
+    setPendingImeta: voiceNote.setPendingImetaWhenIdle,
     uploadFile: voiceNote.uploadFileWhenIdle,
   });
   const sendDisabled =

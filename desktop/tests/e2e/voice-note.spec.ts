@@ -72,6 +72,68 @@ test("restores the voice note and shows a send error after upload succeeds", asy
   ).toBeVisible();
 });
 
+test("keeps pasted snapshots and channel drops out of an active voice note", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  await page.getByRole("button", { name: "Record voice note" }).click();
+  await expect(page.getByTestId("voice-note-recorder")).toBeVisible();
+  await page.waitForTimeout(100);
+
+  await page.getByRole("button", { name: "Finish voice note" }).click();
+  await expect(page.getByTestId("composer-voice-note-card")).toBeVisible();
+
+  await page
+    .getByTestId("message-composer")
+    .locator(".ProseMirror")
+    .evaluate((editor) => {
+      const payload = encodeURIComponent(
+        JSON.stringify({
+          version: 1,
+          displayName: "Snapshot",
+          filename: "shared.agent.png",
+          sha256: "b".repeat(64),
+          size: 128,
+          type: "image/png",
+          url: "https://relay.example/media/shared.agent.png",
+        }),
+      );
+      const clipboardData = new DataTransfer();
+      clipboardData.setData(
+        "text/html",
+        `<a data-buzz-agent-snapshot="${payload}" href="https://relay.example/media/shared.agent.png">Snapshot</a>`,
+      );
+      editor.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData,
+        }),
+      );
+    });
+  await expect(page.getByTestId("composer-agent-snapshot-card")).toHaveCount(0);
+
+  const dataTransfer = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(
+      new File(["second attachment"], "second-attachment.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    return transfer;
+  });
+  const dropZone = page.getByTestId("channel-drop-zone");
+  await dropZone.dispatchEvent("dragenter", { dataTransfer });
+  await expect(dropZone.getByTestId("drop-zone-overlay")).toHaveCount(0);
+  await dropZone.dispatchEvent("drop", { dataTransfer });
+  await expect(page.getByTestId("message-composer")).not.toContainText(
+    "second-attachment.pdf",
+  );
+  await expect(page.getByTestId("composer-voice-note-card")).toBeVisible();
+});
+
 test("records from the composer and renders an inline waveform card", async ({
   page,
 }) => {

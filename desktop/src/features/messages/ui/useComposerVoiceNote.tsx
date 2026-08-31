@@ -102,27 +102,38 @@ export function useComposerVoiceNote({
   const hasAttachmentRef = React.useRef(hasAttachment);
   hasAttachmentRef.current = hasAttachment;
 
+  const acceptsNewAttachment = React.useCallback(() => {
+    const attachments = getAttachmentsRef.current();
+    const hasVoiceNoteAttachment =
+      attachments.pending.some((attachment) =>
+        isVoiceNoteAttachment({
+          filename: attachment.filename,
+          m: attachment.type,
+        }),
+      ) || attachments.queued.some(({ file }) => isVoiceNoteFile(file));
+    if (statusRef.current !== "idle" || hasVoiceNoteAttachment) {
+      toast.error(
+        statusRef.current === "idle"
+          ? "A voice note must be the only attachment."
+          : "Finish or discard the voice note before attaching a file.",
+      );
+      return false;
+    }
+    return true;
+  }, []);
+
   const uploadFileWhenIdle = React.useCallback(
     async (file: File) => {
-      const attachments = getAttachmentsRef.current();
-      const hasVoiceNoteAttachment =
-        attachments.pending.some((attachment) =>
-          isVoiceNoteAttachment({
-            filename: attachment.filename,
-            m: attachment.type,
-          }),
-        ) || attachments.queued.some(({ file }) => isVoiceNoteFile(file));
-      if (statusRef.current !== "idle" || hasVoiceNoteAttachment) {
-        toast.error(
-          statusRef.current === "idle"
-            ? "A voice note must be the only attachment."
-            : "Finish or discard the voice note before attaching a file.",
-        );
-        return;
-      }
+      if (!acceptsNewAttachment()) return;
       await media.uploadFile(file);
     },
-    [media.uploadFile],
+    [acceptsNewAttachment, media.uploadFile],
+  );
+  const setPendingImetaWhenIdle = React.useCallback(
+    (update: Parameters<typeof media.setPendingImeta>[0]) => {
+      if (acceptsNewAttachment()) media.setPendingImeta(update);
+    },
+    [acceptsNewAttachment, media.setPendingImeta],
   );
 
   return {
@@ -143,6 +154,7 @@ export function useComposerVoiceNote({
         />
       ),
     statusRef,
+    setPendingImetaWhenIdle,
     finish,
     toggle,
     uploadFileWhenIdle,
