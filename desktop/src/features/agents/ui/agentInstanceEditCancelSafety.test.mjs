@@ -246,14 +246,10 @@ function effortConfigSurface() {
 // tests can prove effort is included in the locked update payload — never on
 // selection, never before the update settles. `failUpdate` makes
 // `update_managed_agent` reject immediately; `deferUpdate` holds it pending
-// until the returned `resolveUpdate()` is called. `failSetter` is now a no-op
-// (persist_agent_effort_level is no longer called from the Save path — effort
-// is embedded in the locked update); it is kept for forward compatibility.
-function installEffortIpc({
-  deferUpdate = false,
-  failUpdate = false,
-  failSetter = false,
-} = {}) {
+// until the returned `resolveUpdate()` is called.
+// Note: `persist_agent_effort_level` is NOT called from the dialog's Save path
+// (PR #4625 — effort is embedded in the locked update payload); no mock needed.
+function installEffortIpc({ deferUpdate = false, failUpdate = false } = {}) {
   installIpc();
   const set = (cmd, handler) => ipcHandlers.set(cmd, handler);
   set("get_agent_config_surface", () => Promise.resolve(effortConfigSurface()));
@@ -271,13 +267,6 @@ function installEffortIpc({
     return new Promise((resolve) => {
       resolveUpdate = () => resolve(response);
     });
-  });
-  set("persist_agent_effort_level", (args) => {
-    ipcCalls.push({ cmd: "persist_agent_effort_level", args });
-    if (failSetter) {
-      return Promise.reject(new Error("effort save failed"));
-    }
-    return Promise.resolve();
   });
   return {
     resolveUpdate: () => resolveUpdate(),

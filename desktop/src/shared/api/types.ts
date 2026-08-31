@@ -504,6 +504,15 @@ export type AcpRuntimeCatalogEntry = {
   providerEnvVar: string | null;
   /** Environment variable used to apply thinking effort, when supported. */
   thinkingEnvVar: string | null;
+  /**
+   * Canonical accepted effort values for this runtime, in display order.
+   *
+   * Non-null only for runtimes with a static finite effort vocabulary
+   * (currently Goose: `["off","low","medium","high","max"]`). The renderer
+   * uses this instead of the TS-side `GOOSE_EFFORT_CANONICAL_VALUES` duplicate.
+   * Null for buzz-agent (provider/model catalog), Claude/Codex/unknown runtimes.
+   */
+  effortCanonicalValues: string[] | null;
   maxTokensEnvVar: string | null;
   contextLimitEnvVar: string | null;
   maxRoundsEnvVar: string | null;

@@ -78,22 +78,3 @@ export function getProviderEffortConfig(
 export function isBuzzAgentRuntime(runtimeId: string): boolean {
   return runtimeId === "buzz-agent";
 }
-
-/**
- * Goose canonical thinking-effort values, in UI display order.
- *
- * Mirrors `GOOSE_EFFORT_NORMALIZATION.canonical` in
- * `desktop/src-tauri/src/managed_agents/discovery/runtime_metadata.rs`.
- * Source: `crates/goose-provider-types/src/thinking.rs` Display values.
- *
- * `off` is a valid Goose effort level — it must appear in this list so
- * `AgentConfigFields` does not pass a buzz-agent vocabulary to
- * `useEffortAutoClear` and delete a valid saved value on mount.
- */
-export const GOOSE_EFFORT_CANONICAL_VALUES: ReadonlyArray<string> = [
-  "off",
-  "low",
-  "medium",
-  "high",
-  "max",
-] as const;

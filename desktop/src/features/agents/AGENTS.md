@@ -204,29 +204,33 @@ with a TypeScript lookup table or an id comparison in a component.
 14. **Thinking effort has two surfaces: a local-only WRITE control and a
    read-only two-facts DISPLAY.** The write control is `EffortPickerField`
    (`ui/EffortPickerField.tsx`), a self-contained section component mounted in
-   `AgentInstanceEditDialog` beside the Model block. It is a **Save-gated
-   standalone setter**, not part of the frozen `UpdateManagedAgentInput` shape:
-   the picker is a controlled field (dialog holds the pending selection), and
-   Save persists it via `persistAgentEffortLevel` sequenced AFTER the locked
-   `update_managed_agent` resolves, mirroring the `setManagedAgentAutoRestart`
-   standalone-setter precedent. It must NOT persist on selection — a
-   direct-write on selection races the dialog's own locked save (a delayed
-   effort IPC can restore a pin the pin→inherit save just cleared) and can
-   commit a write a Cancel or failed Save should have discarded. On the
-   pin→inherit transition the locked save already clears the effort column and
-   aliases, so the setter is suppressed there (`resolveEffortSubmission`); after
-   persisting, invalidate the config-surface query so the panel's canonical tier
-   reflects the new next-spawn value. Its gating and option compute live in the
-   pure helper `ui/effortPicker.ts`
-   (`effortPickerState`): the picker renders only when
+   `AgentInstanceEditDialog` beside the Model block. It is **Save-gated and
+   embedded in the locked `UpdateManagedAgentInput`** (PR #4625): the picker
+   is a controlled field (dialog holds the pending selection), and Save persists
+   the selection via `input.effortLevel` inside the locked `update_managed_agent`
+   call — NOT via a separate `persistAgentEffortLevel` IPC. This guarantees
+   that an access-policy-change restart snapshots the NEW effort atomically
+   (the restart happens after the locked save that wrote it). The standalone
+   `persist_agent_effort_level` Tauri command still exists for global/onboarding
+   surfaces that do not go through the dialog, but the dialog's Save path does
+   not call it. It must NOT persist on selection — a direct-write on selection
+   races the dialog's own locked save (a delayed effort IPC can restore a pin
+   the pin→inherit save just cleared) and can commit a write a Cancel or failed
+   Save should have discarded. On the pin→inherit transition the locked save
+   already clears the effort column and aliases, so `effortLevel` is suppressed
+   in `resolveEffortSubmission`; after the locked save resolves, invalidate the
+   config-surface query so the panel's canonical tier reflects the new
+   next-spawn value. Its gating and option compute live in the pure helper
+   `ui/effortPicker.ts` (`effortPickerState`): the picker renders only when
    `agent.backend.type === "local"` **AND** a `thought_level` `effortConfigId`
    has been discovered from the running session (absent pre-first-session and
    for runtimes/models without effort support). Local-only is load-bearing, not
-   cosmetic — the Rust command rejects non-local backends because remote effort
-   is set at deploy time via `policy_env`. The field owns no mutation: the dialog
-   holds the pending selection and threads it as `value`/`onChange` props, and
-   the single write lives in `handleSubmit` (see the Save-gated setter above), so
-   there is exactly one effort write path and it is gated on Save. The read-only display is the `thinkingEffort`
+   cosmetic — both `persist_agent_effort_level` and the locked `update_managed_agent`
+   reject non-local backends because remote effort is set at deploy time via
+   `policy_env`. The field owns no mutation: the dialog holds the pending
+   selection and threads it as `value`/`onChange` props, and the single write
+   lives in `handleSubmit` (effort embedded in the locked update), so there is
+   exactly one effort write path and it is gated on Save. The read-only display is the `thinkingEffort`
    normalized field rendered by `AgentConfigPanel` via `NormalizedRow`, which
    already shows both facts — `field.value` (canonical: the effort the next
    spawn will launch with, projected to the runtime's native key) and, when a

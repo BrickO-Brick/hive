@@ -9,9 +9,8 @@ import { PersonaDropdownField } from "./PersonaDropdownField";
 /**
  * Thinking-effort write control for the edit dialog.
  *
- * Local-only by construction: the persisted value flows into
- * `persistAgentEffortLevel`, which the Rust command rejects for non-local
- * backends (remote effort is set at deploy time via `policy_env`). So the
+ * Local-only by construction: the Rust backend rejects effort writes for
+ * non-local backends (remote effort is set at deploy time via `policy_env`). So the
  * control renders only for a local backend AND once the adapter has advertised
  * a `thought_level` configId (discovered from the running session — absent
  * pre-first-session and for runtimes/models without effort support). The
@@ -20,9 +19,9 @@ import { PersonaDropdownField } from "./PersonaDropdownField";
  *
  * Save-gated, not direct-write: the control is fully controlled by the parent
  * dialog (`value`/`onChange`) and owns no mutation. The dialog persists the
- * selection through a standalone setter on Save alone (mirroring
- * `setManagedAgentAutoRestart`), so the write can never race the dialog's own
- * locked `update_managed_agent` save or survive a Cancel/failed Save.
+ * selection by embedding `effortLevel` in the locked `update_managed_agent`
+ * call (PR #4625), so the effort write is atomic with any access-policy change
+ * and can never race or survive a Cancel/failed Save.
  */
 export function EffortPickerField({
   agent,

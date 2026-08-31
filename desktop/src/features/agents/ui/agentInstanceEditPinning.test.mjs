@@ -338,8 +338,8 @@ test("inheritToggle_cancelled_emitsNoUpdate", () => {
 //
 // Carl r8 P1. The effort picker no longer direct-writes on selection; the
 // dialog holds the pending value and persists it on Save via a standalone
-// setter (`resolveEffortSubmission` + `persistAgentEffortLevel`) sequenced
-// AFTER the locked `update_managed_agent`. Two invariants this pins:
+// (`resolveEffortSubmission`) embedded in the locked `update_managed_agent`
+// payload (PR #4625 — effort is now in the locked update, not a separate IPC). Two invariants this pins:
 //   1. On the pin→inherit transition (agentCommandUpdate === ""), the locked
 //      save already cleared the effort column + aliases, so the effort setter
 //      must be SUPPRESSED — re-persisting the picked value would restore the

@@ -35,6 +35,23 @@ fn ensure_access_policy_change_supported(
     Ok(())
 }
 
+/// Reject an effort mutation for a non-local record, mirroring the contract of
+/// `persist_agent_effort_level`. Remote effort is deployment-owned (set via
+/// `policy_env` at deploy time); persisting locally would make the canonical
+/// column diverge from the deployed runtime's actual effort.
+fn ensure_effort_change_supported(
+    record: &ManagedAgentRecord,
+    effort_level: &Option<Option<String>>,
+) -> Result<(), String> {
+    if effort_level.is_some() && record.backend != crate::managed_agents::BackendKind::Local {
+        return Err(format!(
+            "agent {} is not a local agent; remote effort is set at deploy time",
+            record.pubkey
+        ));
+    }
+    Ok(())
+}
+
 /// Flush a retained managed-agent policy, preserving any earlier profile error.
 pub(crate) async fn flush_managed_agent_policy(
     app: &AppHandle,
@@ -231,6 +248,7 @@ pub async fn update_managed_agent(
         // Absent = don't touch (the dialog sends it only when effortTouched).
         // Uses the same alias-sweep as persist_agent_effort_level so no
         // stale record-scope alias outranks the just-written column.
+        ensure_effort_change_supported(record, &input.effort_level)?;
         if let Some(effort_override) = input.effort_level {
             crate::commands::agent_config::apply_picker_effort_level(record, effort_override);
         }

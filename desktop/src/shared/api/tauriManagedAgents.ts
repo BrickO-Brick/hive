@@ -63,24 +63,6 @@ export async function setManagedAgentAutoRestart(
   return fromRawManagedAgent(response);
 }
 
-/**
- * Persist the canonical startup effort for a local managed agent. Stored as the
- * harness-agnostic `effort_level` column and projected to each runtime's native
- * key at the next spawn (`GOOSE_THINKING_EFFORT` for Goose,
- * `BUZZ_AGENT_THINKING_EFFORT` for buzz-agent, the `BUZZ_ACP_EFFORT_LEVEL`
- * startup sentinel for Claude/Codex and keyless adapters). Pass `null` to clear
- * (reverts to the inherited/adapter default). Rejects non-local agents.
- */
-export async function persistAgentEffortLevel(
-  pubkey: string,
-  effortLevel: string | null,
-): Promise<void> {
-  return invokeTauri<void>("persist_agent_effort_level", {
-    pubkey,
-    effortLevel,
-  });
-}
-
 export async function listManagedAgentRuntimes(): Promise<
   ManagedAgentRuntimeStatus[]
 > {

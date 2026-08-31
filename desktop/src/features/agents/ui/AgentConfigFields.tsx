@@ -51,7 +51,6 @@ import { usePersonaModelDiscovery } from "@/features/agents/ui/usePersonaModelDi
 import { resolveModelLabel } from "@/features/agents/lib/formatAgentModelLabel";
 import {
   BUZZ_AGENT_THINKING_EFFORT,
-  GOOSE_EFFORT_CANONICAL_VALUES,
   getProviderEffortConfig,
 } from "@/features/agents/ui/buzzAgentConfig";
 import {
@@ -631,10 +630,9 @@ export function AgentConfigFields({
     : implicitEffortProvider;
   const { validValues: effortValid, defaultValue: effortDefault } =
     getProviderEffortConfig(effortProvider, config.model ?? "");
-  // Harness-native runtimes (e.g. Goose) own their vocabulary — use it instead
-  // of the buzz-agent catalog. "off" is valid Goose but absent from the catalog.
+  // Harness-native runtimes own their effort vocabulary via the catalog entry.
   const effortValidForRenderer = isHarnessNativeEffort
-    ? GOOSE_EFFORT_CANONICAL_VALUES
+    ? (selectedRuntime?.effortCanonicalValues ?? [])
     : effortValid;
   const effortDefaultForRenderer = isHarnessNativeEffort ? null : effortDefault;
   const currentEffort = effortPersistenceKey

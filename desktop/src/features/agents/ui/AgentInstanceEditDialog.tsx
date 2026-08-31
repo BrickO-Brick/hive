@@ -152,11 +152,11 @@ export function AgentInstanceEditDialog({
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
   const [autoRestartOnConfigChange, setAutoRestartOnConfigChange] =
     React.useState(agent.autoRestartOnConfigChange);
-  // Effort picker is a Save-gated standalone setter: hold the pending selection
-  // in dialog state and persist it on Save alone (see resolveEffortSubmission /
-  // handleSubmit), never on selection. `effortTouched` distinguishes "user
-  // picked a value" from "showing the config-surface effective value", so an
-  // untouched Save writes nothing.
+  // Effort picker is Save-gated: hold the pending selection in dialog state and
+  // embed it in the locked update payload on Save alone (see
+  // resolveEffortSubmission / handleSubmit — PR #4625), never on selection.
+  // `effortTouched` distinguishes "user picked a value" from "showing the
+  // config-surface effective value", so an untouched Save writes nothing.
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const effortTouched = React.useRef(false);
   const personasQuery = usePersonasQuery();
