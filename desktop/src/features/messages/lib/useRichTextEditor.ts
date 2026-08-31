@@ -622,9 +622,10 @@ export function useRichTextEditor({
       // About to disable: remember whether we currently hold focus so we know
       // whether to restore it when re-enabled.
       hadFocusBeforeDisableRef.current = editor.isFocused;
-      editor.setEditable(false);
+      // Editability is not an authored document update (not even a clear).
+      editor.setEditable(false, false);
     } else {
-      editor.setEditable(true);
+      editor.setEditable(true, false);
       // Re-enabled: if we owned focus before the disable blurred us, take it
       // back (preserving the current selection — `focus()` with no arg keeps
       // the existing selection rather than jumping to the end).
