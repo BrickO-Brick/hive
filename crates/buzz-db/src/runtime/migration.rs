@@ -4241,12 +4241,12 @@ mod tests {
     ///   positive A red: the COMMIT fails because the guard now requires a
     ///   denial-attempt row for the authenticated event and none is present.
     /// - Removing the `actor_kind <> 4` shape guard from the attempt-side
-    ///   trigger makes negative B red: the attempt binds to the authenticated
-    ///   event and COMMIT succeeds, so the `expect_err` panics. Without the
-    ///   exact constraint name check, the pre-existing
-    ///   `authorization_denial_attempt_semantic_binding` guard would fire instead
-    ///   (non-null attempt semantic_fingerprint vs. null on the event), masking
-    ///   whether the new shape guard is load-bearing.
+    ///   trigger makes negative B red: the COMMIT is rejected by the pre-existing
+    ///   `authorization_denial_attempt_semantic_binding` guard instead (non-null
+    ///   attempt `semantic_fingerprint` vs. null on the authenticated event), so
+    ///   `assert_eq!` on the constraint name fails. The exact constraint name
+    ///   assertion is therefore the load-bearing proof that the new shape guard —
+    ///   not the pre-existing semantic-binding check — is what fires.
     ///
     /// The unresolved pre-auth positive path (actor_kind 4) is exercised in
     /// `authorization_denial_attempt_requires_kind_9_event_bidirectional` and
@@ -4429,13 +4429,17 @@ mod tests {
     /// (outcome_code = 2) must commit without a paired audit event. Requiring
     /// one would falsely record that the lifecycle transition occurred.
     ///
-    /// Mutation sensitivity: removing the `outcome_code NOT IN (1, 3)` early-return
-    /// from `authorization_operation_receipt_event_guard_v1` makes the positive case
-    /// red — the denied enroll receipt cannot commit alone because the guard then
-    /// demands a paired enroll audit event (expected_event_kind = 1) that is absent.
-    /// Existing tests (`authorization_denial_attempt_requires_kind_9_event_bidirectional`
-    /// and `authorization_admission_result_requires_kind_11_receipt_bidirectional`)
-    /// already protect the applied/no-op side of the guard.
+    /// Mutation sensitivity:
+    /// - Removing the `outcome_code IN (1, 3)` branch entirely makes the positive case
+    ///   red — the denied enroll receipt cannot commit alone because the guard then
+    ///   demands a paired enroll audit event (expected_event_kind = 1) that is absent.
+    /// - The negative fixture below (denied receipt + mapped success event) covers the
+    ///   `outcome_code = 2` zero-event branch: removing that ELSIF branch makes the
+    ///   negative green, failing the expected COMMIT rejection.
+    /// Applied/no-op lifecycle cardinality is covered by the applied path exercised
+    /// in `authorization_operation_receipt_event_guard_v1`'s existing constraint
+    /// trigger, verified by the mutation above (bypass makes the positive denied path
+    /// demand an absent event, confirming the guard is active for both branches).
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn denied_lifecycle_receipt_commits_without_audit_event() {
@@ -4496,6 +4500,97 @@ mod tests {
         assert_eq!(
             event_count, 0,
             "no audit event should be required or present for a denied lifecycle receipt"
+        );
+
+        // --- Negative: denied enroll receipt paired with its mapped success-
+        // transition event (event_kind = 1, enrolled) must be rejected at COMMIT.
+        // Both deferred trigger directions share the same
+        // authorization_operation_receipt_event_guard_v1 function, so a single
+        // transaction exercising both INSERT paths (receipt then event) covers
+        // both trigger directions.
+        //
+        // Seed event capacity; the authorization_events BEFORE INSERT trigger
+        // requires a capacity row. No lifecycle history is needed: denied receipts
+        // (outcome_code = 2) expect zero history rows per the history guard.
+        sqlx::query(
+            "INSERT INTO authorization_event_capacity \
+             (community_id, max_events_per_domain, max_bytes_per_domain, max_envelope_bytes) \
+             VALUES ($1, 1000, 16777216, 16384)",
+        )
+        .bind(community_id)
+        .execute(&pool)
+        .await
+        .expect("insert event capacity");
+
+        let op_neg = uuid::Uuid::new_v4();
+        let fp_neg = vec![0xD1_u8; 32];
+        let event_neg = uuid::Uuid::new_v4();
+        let corr_neg = uuid::Uuid::new_v4();
+        let attempt_neg = uuid::Uuid::new_v4();
+
+        let mut conn_neg = pool.acquire().await.expect("acquire connection neg");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn_neg)
+            .await
+            .expect("begin neg");
+
+        // Denied enroll receipt — no history row needed (outcome_code = 2).
+        sqlx::query(
+            "INSERT INTO authorization_operation_receipts \
+             (community_id, operation_id, request_fingerprint, operation_kind, \
+              actor_fingerprint, outcome_code, result_digest) \
+             VALUES ($1, $2, $3, 1, $4, 2, $5)",
+        )
+        .bind(community_id)
+        .bind(op_neg)
+        .bind(&fp_neg)
+        .bind(vec![0xD2_u8; 32])
+        .bind(vec![0xD3_u8; 32])
+        .execute(&mut *conn_neg)
+        .await
+        .expect("insert denied receipt — event guard is deferred");
+
+        // Insert the mapped success-transition event (event_kind = 1, enrolled).
+        // actor_kind = 1 requires a non-null actor_fingerprint and a matching
+        // receipt FK (satisfied by the denied receipt above, which shares the
+        // same (community_id, operation_id, request_fingerprint)).
+        sqlx::query(
+            "INSERT INTO authorization_events \
+             (community_id, event_id, event_kind, outcome_code, reason_code, \
+              actor_kind, actor_fingerprint, operation_id, request_fingerprint, \
+              correlation_id, attempt_id, semantic_fingerprint, \
+              occurred_at, canonical_envelope, envelope_digest) \
+             VALUES ($1, $2, 1, 1, 4, 1, $3, $4, $5, $6, $7, NULL, \
+                     '2026-01-01T00:00:00Z', $8, $9)",
+            // event_kind 1 (enrolled) — the mapped success transition for enroll
+        )
+        .bind(community_id)
+        .bind(event_neg)
+        .bind(vec![0xD4_u8; 32]) // actor_fingerprint
+        .bind(op_neg)
+        .bind(&fp_neg)
+        .bind(corr_neg)
+        .bind(attempt_neg)
+        .bind(vec![0xD5_u8; 64]) // canonical_envelope
+        .bind(vec![0xD6_u8; 32]) // envelope_digest
+        .execute(&mut *conn_neg)
+        .await
+        .expect("event INSERT must pass — deferred guard fires at COMMIT");
+
+        let contradiction_err = sqlx::query("COMMIT")
+            .execute(&mut *conn_neg)
+            .await
+            .expect_err(
+                "denied receipt + mapped success event must be rejected at COMMIT \
+                 — contradictory durable facts must not be permitted",
+            );
+        assert_eq!(
+            contradiction_err
+                .as_database_error()
+                .and_then(|e| e.constraint()),
+            Some("authorization_denied_lifecycle_receipt_no_success_event"),
+            "expected authorization_denied_lifecycle_receipt_no_success_event constraint \
+             rejection for denied receipt + success event, got: {contradiction_err}"
         );
     }
 }

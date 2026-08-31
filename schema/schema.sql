@@ -2978,8 +2978,10 @@ CREATE TABLE authorization_events (
     correlation_id UUID NOT NULL,
     attempt_id UUID NOT NULL,
     -- Redaction-safe pre-authentication denial identity. Present and non-zero
-    -- for kind-9 events; NULL for all other event kinds. Binds the event to the
-    -- exact denial attempt's semantic_fingerprint (intent_digest) for exact replay.
+    -- for unresolved pre-auth kind-9 events (actor_kind = 4); NULL for
+    -- authenticated kind-9 events (actor_kind 1-3) and all other event kinds.
+    -- Binds the event to the exact denial attempt's semantic_fingerprint
+    -- (intent_digest) for exact replay.
     semantic_fingerprint BYTEA CHECK (
         semantic_fingerprint IS NULL OR octet_length(semantic_fingerprint) = 32
     ),
@@ -3730,28 +3732,44 @@ BEGIN
     END IF;
 
     -- Only applied (outcome_code = 1) and no-op (outcome_code = 3) lifecycle
-    -- receipts require a paired audit event. A denied lifecycle receipt
-    -- (outcome_code = 2) commits without one; fabricating a transition event
-    -- would falsely record that the lifecycle change occurred.
-    IF receipt.outcome_code NOT IN (1, 3) THEN
-        RETURN NULL;
-    END IF;
+    -- receipts require exactly one paired success-transition event. A denied
+    -- lifecycle receipt (outcome_code = 2) requires zero events of the mapped
+    -- transition kind: a success-transition event would falsely record that the
+    -- denied transition occurred, creating contradictory durable ledger facts.
+    -- Other outcome codes (4, 5) are not core lifecycle outcomes; skip.
+    IF receipt.outcome_code IN (1, 3) THEN
+        SELECT
+            count(*),
+            count(*) FILTER (WHERE event_kind = expected_event_kind)
+        INTO matching_event_count, expected_event_count
+        FROM authorization_events
+        WHERE community_id = receipt.community_id
+          AND operation_id = receipt.operation_id
+          AND request_fingerprint = receipt.request_fingerprint;
 
-    SELECT
-        count(*),
-        count(*) FILTER (WHERE event_kind = expected_event_kind)
-    INTO matching_event_count, expected_event_count
-    FROM authorization_events
-    WHERE community_id = receipt.community_id
-      AND operation_id = receipt.operation_id
-      AND request_fingerprint = receipt.request_fingerprint;
+        IF matching_event_count <> 1 OR expected_event_count <> 1 THEN
+            RAISE EXCEPTION
+                'lifecycle receipt requires exactly one event kind %, found % total and % expected',
+                expected_event_kind, matching_event_count, expected_event_count
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_operation_receipt_event_cardinality';
+        END IF;
+    ELSIF receipt.outcome_code = 2 THEN
+        SELECT count(*) FILTER (WHERE event_kind = expected_event_kind)
+        INTO expected_event_count
+        FROM authorization_events
+        WHERE community_id = receipt.community_id
+          AND operation_id = receipt.operation_id
+          AND request_fingerprint = receipt.request_fingerprint;
 
-    IF matching_event_count <> 1 OR expected_event_count <> 1 THEN
-        RAISE EXCEPTION
-            'lifecycle receipt requires exactly one event kind %, found % total and % expected',
-            expected_event_kind, matching_event_count, expected_event_count
-            USING ERRCODE = 'check_violation',
-                  CONSTRAINT = 'authorization_operation_receipt_event_cardinality';
+        IF expected_event_count <> 0 THEN
+            RAISE EXCEPTION
+                'denied lifecycle receipt must not have a mapped success-transition event '
+                '(kind %); found % — contradictory durable facts are not permitted',
+                expected_event_kind, expected_event_count
+                USING ERRCODE = 'check_violation',
+                      CONSTRAINT = 'authorization_denied_lifecycle_receipt_no_success_event';
+        END IF;
     END IF;
     RETURN NULL;
 END;
