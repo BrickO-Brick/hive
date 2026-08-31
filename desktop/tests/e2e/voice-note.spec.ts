@@ -14,6 +14,26 @@ async function openMoreActionsMenu(page: Page, messageId: string) {
   await expect(page.locator('[role="menuitem"]').first()).toBeVisible();
 }
 
+async function waitForMockLiveSubscription(page: Page, channelName: string) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (currentChannelName) =>
+          (
+            window as Window & {
+              __BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?: (input: {
+                channelName: string;
+              }) => boolean;
+            }
+          ).__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: currentChannelName,
+          }) ?? false,
+        channelName,
+      ),
+    )
+    .toBe(true);
+}
+
 test.beforeEach(async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator.mediaDevices, "getUserMedia", {
@@ -425,6 +445,11 @@ test("records from the composer and renders an inline waveform card", async ({
   const slider = card.getByRole("slider", {
     name: "Voice note playback position",
   });
+  await slider.focus();
+  await expect(card.getByTestId("voice-note-playback-waveform")).toHaveCSS(
+    "box-shadow",
+    /rgb/,
+  );
   await slider.evaluate((element: HTMLInputElement) => {
     element.value = String(Number(element.max) / 2);
     element.dispatchEvent(new Event("input", { bubbles: true }));
@@ -476,18 +501,7 @@ test("starting a duplicate voice-note player pauses the other instance", async (
 }) => {
   await page.goto("/");
   await page.getByTestId("channel-general").click();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          typeof (
-            window as Window & {
-              __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: unknown;
-            }
-          ).__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function",
-      ),
-    )
-    .toBe(true);
+  await waitForMockLiveSubscription(page, "general");
 
   await page.evaluate(
     ({ audioUrl }) => {

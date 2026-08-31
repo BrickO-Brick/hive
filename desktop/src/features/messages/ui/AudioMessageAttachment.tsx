@@ -280,7 +280,7 @@ export function AudioMessageAttachment({
       <AttachmentContent className="min-w-0">
         <AttachmentTitle className="sr-only">{filename}</AttachmentTitle>
         <div
-          className="relative h-6 overflow-hidden"
+          className="relative h-6 overflow-hidden rounded-sm focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1"
           data-testid="voice-note-playback-waveform"
           data-waveform-state={waveformReady ? "ready" : "loading"}
           ref={waveformRef}
