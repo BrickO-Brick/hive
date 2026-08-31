@@ -1,6 +1,10 @@
 import * as React from "react";
 
-import { reconstructHuddlePresence } from "@/features/huddle/lib/huddlePresence";
+import { useRelaySelfQuery } from "@/features/moderation/hooks";
+import {
+  fetchActiveHuddleLifecycle,
+  HuddlePresenceTracker,
+} from "@/features/huddle/lib/huddlePresence";
 import { relayClient } from "@/shared/api/relayClient";
 import type { RelayEvent } from "@/shared/api/types";
 import {
@@ -12,6 +16,7 @@ import {
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
 const EMPTY_HUDDLE_PRESENCE = new Set<string>();
+const MAX_PENDING_LIVE_EVENTS = 1_000;
 const HuddlePresenceContext = React.createContext<ReadonlySet<string>>(
   EMPTY_HUDDLE_PRESENCE,
 );
@@ -22,14 +27,37 @@ export function HuddlePresenceProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const relaySelfQuery = useRelaySelfQuery();
+  const relaySelfPubkey = relaySelfQuery.data;
   const [participantPubkeys, setParticipantPubkeys] = React.useState<
     ReadonlySet<string>
   >(EMPTY_HUDDLE_PRESENCE);
 
   React.useEffect(() => {
+    if (!relaySelfPubkey || relaySelfQuery.isError) {
+      setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
+      return;
+    }
+
     let disposed = false;
     let cleanup: (() => Promise<void>) | null = null;
-    const events = new Map<string, RelayEvent>();
+    const tracker = new HuddlePresenceTracker(relaySelfPubkey);
+    let hydrated = false;
+    let hydrationFailed = false;
+    const pendingLiveEvents: RelayEvent[] = [];
+
+    const applyLiveEvent = (event: RelayEvent) => {
+      if (disposed) return;
+      if (!hydrated) {
+        if (pendingLiveEvents.length >= MAX_PENDING_LIVE_EVENTS) {
+          hydrationFailed = true;
+          return;
+        }
+        pendingLiveEvents.push(event);
+        return;
+      }
+      if (tracker.apply(event)) setParticipantPubkeys(tracker.snapshot());
+    };
 
     void relayClient
       .subscribeLive(
@@ -40,22 +68,43 @@ export function HuddlePresenceProvider({
             KIND_HUDDLE_PARTICIPANT_LEFT,
             KIND_HUDDLE_ENDED,
           ],
-          limit: 1000,
+          limit: 0,
         },
-        (event) => {
-          if (disposed || events.has(event.id)) return;
-          events.set(event.id, event);
-          setParticipantPubkeys(reconstructHuddlePresence(events.values()));
-        },
+        applyLiveEvent,
       )
-      .then((dispose) => {
+      .then(async (dispose) => {
         if (disposed) {
           void dispose();
           return;
         }
         cleanup = dispose;
+        try {
+          const history = await fetchActiveHuddleLifecycle((filter) =>
+            relayClient.fetchEvents(filter),
+          );
+          if (disposed) return;
+          for (const event of history) tracker.apply(event);
+        } catch (error) {
+          hydrationFailed = true;
+          console.error("[huddle] Presence backfill failed:", error);
+        }
+        if (disposed) return;
+        if (hydrationFailed) {
+          void dispose();
+          cleanup = null;
+          pendingLiveEvents.length = 0;
+          setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
+          return;
+        }
+        hydrated = true;
+        for (const event of pendingLiveEvents) tracker.apply(event);
+        pendingLiveEvents.length = 0;
+        setParticipantPubkeys(tracker.snapshot());
       })
       .catch((error) => {
+        if (disposed) return;
+        pendingLiveEvents.length = 0;
+        setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
         console.error("[huddle] Presence subscription failed:", error);
       });
 
@@ -64,7 +113,7 @@ export function HuddlePresenceProvider({
       if (cleanup) void cleanup();
       setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
     };
-  }, []);
+  }, [relaySelfPubkey, relaySelfQuery.isError]);
 
   return (
     <HuddlePresenceContext.Provider value={participantPubkeys}>

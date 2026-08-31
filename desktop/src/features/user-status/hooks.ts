@@ -1,5 +1,10 @@
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import type { UserStatusInput } from "@/features/user-status/types";
 import { relayClient } from "@/shared/api/relayClient";
@@ -16,6 +21,59 @@ function normalizePubkeys(pubkeys: string[]) {
   return [...new Set(pubkeys.map((pk) => normalizePubkey(pk)))]
     .filter((pk) => pk.length > 0)
     .sort();
+}
+
+function statusIsExpired(
+  status: UserStatus | null | undefined,
+  nowSeconds: number,
+): boolean {
+  return status?.expiresAt !== undefined && status.expiresAt <= nowSeconds;
+}
+
+/** Remove expired entries from every mounted user-status lookup. */
+export function expireUserStatusQueries(
+  queryClient: Pick<QueryClient, "setQueriesData">,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): boolean {
+  let changed = false;
+  queryClient.setQueriesData<UserStatusLookup>(
+    { queryKey: ["user-status"] },
+    (old) => {
+      if (!old) return old;
+      let next: UserStatusLookup | null = null;
+      for (const [pubkey, status] of Object.entries(old)) {
+        if (!statusIsExpired(status, nowSeconds)) continue;
+        next ??= { ...old };
+        next[pubkey] = null;
+      }
+      if (!next) return old;
+      changed = true;
+      return next;
+    },
+  );
+  return changed;
+}
+
+function nextUserStatusExpiration(
+  queryClient: Pick<QueryClient, "getQueriesData">,
+  nowSeconds: number,
+): number | null {
+  let nearest: number | null = null;
+  for (const [, lookup] of queryClient.getQueriesData<UserStatusLookup>({
+    queryKey: ["user-status"],
+  })) {
+    if (!lookup) continue;
+    for (const status of Object.values(lookup)) {
+      if (
+        status?.expiresAt !== undefined &&
+        status.expiresAt > nowSeconds &&
+        (nearest === null || status.expiresAt < nearest)
+      ) {
+        nearest = status.expiresAt;
+      }
+    }
+  }
+  return nearest;
 }
 
 export function userStatusQueryKey(pubkeys: string[]) {
@@ -113,6 +171,41 @@ export function useUserStatusSubscription() {
     let unsub: (() => Promise<void>) | null = null;
     let isCancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let expirationTimer: ReturnType<typeof setTimeout> | null = null;
+    let expirationScheduleQueued = false;
+
+    function scheduleExpiration() {
+      if (expirationTimer) clearTimeout(expirationTimer);
+      expirationTimer = null;
+      if (isCancelled) return;
+
+      const nowSeconds = Math.floor(Date.now() / 1_000);
+      expireUserStatusQueries(queryClient, nowSeconds);
+      if (isCancelled) return;
+      const expiresAt = nextUserStatusExpiration(queryClient, nowSeconds);
+      if (expiresAt === null) return;
+
+      const delay = Math.max(0, expiresAt * 1_000 - Date.now());
+      expirationTimer = setTimeout(
+        scheduleExpiration,
+        Math.min(delay, 0x7fffffff),
+      );
+    }
+
+    const unsubscribeCache = queryClient.getQueryCache().subscribe((event) => {
+      if (
+        event.query.queryKey[0] !== "user-status" ||
+        expirationScheduleQueued
+      ) {
+        return;
+      }
+      expirationScheduleQueued = true;
+      queueMicrotask(() => {
+        expirationScheduleQueued = false;
+        scheduleExpiration();
+      });
+    });
+    scheduleExpiration();
 
     function handleStatusEvent(event: RelayEvent) {
       if (isCancelled) return;
@@ -173,8 +266,10 @@ export function useUserStatusSubscription() {
 
     return () => {
       isCancelled = true;
+      unsubscribeCache();
       unsubReconnect();
       if (retryTimer) clearTimeout(retryTimer);
+      if (expirationTimer) clearTimeout(expirationTimer);
       if (unsub) void unsub();
     };
   }, [queryClient]);
