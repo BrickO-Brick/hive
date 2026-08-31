@@ -123,9 +123,14 @@ ordinary Stop reuses its original immutable local request; a live successor
 cannot be reported as stopped by replaying that earlier success.
 
 Summary/profile Start captures the selected community, and Restart retains that
-same community across its Stop await. The native Start command binds its owner
-and community before preflight, then revalidates after suspension; a stale
-continuation cannot start in the newly selected workspace.
+same community across its Stop await. The summary producer selects the active
+workspace pair even for an unstarted agent: selected community does not require
+a live generation and is not the legacy record relay pin. Missing summary scope
+fails closed at the control action, rather than falling back to current UI state.
+The native Start command binds its owner and community before preflight, then
+revalidates after suspension; a stale continuation cannot start in the newly
+selected workspace. Fresh create-start likewise binds its entry owner/community
+before mesh preflight, even though it has no prior summary selection.
 
 An explicit ordinary Start after confirmed exact Stop or definite rejected Start,
 and the existing pair Restart action, enter the same ledger for a fresh generation.

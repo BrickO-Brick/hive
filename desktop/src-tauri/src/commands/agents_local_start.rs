@@ -116,6 +116,33 @@ fn revalidate_first_start_scope(
     crate::relay::assert_expected_signer(Some(captured_owner), &workspace_owner_hex(state)?)
 }
 
+// All local first-start callers share this suspension boundary. Explicit
+// Start supplies its clicked scope; fresh create-start binds the command's
+// entry scope here, BEFORE mesh discovery can suspend. Never bind a new
+// workspace/owner on continuation merely because the caller was unscoped.
+async fn scoped_local_preflight(
+    state: &AppState,
+    expected_relay_url: Option<&str>,
+    expected_signer_pubkey: Option<&str>,
+    preflight: impl std::future::Future<Output = Result<(), String>>,
+) -> Result<
+    (
+        crate::relay::ScopedWorkspaceRelay,
+        crate::relay::ScopedWorkspaceSigner,
+    ),
+    String,
+> {
+    let relay = crate::relay::bind_expected_relay_scope(
+        expected_relay_url,
+        crate::relay::relay_ws_url_with_override(state),
+    )?;
+    let owner =
+        crate::relay::bind_expected_signer(expected_signer_pubkey, workspace_owner_hex(state)?)?;
+    preflight.await?;
+    revalidate_first_start_scope(state, relay.as_str(), owner.as_str())?;
+    Ok((relay, owner))
+}
+
 pub(in crate::commands) async fn start_local_agent_with_preflight(
     app: &AppHandle,
     state: &AppState,
@@ -156,25 +183,13 @@ pub(in crate::commands) async fn start_local_agent_with_preflight(
             &personas,
             &global,
         );
-    ensure_relay_mesh_for_record(app, mesh_model_id.as_deref(), allow_fresh_create_start).await?;
-
-    // The mesh preflight above is the suspension window Projects callbacks
-    // capture their scope against: a community switch during that await
-    // would otherwise spawn this pair keyed to the *new* workspace relay.
-    // Read the workspace relay ONCE, assert the caller's captured scope
-    // against that exact read, and hand the same bound value to the spawn
-    // below — the check is tied to its use, so a switch landing after this
-    // point can no longer retarget the spawn (it only changes state this
-    // call no longer consults).
-    let workspace_relay_url = crate::relay::bind_expected_relay_scope(
+    let (workspace_relay_url, workspace_owner) = scoped_local_preflight(
+        state,
         expected_relay_url,
-        crate::relay::relay_ws_url_with_override(state),
-    )?;
-    // Bind the active owner after the same final await as the relay. A
-    // same-relay identity replacement during mesh preflight must not release
-    // the stale preflight owner to spawn.
-    let workspace_owner =
-        crate::relay::bind_expected_signer(expected_signer_pubkey, workspace_owner_hex(state)?)?;
+        expected_signer_pubkey,
+        ensure_relay_mesh_for_record(app, mesh_model_id.as_deref(), allow_fresh_create_start),
+    )
+    .await?;
 
     if !allow_fresh_create_start {
         let app_for_start = app.clone();
@@ -275,6 +290,62 @@ pub(in crate::commands) async fn start_local_agent_with_preflight(
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn create_start_preflight_retains_entry_scope_without_a_caller_pin() {
+        let state = crate::app_state::build_app_state();
+        let owner = workspace_owner_hex(&state).unwrap();
+        for relay in ["ws://localhost:3000", "wss://community.example"] {
+            *state.relay_url_override.lock().unwrap() = Some(relay.to_owned());
+            let (bound_relay, bound_owner) = scoped_local_preflight(&state, None, None, async {
+                tokio::task::yield_now().await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+            assert_eq!(bound_relay.as_str(), relay);
+            assert_eq!(bound_owner.as_str(), owner);
+        }
+    }
+
+    #[tokio::test]
+    async fn create_start_preflight_rejects_a_community_switch_without_a_caller_pin() {
+        let state = crate::app_state::build_app_state();
+        *state.relay_url_override.lock().unwrap() = Some("wss://clicked.example".into());
+        let error = scoped_local_preflight(&state, None, None, async {
+            tokio::task::yield_now().await;
+            *state.relay_url_override.lock().unwrap() = Some("wss://other.example".into());
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("active community changed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn create_start_preflight_rejects_an_owner_switch_without_a_caller_pin() {
+        let state = crate::app_state::build_app_state();
+        let error = scoped_local_preflight(&state, None, None, async {
+            tokio::task::yield_now().await;
+            *state.keys.lock().unwrap() = Keys::generate();
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("active identity changed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn scoped_start_rejects_stale_scope_before_polling_preflight() {
+        let state = crate::app_state::build_app_state();
+        *state.relay_url_override.lock().unwrap() = Some("wss://other.example".into());
+        let error = scoped_local_preflight(&state, Some("wss://clicked.example"), None, async {
+            panic!("stale Start must not poll mesh preflight");
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("active community changed"), "{error}");
+    }
 
     // This exercises the production continuation (including its WS getter),
     // not just the generic relay helper. State is ephemeral: no app setup,
