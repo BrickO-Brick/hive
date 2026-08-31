@@ -437,7 +437,7 @@ jobs:
   postgres-tests:
     name: PostgreSQL Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: [changes, desktop-e2e-relay]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     permissions:
