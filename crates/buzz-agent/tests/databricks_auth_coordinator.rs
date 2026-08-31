@@ -404,13 +404,26 @@ impl RefreshGate {
     }
 }
 
-/// Spawn a stub that answers every refresh grant stickily with `tok`, but
-/// holds the FIRST response until the parent calls `RefreshGate::release()`.
-/// Subsequent refresh requests are answered immediately. Returns the stub (for
-/// `refresh_grants` assertions) and the control gate. Used only by the
-/// cross-process digest test.
+/// Shape of the refresh response returned by [`spawn_stub_with_held_refresh`].
+///
+/// - `Sticky(tok)` — every refresh returns `200 OK` with `access_token: tok`.
+/// - `Reject` — every refresh returns `401 Unauthorized` with `invalid_grant`.
 #[cfg(unix)]
-async fn spawn_stub_with_held_sticky_refresh(tok: &'static str) -> (Stub, RefreshGate) {
+enum HeldRefreshResponse {
+    Sticky(&'static str),
+    Reject,
+}
+
+/// Spawn a stub that holds the FIRST refresh request until the parent calls
+/// [`RefreshGate::release()`], then replies according to `response`.
+/// Subsequent refresh requests skip the gate and reply immediately with the
+/// same shape. Code-grant (`authorization_code`) requests are always answered
+/// immediately with a fresh browser token.
+///
+/// Returns the stub (for `refresh_grants` / `code_grants` assertions) and the
+/// control gate. Used by the cross-process held-refresh tests.
+#[cfg(unix)]
+async fn spawn_stub_with_held_refresh(response: HeldRefreshResponse) -> (Stub, RefreshGate) {
     let code_grants = Arc::new(AtomicU64::new(0));
     let refresh_grants = Arc::new(AtomicU64::new(0));
     let request_received = Arc::new(tokio::sync::Notify::new());
@@ -439,6 +452,11 @@ async fn spawn_stub_with_held_sticky_refresh(tok: &'static str) -> (Stub, Refres
     // Track whether the first refresh has been released yet. Once the first
     // grant is released, subsequent grants return immediately.
     let first_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reject = matches!(response, HeldRefreshResponse::Reject);
+    let sticky_tok = match response {
+        HeldRefreshResponse::Sticky(tok) => tok,
+        HeldRefreshResponse::Reject => "",
+    };
 
     let app = Router::new()
         .route("/disco/a", get(discovery.clone()))
@@ -460,101 +478,21 @@ async fn spawn_stub_with_held_sticky_refresh(tok: &'static str) -> (Stub, Refres
                             received.notify_one();
                             proceed.notified().await;
                         }
-                        return (
-                            axum::http::StatusCode::OK,
-                            Json(json!({
-                                "access_token": tok,
-                                "refresh_token": "rotated-refresh",
-                                "expires_in": 3600,
-                            })),
-                        );
-                    }
-                    let n = code_grants.fetch_add(1, Ordering::SeqCst) + 1;
-                    (
-                        axum::http::StatusCode::OK,
-                        Json(json!({
-                            "access_token": format!("browser-token-{n}"),
-                            "refresh_token": "browser-refresh",
-                            "expires_in": 3600,
-                        })),
-                    )
-                }
-            }),
-        );
-
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-
-    let stub = Stub {
-        base,
-        code_grants,
-        refresh_grants,
-    };
-    let gate = RefreshGate {
-        request_received,
-        proceed,
-    };
-    (stub, gate)
-}
-
-/// Spawn a stub that holds the FIRST refresh request and returns
-/// `invalid_grant` (RefreshRejected) on release. Subsequent requests return
-/// immediately as `invalid_grant` too, so every caller using this stub gets
-/// `RefreshRejected`. Used by the headless adoption test to make A's lock
-/// tenure long enough that B can deterministically snapshot gen=0 before A
-/// writes the attempt sidecar.
-#[cfg(unix)]
-async fn spawn_stub_with_held_reject_refresh() -> (Stub, RefreshGate) {
-    let code_grants = Arc::new(AtomicU64::new(0));
-    let refresh_grants = Arc::new(AtomicU64::new(0));
-    let request_received = Arc::new(tokio::sync::Notify::new());
-    let proceed = Arc::new(tokio::sync::Notify::new());
-
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let disco_base = base.clone();
-
-    let discovery = move || {
-        let base = disco_base.clone();
-        async move {
-            Json(json!({
-                "authorization_endpoint": format!("{base}/authorize"),
-                "token_endpoint": format!("{base}/token"),
-            }))
-        }
-    };
-
-    let code_for_token = code_grants.clone();
-    let refresh_for_token = refresh_grants.clone();
-    let received_for_handler = request_received.clone();
-    let proceed_for_handler = proceed.clone();
-    let first_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    let app = Router::new()
-        .route("/disco/a", get(discovery.clone()))
-        .route("/disco/b", get(discovery))
-        .route(
-            "/token",
-            post(move |Form(form): Form<TokenForm>| {
-                let code_grants = code_for_token.clone();
-                let refresh_grants = refresh_for_token.clone();
-                let received = received_for_handler.clone();
-                let proceed = proceed_for_handler.clone();
-                let first_released = first_released.clone();
-                async move {
-                    if form.grant_type == "refresh_token" {
-                        refresh_grants.fetch_add(1, Ordering::SeqCst);
-                        if !first_released.swap(true, Ordering::SeqCst) {
-                            received.notify_one();
-                            proceed.notified().await;
-                        }
-                        return (
-                            axum::http::StatusCode::UNAUTHORIZED,
-                            Json(json!({ "error": "invalid_grant" })),
-                        );
+                        return if reject {
+                            (
+                                axum::http::StatusCode::UNAUTHORIZED,
+                                Json(json!({ "error": "invalid_grant" })),
+                            )
+                        } else {
+                            (
+                                axum::http::StatusCode::OK,
+                                Json(json!({
+                                    "access_token": sticky_tok,
+                                    "refresh_token": "rotated-refresh",
+                                    "expires_in": 3600,
+                                })),
+                            )
+                        };
                     }
                     let n = code_grants.fetch_add(1, Ordering::SeqCst) + 1;
                     (
@@ -2671,7 +2609,7 @@ async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected(
     // deterministic: the instant-reject stub could complete A before B
     // ever snapshotted, giving B snap=1 and causing a spurious second
     // refresh grant.
-    let (stub, gate) = spawn_stub_with_held_reject_refresh().await;
+    let (stub, gate) = spawn_stub_with_held_refresh(HeldRefreshResponse::Reject).await;
     let cache = TempDir::new().unwrap();
     let cfg = config(&stub, "/disco/a", cache.path());
 
@@ -2700,7 +2638,7 @@ async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected(
 
     // ---- Phase 3: spawn B with SNAPSHOT_MARKER. B starts, reads the
     //              attempt sidecar (gen=0, absent), emits its snapshot
-    //              event, and then queues on the lock behind A.
+    //              event, and then blocks on the lock behind A.
     let worker_b = spawn_worker(
         &cfg,
         cache.path(),
@@ -2710,8 +2648,9 @@ async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected(
         &[("AUTH_WORKER_SNAPSHOT_MARKER", snapshot_b.as_path())],
     );
 
-    // ---- Phase 4: wait for B's snapshot marker. Proves B holds snap=0
-    //              and is queued behind A on the lock.
+    // ---- Phase 4: wait for B's snapshot marker. Proves B captured gen=0
+    //              before A can record gen=1; lock queueing is not required
+    //              for the temporal-generation discriminator to hold.
     wait_for_marker(&snapshot_b, "worker B snapshot").await;
 
     // ---- Phase 5: release A. Stub returns invalid_grant; A records
@@ -3009,7 +2948,7 @@ async fn test_crossprocess_adopter_does_not_advance_generation() {
 #[tokio::test]
 async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders_failure() {
     // Stub stickily returns "X" but holds each response until released.
-    let (stub, gate) = spawn_stub_with_held_sticky_refresh("X").await;
+    let (stub, gate) = spawn_stub_with_held_refresh(HeldRefreshResponse::Sticky("X")).await;
     let cache = TempDir::new().unwrap();
     let cfg = config(&stub, "/disco/a", cache.path());
 
