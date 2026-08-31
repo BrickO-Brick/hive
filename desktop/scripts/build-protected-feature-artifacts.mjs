@@ -123,7 +123,9 @@ function main() {
   const scratchRoot = mkdtempSync(
     path.join(tmpdir(), "buzz-protected-feature-artifacts-"),
   );
-  const selectedOutput = path.join(desktopRoot, "dist");
+  const selectedOutput = process.env.BUZZ_PROTECTED_BUILD_OUTPUT
+    ? path.resolve(process.env.BUZZ_PROTECTED_BUILD_OUTPUT)
+    : path.join(desktopRoot, "dist");
   const alternateOutput = path.join(scratchRoot, "alternate");
 
   try {
