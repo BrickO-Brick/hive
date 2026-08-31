@@ -1,8 +1,9 @@
 //! Embedded SQLx migrations for Buzz.
 //!
-//! Fresh deployments apply the checked-in SQL files under `migrations/`. The
-//! multi-tenant rewrite owns a clean consolidated `0001`; legacy single-tenant
-//! cutover/backfill is a separate operator script, not startup migration state.
+//! Fresh deployments apply the checked-in additive SQL files under
+//! `migrations/`. The multi-tenant rewrite begins from a clean consolidated
+//! `0001`; legacy single-tenant cutover/backfill is a separate operator script,
+//! not startup migration state.
 
 use std::future::Future;
 
@@ -84,6 +85,15 @@ where
     let mut lock_conn = crate::observability::acquire(pool, crate::observability::PoolRole::Writer)
         .await?
         .detach();
+    // This dedicated connection intentionally waits for the current migration
+    // or schema-destruction owner and may then run long DDL. Exempt those two
+    // phases from runtime lock/statement budgets. Keep the idle-in-transaction
+    // timeout: a client wedged idle mid-migration is still a lock holder that
+    // should be reaped. The detached connection is closed below and never
+    // returns these session settings to the pool.
+    sqlx::raw_sql("SET lock_timeout = 0; SET statement_timeout = 0")
+        .execute(&mut lock_conn)
+        .await?;
     crate::observability::observe_advisory_lock(
         crate::observability::LockType::MigrationSchemaSafety,
         sqlx::query("SELECT pg_advisory_lock($1)")
@@ -689,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 39);
+        assert_eq!(migrations.len(), 40);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1310,6 +1320,22 @@ mod tests {
             .as_str()
             .contains("error_code"));
         assert!(include_str!("../../../../schema/schema.sql").contains("error_code          TEXT"));
+    }
+
+    #[test]
+    fn push_match_trigger_is_narrowed_to_message_kinds_additively() {
+        let mut migrations: Vec<_> = MIGRATOR.iter().collect();
+        migrations.sort_by_key(|migration| migration.version);
+
+        assert_eq!(migrations[39].version, 40);
+        let sql = migrations[39].sql.as_str();
+        assert!(sql.contains("CREATE OR REPLACE FUNCTION enqueue_push_match_job"));
+        assert!(sql.contains("NEW.kind IN (9, 40002, 45001, 45003)"));
+        assert!(!sql.contains("NEW.kind IN (7, 9, 1059, 40007, 46010)"));
+
+        let desired_schema = include_str!("../../../../schema/schema.sql");
+        assert!(desired_schema.contains("NEW.kind IN (9, 40002, 45001, 45003)"));
+        assert!(!desired_schema.contains("NEW.kind IN (7, 9, 1059, 40007, 46010)"));
     }
 
     #[test]
