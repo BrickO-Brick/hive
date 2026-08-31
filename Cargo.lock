@@ -939,6 +939,7 @@ dependencies = [
  "base64 0.22.1",
  "buzz-core",
  "chrono",
+ "futures-util",
  "hex",
  "jsonwebtoken",
  "nostr 0.44.7",
