@@ -1,18 +1,8 @@
-// Shared parameterized test suite for MergeLaneSyncManager subclasses
-// (ChannelStarSyncManager, ChannelMuteSyncManager, and any future merge-lane).
+// Shared parameterized test suite for MergeLaneSyncManager subclasses.
 //
 // Usage:
 //   import { runMergeLaneSyncSuite } from "./mergeLaneSync.shared.test.mjs";
-//   runMergeLaneSyncSuite({
-//     label:         "stars",
-//     Manager:       ChannelStarSyncManager,
-//     readOutbox:    readChannelStarsOutbox,
-//     watermarkKind: "channel-stars",
-//     makeEntry:     (v, updatedAt, rev) => ({ starred: v, updatedAt, rev }),
-//     publish:       (m, s) => m.publishStars(s),
-//     getPending:    (m)    => m.getPendingStarStore(),
-//     fetchRemote:   (m)    => m.fetchRemoteStars(),
-//   });
+//   runMergeLaneSyncSuite({ label: "stars", Manager: ..., ... });
 
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
@@ -22,63 +12,15 @@ import {
   installFakeWindow,
   installEchoTauri,
   makeFakeWindow,
+  makeTimerBed,
 } from "./sidebarSyncTestHelpers.mjs";
+import { readChannelStarsOutbox } from "./channelStarsStorage.ts";
+import { ChannelStarSyncManager } from "./channelStarsSync.ts";
 
 function makeStore(channels = {}) {
   return { version: 1, channels };
 }
 
-// Multi-slot timer fake keyed by delay, for overlapping-publish tests. Mirrors
-// the sections suite convention (channelSectionsSync.test.mjs).
-function makeMultiTimerWindow() {
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const win = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-      get length() {
-        return storage.size;
-      },
-      key: (i) => [...storage.keys()][i] ?? null,
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  return {
-    win,
-    storage,
-    timers,
-    fireDelay: async (ms) => {
-      const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-      assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-      timers.delete(entry[0]);
-      entry[1].fn();
-      for (let i = 0; i < 50; i++) await Promise.resolve();
-    },
-    hasDelay: (ms) => [...timers.values()].some((t) => t.ms === ms),
-  };
-}
-
-/**
- * Run the full merge-lane invariant suite for a single lane.
- *
- * @param {object} cfg
- * @param {string}   cfg.label         - Human-readable lane name for test titles.
- * @param {Function} cfg.Manager       - The MergeLaneSyncManager subclass constructor.
- * @param {Function} cfg.readOutbox    - readChannel{Stars|Mutes}Outbox(pubkey, relay).
- * @param {string}   cfg.watermarkKind - The d-tag string (e.g. "channel-stars").
- * @param {Function} cfg.makeEntry     - (value, updatedAt, rev) => lane entry object.
- * @param {Function} cfg.publish       - (manager, store) => void — calls the typed publish method.
- * @param {Function} cfg.getPending    - (manager) => store | null — calls the typed getter.
- * @param {Function} cfg.fetchRemote   - (manager) => Promise — calls the typed fetch.
- */
 export function runMergeLaneSyncSuite({
   label,
   Manager,
@@ -92,7 +34,7 @@ export function runMergeLaneSyncSuite({
   const RELAY = "wss://r.test";
   const RELAY_KEY = encodeURIComponent(RELAY);
 
-  // ─── observe() / high-water ingestion ───────────────────────────────────────
+  // ─── observe() / high-water ingestion ──────────────────────────────────────
 
   test(`${label}: observe: high-water is per-channel max of rev and updatedAt, monotonic`, () => {
     const fw = makeFakeWindow();
@@ -104,15 +46,12 @@ export function runMergeLaneSyncSuite({
       );
       assert.equal(m.maxRevSeen("a"), 3);
       assert.equal(m.maxUpdatedAtSeen("a"), 100);
-      // A later observation raises each dimension independently; a lower one
-      // never regresses either.
       m.observe(makeStore({ a: makeEntry(true, 90, 5) }));
       assert.equal(m.maxRevSeen("a"), 5, "rev raised");
       assert.equal(m.maxUpdatedAtSeen("a"), 100, "updatedAt not regressed");
       m.observe(makeStore({ a: makeEntry(true, 200, 2) }));
       assert.equal(m.maxUpdatedAtSeen("a"), 200, "updatedAt raised");
       assert.equal(m.maxRevSeen("a"), 5, "rev not regressed");
-      // Unseen channel reports zero on both dimensions.
       assert.equal(m.maxRevSeen("never"), 0);
       assert.equal(m.maxUpdatedAtSeen("never"), 0);
     } finally {
@@ -120,7 +59,7 @@ export function runMergeLaneSyncSuite({
     }
   });
 
-  // ─── destroy() must cancel pending publish, not flush ───────────────────────
+  // ─── destroy() ─────────────────────────────────────────────────────────────
 
   test(`${label}: destroy: cancels pending publish without flushing to the relay`, () => {
     const publishCalls = [];
@@ -178,12 +117,9 @@ export function runMergeLaneSyncSuite({
     }
   });
 
-  // ─── Generation CAS: A-in-flight → B-click → A-completes (both variants) ────
+  // ─── Generation CAS: A-in-flight → B-click → A-completes ───────────────────
+  // Mutation: dropping the generation CAS in discardPending lets A's outcome null B's pending+outbox.
 
-  // Finding 2: an older in-flight publish that completes (succeeds or fails) after
-  // a newer edit is queued must NOT clear B, and B must reach the relay via the
-  // serialized re-drive / completion re-drive. Mutation: dropping the generation
-  // CAS in discardPending lets A's outcome null out B's pending+outbox.
   for (const { name, resolveFirst } of [
     {
       name: "A-succeeds",
@@ -207,27 +143,22 @@ export function runMergeLaneSyncSuite({
       );
       mock.method(relayClient, "publishEvent", (event) => {
         publishCount++;
-        if (publishCount === 1) {
+        if (publishCount === 1)
           return new Promise((res, rej) => {
             releaseFirst = () => resolveFirst(event, storedHead, res, rej);
           });
-        }
         storedHead.splice(0, storedHead.length, event);
         return Promise.resolve();
       });
-      const t = makeMultiTimerWindow();
-      const restore = installFakeWindow(t.win);
+      const t = makeTimerBed();
       const tauri = installEchoTauri(`pk-ab-${name}`);
       try {
         const manager = new Manager(`pk-ab-${name}`, RELAY);
         const storeA = makeStore({ a: makeEntry(true, 100, 1) });
         const storeB = makeStore({ b: makeEntry(true, 101, 1) });
-
         publish(manager, storeA);
-        await t.fireDelay(2000); // doPublish(A) awaits publishEvent
+        await t.fireDelay(2000);
         while (releaseFirst === null) await Promise.resolve();
-
-        // B arrives while A is in flight.
         publish(manager, storeB);
         assert.deepEqual(
           Object.keys(getPending(manager).channels),
@@ -235,8 +166,6 @@ export function runMergeLaneSyncSuite({
           "B is now pending",
         );
         assert.ok(readOutbox(`pk-ab-${name}`, RELAY), "outbox holds B");
-
-        // A completes (success or failure) — must NOT clear B.
         releaseFirst();
         for (let i = 0; i < 50; i++) await Promise.resolve();
         assert.deepEqual(
@@ -246,18 +175,15 @@ export function runMergeLaneSyncSuite({
         );
         assert.ok(
           readOutbox(`pk-ab-${name}`, RELAY),
-          `older A completion (${name}) leaves B outbox`,
+          `older A (${name}) leaves B outbox`,
         );
-
-        // B's own debounce fires and B reaches the relay; the retained-head fetch
-        // confirms subsumption, so B's outbox clears.
         const capturedBefore = tauri.capturedPlaintext();
         await t.fireDelay(2000);
         for (let i = 0; i < 50; i++) await Promise.resolve();
         const captured = tauri.capturedPlaintext();
         assert.ok(
           captured && captured !== capturedBefore && captured.includes('"b"'),
-          "B is published to the relay",
+          "B published to the relay",
         );
         assert.equal(
           getPending(manager),
@@ -272,18 +198,84 @@ export function runMergeLaneSyncSuite({
         manager.destroy();
       } finally {
         tauri.restore();
-        restore();
+        t.restore();
         mock.reset();
       }
     });
   }
 
-  // ─── Bounded-backoff retry: failed publish on a healthy socket, no later edit
+  // ─── Generation guard: pre-sign seam ───────────────────────────────────────
+  // Mutation: dropping line 400 lets stale A sign and publish after B is queued.
 
-  // Finding 2: a transient publish failure with the socket open and NO further
-  // click must self-heal via the bounded-backoff retry — the pending edit is kept
-  // and a retry timer is scheduled. Mutation: dropping scheduleRetry leaves the
-  // edit stranded (Will's "make another change to kick it" symptom).
+  test(`${label}: pre-sign guard: a newer edit during encrypt aborts the stale publish`, async () => {
+    let releaseEncrypt = null;
+    const publishCalls = [];
+    mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
+    mock.method(relayClient, "publishEvent", (...args) => {
+      publishCalls.push(args);
+      return Promise.resolve();
+    });
+    const orig = globalThis.window?.__TAURI_INTERNALS__;
+    if (typeof globalThis.window === "undefined") globalThis.window = {};
+    let encryptCalls = 0;
+    globalThis.window.__TAURI_INTERNALS__ = {
+      invoke: (cmd, args) => {
+        if (cmd === "nip44_encrypt_to_self") {
+          encryptCalls++;
+          if (encryptCalls === 1)
+            return new Promise((res) => {
+              releaseEncrypt = () => res("ct-a");
+            });
+          return Promise.resolve("ct-b");
+        }
+        if (cmd === "nip44_decrypt_from_self") return Promise.resolve("{}");
+        if (cmd === "sign_event")
+          return Promise.resolve(
+            JSON.stringify({
+              id: `evt-${encryptCalls}`,
+              pubkey: "pk-presign",
+              content: args?.content ?? "",
+              created_at: args?.createdAt ?? 0,
+              kind: args?.kind ?? 0,
+              tags: args?.tags ?? [],
+              sig: "s",
+            }),
+          );
+        return Promise.reject(new Error(`unmocked: ${cmd}`));
+      },
+    };
+    const fw = makeFakeWindow();
+    const restore = installFakeWindow(fw);
+    try {
+      const manager = new Manager("pk-presign", RELAY);
+      publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
+      fw._fireTimer();
+      while (releaseEncrypt === null) await Promise.resolve();
+      publish(manager, makeStore({ b: makeEntry(true, 101, 1) }));
+      releaseEncrypt();
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      assert.equal(
+        publishCalls.length,
+        0,
+        "stale A must not publish after B queued",
+      );
+      assert.deepEqual(
+        Object.keys(getPending(manager)?.channels ?? {}),
+        ["b"],
+        "B is still pending",
+      );
+      manager.destroy();
+    } finally {
+      if (orig !== undefined) globalThis.window.__TAURI_INTERNALS__ = orig;
+      else delete globalThis.window.__TAURI_INTERNALS__;
+      restore();
+      mock.reset();
+    }
+  });
+
+  // ─── Bounded-backoff retry ──────────────────────────────────────────────────
+  // Mutation: dropping scheduleRetry leaves the edit stranded.
+
   test(`${label}: failed publish schedules a bounded-backoff retry and keeps the pending edit`, async () => {
     let publishCount = 0;
     let storedHead = [];
@@ -294,24 +286,17 @@ export function runMergeLaneSyncSuite({
       storedHead = [event];
       return Promise.resolve();
     });
-    const t = makeMultiTimerWindow();
-    const restore = installFakeWindow(t.win);
+    const t = makeTimerBed();
     const tauri = installEchoTauri("pk-retry");
     try {
       const manager = new Manager("pk-retry", RELAY);
       publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
-      await t.fireDelay(2000); // debounce → doPublish → publishEvent rejects
+      await t.fireDelay(2000);
       assert.ok(
         getPending(manager) !== null,
         "pending edit retained after failure",
       );
-      assert.ok(
-        t.hasDelay(2000),
-        "a retry timer at RETRY_BASE_MS is scheduled",
-      );
-
-      // The retry fires and the second publish succeeds; the retained-head fetch
-      // confirms the write → pending cleared.
+      assert.ok(t.hasDelay(2000), "retry timer scheduled");
       await t.fireDelay(2000);
       for (let i = 0; i < 50; i++) await Promise.resolve();
       assert.equal(publishCount, 2, "retry re-published");
@@ -323,80 +308,59 @@ export function runMergeLaneSyncSuite({
       manager.destroy();
     } finally {
       tauri.restore();
-      restore();
+      t.restore();
       mock.reset();
     }
   });
 
-  // ─── Retention confirmation (Carl P1): OK is not proof of retention ──────────
+  // ─── Retention confirmation (Carl P1) ──────────────────────────────────────
+  // Mutation: clearing on OK alone nulls the pending edit and loses the click.
 
-  // The relay OKs a superseded NIP-33 write as a no-op, so two windows racing
-  // distinct blobs from the same head can both get OK while only one is retained.
-  // The loser must NOT clear its durable outbox on OK alone: it fetches the
-  // authoritative retained head and clears only when that head subsumes its
-  // write. A retained head carrying a peer's distinct blob does not subsume the
-  // loser's click, so the outbox is kept and a retry is scheduled.
-  // Mutation: clearing on OK alone (dropping confirmRetainedHeadSubsumes) would
-  // null the pending edit here and lose the click.
   test(`${label}: publish OK but a peer blob is retained: loser keeps its outbox and retries`, async () => {
     let publishCount = 0;
-    // The retained head is a peer window's distinct blob from the same base —
-    // it does NOT contain our channel `a`, so it cannot subsume our write.
     let storedHead = [];
     mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
     const tauri = installEchoTauri("pk-loser");
     mock.method(relayClient, "publishEvent", (event) => {
       publishCount++;
       if (publishCount === 1) {
-        // Our write is OK'd by the relay but immediately superseded: the retained
-        // head is the peer's blob for a different channel, minted through the
-        // same echo seam so it decrypts.
         storedHead = [
           tauri.mintHead(makeStore({ z: makeEntry(true, 200, 5) }), 100),
         ];
         return Promise.resolve();
       }
-      // The retry (which max-merges the peer head in) is retained.
       storedHead = [event];
       return Promise.resolve();
     });
-    const t = makeMultiTimerWindow();
-    const restore = installFakeWindow(t.win);
+    const t = makeTimerBed();
     try {
       const manager = new Manager("pk-loser", RELAY);
       publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
-      await t.fireDelay(2000); // publish OK, but peer blob is what's retained
+      await t.fireDelay(2000);
       for (let i = 0; i < 50; i++) await Promise.resolve();
-
       assert.ok(
         getPending(manager) !== null,
-        "unconfirmed publish keeps the pending edit",
+        "unconfirmed publish keeps pending edit",
       );
-      assert.ok(
-        readOutbox("pk-loser", RELAY),
-        "loser keeps its durable outbox — OK is not proof of retention",
-      );
-      assert.ok(t.hasDelay(2000), "a retry is scheduled");
-
-      // The retry re-publishes the max-merge of our click and the peer head; this
-      // time it is retained (subsumes our `a`) and the outbox clears.
+      assert.ok(readOutbox("pk-loser", RELAY), "loser keeps durable outbox");
+      assert.ok(t.hasDelay(2000), "retry scheduled");
       await t.fireDelay(2000);
       for (let i = 0; i < 50; i++) await Promise.resolve();
       assert.equal(publishCount, 2, "loser retried");
       assert.equal(
         getPending(manager),
         null,
-        "pending cleared once the retained head subsumes our click",
+        "pending cleared once retained head subsumes click",
       );
       manager.destroy();
     } finally {
       tauri.restore();
-      restore();
+      t.restore();
       mock.reset();
     }
   });
 
-  // ─── Boot seed-publish guard (the revert-fix regression suite) ───────────────
+  // ─── Boot seed-publish guard ────────────────────────────────────────────────
 
   for (const {
     title,
@@ -407,7 +371,7 @@ export function runMergeLaneSyncSuite({
     assertPending,
   } of [
     {
-      title: "fetch failed (error) does not trigger seed-publish via bootstrap",
+      title: "fetch error does not trigger seed-publish",
       setupFetch: () =>
         mock.method(relayClient, "fetchEvents", () =>
           Promise.reject(new Error("relay timeout")),
@@ -415,8 +379,7 @@ export function runMergeLaneSyncSuite({
       assertPending: (m) => assert.equal(getPending(m), null),
     },
     {
-      title:
-        "absent fetch with prior watermark blocks seed-publish via bootstrap",
+      title: "absent fetch with prior watermark blocks seed-publish",
       setupFetch: () =>
         mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
       setupWatermark: (fw) =>
@@ -428,8 +391,7 @@ export function runMergeLaneSyncSuite({
       assertPending: (m) => assert.equal(getPending(m), null),
     },
     {
-      title:
-        "absent fetch with zero watermark seeds via bootstrap (first-sync preserved)",
+      title: "absent fetch with zero watermark seeds (first-sync preserved)",
       setupFetch: () =>
         mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
       pubkey: "pk-fresh",
@@ -476,13 +438,9 @@ export function runMergeLaneSyncSuite({
     });
   }
 
-  // ─── Failed pre-publish fetch: retain, never publish (Carl P1) ───────────────
+  // ─── Failed pre-publish fetch: retain, never publish ───────────────────────
+  // Mutation: reverting the merge-lane catch to `publish` fires publishEvent.
 
-  // The pre-publish fetch THROWS (timeout / auth / socket) — NOT proof that no
-  // head exists. Publishing the local store here could erase an unseen newer head
-  // during a transient outage. Fix: `retain` — keep the durable outbox and retry.
-  // Mutation: reverting the merge-lane catch to `publish` fires publishEvent over
-  // the unseen head.
   test(`${label}: failed pre-publish fetch retains the pending edit and retries, never publishing`, async () => {
     mock.method(relayClient, "fetchEvents", () =>
       Promise.reject(new Error("socket timeout")),
@@ -503,17 +461,17 @@ export function runMergeLaneSyncSuite({
       assert.equal(
         publishCalls.length,
         0,
-        "must not publish when the pre-publish fetch failed",
+        "must not publish when pre-publish fetch failed",
       );
       assert.ok(
         getPending(manager) !== null,
-        "a failed fetch must retain the pending edit",
+        "failed fetch retains pending edit",
       );
       assert.ok(
         readOutbox("pk-fetchfail", RELAY),
-        "durable outbox must survive a failed fetch",
+        "durable outbox survives failed fetch",
       );
-      assert.ok(fw._hasTimer(), "a retry must be scheduled");
+      assert.ok(fw._hasTimer(), "retry scheduled");
     } finally {
       tauri.restore();
       restore();
@@ -521,114 +479,71 @@ export function runMergeLaneSyncSuite({
     }
   });
 
-  // ─── Unreadable head: retain, never max-merge over it (Carl P1) ──────────────
+  // ─── Unreadable / unsupported head: retain, never publish ──────────────────
 
-  // A pre-publish head event exists but cannot be decrypted (transient keychain
-  // fault, future NIP-44 scheme, malformed/unsupported payload). A max-merge is
-  // only safe once both operands were actually read, so publishing the local
-  // store over an uninspectable head would drop its unread entries. Fix: `retain`
-  // — keep the durable outbox and retry, never publish. Mutation: reverting the
-  // `!remote` branch to `publish` fires publishEvent and clobbers the unread head.
-  test(`${label}: unreadable head (decrypt failure) retains the pending edit and retries, never publishing`, async () => {
-    // A head event exists but its ciphertext is not registered in the echo map,
-    // so decrypt rejects → decryptAndParse returns null → retain.
-    mock.method(relayClient, "fetchEvents", () =>
-      Promise.resolve([
-        {
-          pubkey: "pk-undec",
-          content: "unregistered-cipher",
-          created_at: 500,
-          id: "evt-undec",
-        },
-      ]),
-    );
-    const publishCalls = [];
-    mock.method(relayClient, "publishEvent", (...args) => {
-      publishCalls.push(args);
-      return Promise.resolve();
+  for (const { title, setupHead, pubkey } of [
+    {
+      title: "unreadable head (decrypt failure)",
+      pubkey: "pk-undec",
+      setupHead: (tauri) => {
+        mock.method(relayClient, "fetchEvents", () =>
+          Promise.resolve([
+            {
+              pubkey: "pk-undec",
+              content: "unregistered-cipher",
+              created_at: 500,
+              id: "evt-undec",
+            },
+          ]),
+        );
+        return tauri;
+      },
+    },
+    {
+      title: "unsupported head payload schema",
+      pubkey: "pk-badver",
+      setupHead: (tauri) => {
+        const head = tauri.mintHead({ version: 2, channels: {} }, 500);
+        mock.method(relayClient, "fetchEvents", () => Promise.resolve([head]));
+        return tauri;
+      },
+    },
+  ]) {
+    test(`${label}: ${title} retains the pending edit and retries, never publishing`, async () => {
+      const fw = makeFakeWindow();
+      const restore = installFakeWindow(fw);
+      const tauri = installEchoTauri(pubkey);
+      setupHead(tauri);
+      const publishCalls = [];
+      mock.method(relayClient, "publishEvent", (...args) => {
+        publishCalls.push(args);
+        return Promise.resolve();
+      });
+      try {
+        const manager = new Manager(pubkey, RELAY);
+        publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
+        fw._fireTimer();
+        await new Promise((r) => setTimeout(r, 20));
+        assert.equal(publishCalls.length, 0, `${title}: must not publish`);
+        assert.ok(getPending(manager) !== null, `${title}: pending retained`);
+        assert.ok(fw._hasTimer(), "retry scheduled");
+      } finally {
+        tauri.restore();
+        restore();
+        mock.reset();
+      }
     });
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    const tauri = installEchoTauri("pk-undec");
-    try {
-      const manager = new Manager("pk-undec", RELAY);
-      publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
-      fw._fireTimer();
-      await new Promise((r) => setTimeout(r, 20));
-      assert.equal(
-        publishCalls.length,
-        0,
-        "must not publish over a head we could not read",
-      );
-      assert.ok(
-        getPending(manager) !== null,
-        "unreadable head must retain the pending edit",
-      );
-      assert.ok(
-        readOutbox("pk-undec", RELAY),
-        "durable outbox must survive an unreadable head",
-      );
-      assert.ok(fw._hasTimer(), "a retry must be scheduled");
-    } finally {
-      tauri.restore();
-      restore();
-      mock.reset();
-    }
-  });
+  }
 
-  // A readable head whose decrypted payload carries an unsupported schema version
-  // (the lane parser rejects it → decryptAndParse returns null). Distinct from a
-  // decrypt fault: the ciphertext decrypts fine, but we still cannot trust the
-  // contents, so retain rather than max-merge over it.
-  test(`${label}: unsupported head payload schema retains the pending edit, never publishing`, async () => {
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    const tauri = installEchoTauri("pk-badver");
-    // mintHead stringifies the given object as the head plaintext; a future schema
-    // version decrypts cleanly but the lane parser returns null.
-    const head = tauri.mintHead({ version: 2, channels: {} }, 500);
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve([head]));
-    const publishCalls = [];
-    mock.method(relayClient, "publishEvent", (...args) => {
-      publishCalls.push(args);
-      return Promise.resolve();
-    });
-    try {
-      const manager = new Manager("pk-badver", RELAY);
-      publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
-      fw._fireTimer();
-      await new Promise((r) => setTimeout(r, 20));
-      assert.equal(
-        publishCalls.length,
-        0,
-        "must not publish over a head whose schema we do not support",
-      );
-      assert.ok(
-        getPending(manager) !== null,
-        "unsupported schema must retain the pending edit",
-      );
-      assert.ok(fw._hasTimer(), "a retry must be scheduled");
-    } finally {
-      tauri.restore();
-      restore();
-      mock.reset();
-    }
-  });
+  // ─── Timestamp clamp ────────────────────────────────────────────────────────
+  // Mutation: removing the clamp lets createdAt = lastRemote+1 (~now+3600).
 
-  // ─── Timestamp clamp (Carl P2): a far-future remote head must not push our
-  //     published createdAt past the relay's ±15min future-drift window.
-  // Mutation test: removing the clamp lets createdAt = lastRemote+1 (~now+3600),
-  // which exceeds now + MAX_PUBLISH_FUTURE_SECS.
   test(`${label}: timestamp clamp: published createdAt stays inside the relay future window`, async () => {
     const nowSecs = Math.floor(Date.now() / 1000);
-    const farFutureHead = nowSecs + 3_600; // 1h ahead — beyond the ±15min window
+    const farFutureHead = nowSecs + 3_600;
     const fw = makeFakeWindow();
     const restore = installFakeWindow(fw);
     const tauri = installEchoTauri("pk-clamp");
-    // A readable far-future head: primes lastRemoteCreatedAt to farFutureHead on
-    // the priming fetch and is max-merged on the pre-publish fetch. It must be
-    // decryptable — an unreadable head now retains rather than publishes, so the
-    // clamp is only exercised via a head we actually read.
     const head = tauri.mintHead(makeStore({}), farFutureHead);
     mock.method(relayClient, "fetchEvents", () => Promise.resolve([head]));
     let signedCreatedAt = null;
@@ -638,14 +553,14 @@ export function runMergeLaneSyncSuite({
     });
     try {
       const manager = new Manager("pk-clamp", RELAY);
-      await fetchRemote(manager); // prime lastRemoteCreatedAt
+      await fetchRemote(manager);
       publish(manager, makeStore({ ch1: makeEntry(true, 100, 1) }));
       fw._fireTimer();
       await new Promise((r) => setTimeout(r, 20));
       assert.ok(signedCreatedAt !== null, "publish must have been attempted");
       assert.ok(
         signedCreatedAt <= Math.floor(Date.now() / 1000) + 840,
-        `createdAt must be clamped inside the future window — got ${signedCreatedAt}`,
+        `createdAt clamped — got ${signedCreatedAt}`,
       );
     } finally {
       tauri.restore();
@@ -654,3 +569,18 @@ export function runMergeLaneSyncSuite({
     }
   });
 }
+
+// ─── Authoritative engine invocation (once, against ChannelStarSyncManager) ──
+// Each case exercises MergeLaneSyncManager directly; ChannelStarSyncManager is
+// the canonical concrete subclass. channelStarsSync.test.mjs and
+// channelMutesSync.test.mjs cover per-lane wire contracts separately.
+runMergeLaneSyncSuite({
+  label: "stars",
+  Manager: ChannelStarSyncManager,
+  readOutbox: readChannelStarsOutbox,
+  watermarkKind: "channel-stars",
+  makeEntry: (starred, updatedAt, rev) => ({ starred, updatedAt, rev }),
+  publish: (m, s) => m.publishStars(s),
+  getPending: (m) => m.getPendingStarStore(),
+  fetchRemote: (m) => m.fetchRemoteStars(),
+});

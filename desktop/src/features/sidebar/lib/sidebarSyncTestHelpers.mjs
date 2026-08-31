@@ -1,4 +1,12 @@
 // Shared helpers for sidebar sync manager tests.
+//
+// Exports:
+//   makeFakeWindow()         — single-slot timer fake (whole-blob simple tests)
+//   installFakeWindow(fw)    — install window substitutes, returns restore fn
+//   makeTimerBed()           — multi-slot timer fake for overlapping-publish tests
+//   installEchoTauri(pubkey) — faithful crypto seam (encrypt/decrypt/sign)
+//   installTauriMock(payload) — simple one-shot decrypt mock
+//   makeHookStubs()          — shared relay+Tauri stubs for React hook tests
 
 export function makeFakeWindow() {
   const storage = new Map();
@@ -117,6 +125,101 @@ export function installEchoTauri(pubkey) {
       };
     },
   };
+}
+
+// Multi-slot timer fake keyed by delay — for overlapping-publish tests.
+// Returns { win, timers, fireDelay, restore }. Must call restore() in finally.
+export function makeTimerBed() {
+  const storage = new Map();
+  const timers = new Map();
+  let nextId = 1;
+  const win = {
+    localStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+      get length() {
+        return storage.size;
+      },
+      key: (i) => [...storage.keys()][i] ?? null,
+    },
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const fireDelay = async (ms) => {
+    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+    if (!entry) throw new Error(`expected a timer scheduled at ${ms}ms`);
+    timers.delete(entry[0]);
+    entry[1].fn();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  };
+  const hasDelay = (ms) => [...timers.values()].some((t) => t.ms === ms);
+  const restore = installFakeWindow(win);
+  return { win, timers, fireDelay, hasDelay, restore };
+}
+
+// Stub relay + Tauri for React hook tests.
+// Returns { stubRelay, stubTauri } functions.
+export function makeHookStubs() {
+  function stubRelay(relayClient, { live, reconnect, publishCalls } = {}) {
+    const orig = {
+      fetchEvents: relayClient.fetchEvents,
+      subscribeLive: relayClient.subscribeLive,
+      subscribeToReconnects: relayClient.subscribeToReconnects,
+      publishEvent: relayClient.publishEvent,
+    };
+    relayClient.fetchEvents = async () => [];
+    relayClient.subscribeLive = async (_f, cb) => {
+      if (live) live.cb = cb;
+      return async () => {};
+    };
+    relayClient.subscribeToReconnects = (cb) => {
+      if (reconnect) reconnect.cb = cb;
+      return () => {};
+    };
+    relayClient.publishEvent = async (...args) => {
+      if (publishCalls) publishCalls.push(args);
+    };
+    return () => Object.assign(relayClient, orig);
+  }
+
+  function stubTauri(pubkey, decryptPayload) {
+    const orig = window.__TAURI_INTERNALS__;
+    window.__TAURI_INTERNALS__ = {
+      invoke: (cmd, args) => {
+        if (cmd === "nip44_decrypt_from_self") {
+          const payload =
+            typeof decryptPayload === "function"
+              ? decryptPayload(args)
+              : decryptPayload;
+          return Promise.resolve(payload);
+        }
+        if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+        if (cmd === "sign_event")
+          return Promise.resolve(
+            JSON.stringify({
+              id: "signed",
+              pubkey,
+              content: "ct",
+              created_at: 0,
+              kind: 30078,
+              tags: [],
+              sig: "s",
+            }),
+          );
+        return Promise.reject(new Error(`unmocked ${cmd}`));
+      },
+    };
+    return () => {
+      window.__TAURI_INTERNALS__ = orig;
+    };
+  }
+
+  return { stubRelay, stubTauri };
 }
 
 export function installTauriMock(goodCipherPayload) {

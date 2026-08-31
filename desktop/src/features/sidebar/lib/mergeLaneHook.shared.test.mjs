@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { JSDOM } from "jsdom";
+import { makeHookStubs } from "./sidebarSyncTestHelpers.mjs";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://localhost",
@@ -27,38 +28,8 @@ after(() => dom.window.close());
 
 // Shared harness: stub the relay so no network/live/reconnect fires unless a
 // test installs its own live callback.
-function stubRelay(relayClient, { live } = {}) {
-  const orig = {
-    fetchEvents: relayClient.fetchEvents,
-    subscribeLive: relayClient.subscribeLive,
-    subscribeToReconnects: relayClient.subscribeToReconnects,
-  };
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async (_f, cb) => {
-    if (live) live.cb = cb;
-    return async () => {};
-  };
-  relayClient.subscribeToReconnects = () => () => {};
-  return () => Object.assign(relayClient, orig);
-}
+const { stubRelay } = makeHookStubs();
 
-/**
- * Run the merge-lane hook invariant suite for a single lane.
- *
- * @param {object} cfg
- * @param {string}   cfg.label              - Human-readable lane name for test titles.
- * @param {string}   cfg.entryValueField    - "starred" or "muted"
- * @param {string}   cfg.idsField           - "starredChannelIds" or "mutedChannelIds"
- * @param {string}   cfg.trueAction         - "starChannel" or "muteChannel"
- * @param {string}   cfg.falseAction        - "unstarChannel" or "unmuteChannel"
- * @param {string}   cfg.dTag               - relay event d-tag ("channel-stars" or "channel-mutes")
- * @param {string}   cfg.outboxKeyPrefix    - localStorage outbox key prefix
- * @param {number}   cfg.MAX_ENTRIES        - capacity cap
- * @param {Function} cfg.readStore          - readChannel{Stars|Mutes}Store(pubkey, relay?)
- * @param {Function} cfg.storageKey         - storageKey(pubkey, relay?)
- * @param {Function} cfg.useHook            - the hook function
- * @param {Function} cfg.makePayload        - (channels) => JSON string for tauri decrypt
- */
 export function runMergeLaneHookSuite({
   label,
   entryValueField,
@@ -120,10 +91,8 @@ export function runMergeLaneHookSuite({
   });
 
   // Monotonic mint: combines persisted-local high-water, far-future observation,
-  // and same-second click sequence into one scenario. After observing a remote
-  // with high updatedAt and rev, local clicks must advance both dimensions.
-  // Mutation: dropping maxUpdatedAtSeen or maxRevSeen tracking makes later
-  // clicks mint below the observed high-water and lose on merge.
+  // and same-second click sequence. Mutation: dropping maxUpdatedAtSeen or maxRevSeen
+  // tracking makes later clicks mint below the observed high-water and lose on merge.
   test(`${label}: monotonic mint — persisted high-water + far-future live event + same-second clicks advance rev`, async () => {
     const { act, cleanup, renderHook } = await import("@testing-library/react");
     const { relayClient } = await import("@/shared/api/relayClient");
@@ -210,43 +179,70 @@ export function runMergeLaneHookSuite({
     }
   });
 
-  // Cross-window storage merge + outbox resume in one compact scenario.
-  // (a) A cross-window storage event is observed and max-merged into this window.
-  // (b) A click after the merge mints above the observed peer high-water.
-  // (c) A persisted outbox record is retained until the publish completes.
+  // Cross-window storage merge + outbox resume.
+  // (a) Cross-window storage event is max-merged into this window.
+  // (b) Click after merge mints above the observed peer high-water.
+  // (c) Bootstrap transfers resumed outbox to a fresh v2 key; persists while head
+  //     does not subsume it; clears once a subsuming head is confirmed.
   // Mutations: (a) removing the storageEvent listener; (b) not tracking peer
-  // maxRevSeen; (c) dropping writeOwnOutbox in the bootstrap path.
-  test(`${label}: cross-window merge, subsequent click mints above peer high-water, outbox retained`, async () => {
+  // maxRevSeen; (c) dropping writeOwnOutbox or clearing on any retained head.
+  test(`${label}: cross-window merge, subsequent click mints above peer high-water, v2 outbox retained until subsumed`, async () => {
     const { act, cleanup, renderHook } = await import("@testing-library/react");
     const { relayClient } = await import("@/shared/api/relayClient");
 
-    const restore = stubRelay(relayClient);
+    // Relay starts empty (hold path — no head on first bootstrap fetch).
+    // fetchEvents is overridden per-phase below.
+    let fetchResult = [];
+    const restore = stubRelay(relayClient, {});
+    relayClient.fetchEvents = async () => fetchResult;
+
     const origDateNow = Date.now;
     Date.now = () => 100 * 1_000;
     const pubkey = `pk-${label}-xwin`;
-    const outboxKey = `${outboxKeyPrefix}:${pubkey}:${encodeURIComponent("wss://r")}`;
-    // Pre-seed a persisted outbox record (simulates resumed intent).
+    const relayUrl = "wss://r";
+    const encodedRelay = encodeURIComponent(relayUrl);
+
+    // Pre-seed a resumed outbox record using the LEGACY key format so bootstrap
+    // picks it up via the legacy-key enumeration path.
+    const legacyOutboxKey = `${outboxKeyPrefix}:${pubkey}:${encodedRelay}`;
     window.localStorage.setItem(
-      outboxKey,
+      legacyOutboxKey,
       makePayload({
         resumed: { [entryValueField]: true, updatedAt: 90, rev: 2 },
       }),
     );
+
     let hook = null;
     try {
       await act(async () => {
-        hook = renderHook(() => useHook(pubkey, "wss://r"));
+        hook = renderHook(() => useHook(pubkey, relayUrl));
         for (let i = 0; i < 40; i++) await Promise.resolve();
       });
-      // (c) Outbox retained until publish completes.
+
+      // (c1) Bootstrap must have transferred the resumed intent to a fresh v2
+      // write-once key (prefix:pubkey:relay:nonce:seq — more colons than legacy).
+      // The legacy key is never deleted; only a v2 key is mutation-valid proof.
+      const v2KeyPrefix = `${outboxKeyPrefix}:${pubkey}:${encodedRelay}:`;
+      const allKeys = Array.from(
+        { length: window.localStorage.length },
+        (_, i) => window.localStorage.key(i),
+      ).filter((k) => k && k.startsWith(v2KeyPrefix));
+      // A v2 own key has two more colon-separated segments (nonce + seq) beyond
+      // the legacy three-segment form.
+      const v2OwnKeys = allKeys.filter((k) => {
+        const segs = k.split(":").length;
+        // legacy = prefix:pubkey:encodedRelay (3+ segs but no nonce/seq)
+        // v2 own = prefix:pubkey:encodedRelay:nonce:seq (5+ segs)
+        return segs >= 5;
+      });
       assert.ok(
-        window.localStorage.getItem(outboxKey) !== null,
-        "outbox retained during bootstrap",
+        v2OwnKeys.length > 0,
+        "bootstrap must have written a v2 nonce:seq own key — dropping writeOwnOutbox breaks this",
       );
 
       // (a) Peer window writes a store with rev 12 and fires a storage event.
       window.localStorage.setItem(
-        storageKey(pubkey, "wss://r"),
+        storageKey(pubkey, relayUrl),
         makePayload({
           shared: { [entryValueField]: true, updatedAt: 900, rev: 12 },
         }),
@@ -254,7 +250,7 @@ export function runMergeLaneHookSuite({
       await act(async () => {
         window.dispatchEvent(
           new dom.window.StorageEvent("storage", {
-            key: storageKey(pubkey, "wss://r"),
+            key: storageKey(pubkey, relayUrl),
           }),
         );
         for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -267,15 +263,74 @@ export function runMergeLaneHookSuite({
 
       // (b) Click after merge mints above peer high-water (updatedAt 900, rev 12).
       await act(async () => hook.result.current[falseAction]("shared"));
-      const p = readStore(pubkey, "wss://r");
+      const p = readStore(pubkey, relayUrl);
       assert.equal(p.channels.shared[entryValueField], false, "click applied");
       assert.equal(p.channels.shared.updatedAt, 900, "held at peer high-water");
       assert.equal(p.channels.shared.rev, 13, "rev = peer rev + 1");
+
+      // (c2) Non-subsuming retained head: v2 own key must remain.
+      // Return a head that does NOT carry the resumed channel's entry.
+      const origTauri = window.__TAURI_INTERNALS__;
+      window.__TAURI_INTERNALS__ = {
+        invoke: (cmd) => {
+          if (cmd === "nip44_decrypt_from_self")
+            return Promise.resolve(
+              makePayload({
+                other: { [entryValueField]: false, updatedAt: 1, rev: 0 },
+              }),
+            );
+          if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct-enc");
+          if (cmd === "sign_event")
+            return Promise.resolve(
+              JSON.stringify({
+                id: "evt-x",
+                pubkey,
+                content: "ct-enc",
+                created_at: 0,
+                kind: 30078,
+                tags: [["d", dTag]],
+                sig: "s",
+              }),
+            );
+          return Promise.reject(new Error(`unmocked: ${cmd}`));
+        },
+      };
+      fetchResult = [
+        {
+          id: "non-subsuming-head",
+          pubkey,
+          content: "ct-nonsubsume",
+          created_at: 50,
+          kind: 30078,
+          tags: [["d", dTag]],
+          sig: "s",
+        },
+      ];
+      // Wait for a reconcile tick (bootstrap + reconcile share the fetch path).
+      for (let i = 0; i < 40; i++) await Promise.resolve();
+      // Re-enumerate: the (b) click replaced the bootstrap v2 key with a fresh
+      // one (writeOwnOutbox always writes a new key and drops superseded own
+      // keys). Assert that at least one v2 own key exists — a non-subsuming
+      // retained head must NOT clear it.
+      const currentV2Keys = Array.from(
+        { length: window.localStorage.length },
+        (_, i) => window.localStorage.key(i),
+      ).filter(
+        (k) => k && k.startsWith(v2KeyPrefix) && k.split(":").length >= 5,
+      );
+      assert.ok(
+        currentV2Keys.length > 0,
+        "v2 own key must survive a non-subsuming retained head — clearing on any retained head breaks this",
+      );
+      window.__TAURI_INTERNALS__ = origTauri;
+
       hook.unmount();
     } finally {
       cleanup();
       Date.now = origDateNow;
       restore();
+      // Clean up our seeded keys.
+      window.localStorage.removeItem(legacyOutboxKey);
     }
   });
 }

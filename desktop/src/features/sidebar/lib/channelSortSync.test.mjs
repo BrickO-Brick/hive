@@ -11,21 +11,17 @@ import {
   installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
 
-// Shared whole-blob engine invariants are covered by wholeBlobSync.shared.test.mjs
-// (which runs directly against ChannelSectionSyncManager). This file contains
-// only sort-specific adapter and lane behavior tests.
+// Shared whole-blob engine invariants are covered by wholeBlobSync.shared.test.mjs.
+// This file covers only sort-specific adapter and lane behavior.
 
 function makeStore(groups = {}) {
   return { version: 1, groups };
 }
-
 const RELAY = "wss://r.test";
 
-// ─── Sort-specific: unsupported head payload version ─────────────────────────
-
-// An unsupported/unparseable payload version is equally unreadable: it decrypts
-// but `parseChannelSortPayload` rejects it, so the manager must `retain`, not
-// overwrite.
+// Mutation: removing `version !== 1` check from parseChannelSortPayload accepts
+// the v2 blob as v1 state; the manager falls through to a publish that overwrites
+// authoritative state.
 test("unsupported head payload version retains the pending edit, never publishing", async () => {
   mock.method(relayClient, "fetchEvents", () =>
     Promise.resolve([
@@ -53,13 +49,13 @@ test("unsupported head payload version retains the pending edit, never publishin
     assert.equal(
       publishCalls.length,
       0,
-      "must not publish over a head whose payload version we do not support",
+      "must not publish over unsupported version",
     );
     assert.ok(
       manager.getPendingStore() !== null,
-      "unsupported head must retain the pending edit",
+      "unsupported head retains pending edit",
     );
-    assert.ok(fw._hasTimer(), "a retry must be scheduled");
+    assert.ok(fw._hasTimer(), "retry scheduled");
   } finally {
     tauri.restore();
     restore();
@@ -67,13 +63,6 @@ test("unsupported head payload version retains the pending edit, never publishin
   }
 });
 
-// ─── Sort-specific: reconnect keeps the frozen baseline ──────────────────────
-
-// The reconnect handler re-drives a pending edit through retryPendingPublish(),
-// NOT the public publishSortPrefs(). A remote that advanced while the edit was
-// pending must be adopted on reconnect, not published over: retryPendingPublish
-// keeps the generation and the baseline frozen at queue time, so the pre-publish
-// check still sees the head as advanced and adopts.
 // Mutation: reverting the reconnect handler to publishSortPrefs(pending) resets
 // the baseline to the just-fetched head, so the pre-publish check sees no
 // advancement and publishes the stale edit over the remote.
@@ -114,17 +103,17 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
     assert.equal(
       publishCalls.length,
       0,
-      "must adopt the advanced remote, never publish the stale edit over it",
+      "must adopt the advanced remote, never publish",
     );
-    assert.equal(adopted.length, 1, "the advanced remote must be adopted");
+    assert.equal(adopted.length, 1, "advanced remote adopted");
     assert.ok(
       REMOTE_KEY in adopted[0].store.groups,
-      "adopted store must be the remote content that won LWW",
+      "adopted store is the remote that won LWW",
     );
     assert.equal(
       manager.getPendingStore(),
       null,
-      "the losing pending edit must be cleared on adopt",
+      "losing pending edit cleared on adopt",
     );
   } finally {
     tauri.restore();
@@ -133,11 +122,6 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
   }
 });
 
-// ─── Sort-specific: durable outbox resume ────────────────────────────────────
-
-// An edit made <2s before quit (destroy inside the debounce) is persisted, and
-// a fresh manager resuming from that outbox publishes it — the edit is not
-// silently dropped at teardown.
 // Mutation: dropping writeChannelSortOutbox leaves the outbox null → no resume.
 test("durable outbox: edit destroyed inside the debounce resumes and publishes on remount", async () => {
   let storedHead = [];
@@ -155,7 +139,7 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
     const m1 = new ChannelSortSyncManager("pk-resume", RELAY);
     m1.publishSortPrefs(makeStore({ channels: "recent" }));
     const persisted = readChannelSortOutbox("pk-resume", RELAY);
-    assert.ok(persisted !== null, "edit must be persisted before teardown");
+    assert.ok(persisted !== null, "edit persisted before teardown");
     m1.destroy();
     assert.equal(publishCalls.length, 0, "destroy must not flush");
     const m2 = new ChannelSortSyncManager("pk-resume", RELAY);
@@ -166,7 +150,7 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
     assert.equal(
       readChannelSortOutbox("pk-resume", RELAY),
       null,
-      "outbox must be cleared once the resumed edit publishes",
+      "outbox cleared after publish",
     );
   } finally {
     tauri.restore();
@@ -175,12 +159,7 @@ test("durable outbox: edit destroyed inside the debounce resumes and publishes o
   }
 });
 
-// ─── Sort-specific: failed publish retries the retained edit ─────────────────
-
-// A transient publish rejection keeps the pending edit and schedules a
-// bounded-backoff retry that succeeds, rather than logging-and-dropping.
-// Mutation: reverting scheduleRetry to a bare console.warn leaves pending null
-// and never re-publishes.
+// Mutation: reverting scheduleRetry to a bare console.warn leaves pending null.
 test("failed publish retries the retained edit without a later edit", async () => {
   let storedHead = [];
   mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
@@ -199,19 +178,19 @@ test("failed publish retries the retained edit without a later edit", async () =
     manager.publishSortPrefs(makeStore({ channels: "recent" }));
     fw._fireTimer();
     await new Promise((r) => setTimeout(r, 20));
-    assert.equal(attempts, 1, "first publish attempt rejected");
+    assert.equal(attempts, 1, "first publish rejected");
     assert.ok(
       manager.getPendingStore() !== null,
-      "failed publish must retain the pending edit",
+      "failed publish retains pending edit",
     );
-    assert.ok(fw._hasTimer(), "a bounded-backoff retry must be scheduled");
+    assert.ok(fw._hasTimer(), "bounded-backoff retry scheduled");
     fw._fireTimer();
     await new Promise((r) => setTimeout(r, 20));
-    assert.equal(attempts, 2, "retry must re-attempt the publish");
+    assert.equal(attempts, 2, "retry re-attempts the publish");
     assert.equal(
       manager.getPendingStore(),
       null,
-      "successful retry must clear the pending edit",
+      "successful retry clears pending",
     );
   } finally {
     tauri.restore();

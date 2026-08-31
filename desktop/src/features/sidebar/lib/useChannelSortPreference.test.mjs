@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import { JSDOM } from "jsdom";
+import { makeHookStubs } from "./sidebarSyncTestHelpers.mjs";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://localhost",
 });
-
 before(() => {
   Object.assign(globalThis, {
     document: dom.window.document,
@@ -15,76 +15,13 @@ before(() => {
     window: dom.window,
   });
 });
-
 after(() => dom.window.close());
 
-// ── Shared test helpers ───────────────────────────────────────────────────────
+const { stubRelay, stubTauri } = makeHookStubs();
 
-/** Install relay no-ops and return a restore function. */
-function stubRelay(relayClient, { live, reconnect, publishCalls } = {}) {
-  const orig = {
-    fetchEvents: relayClient.fetchEvents,
-    subscribeLive: relayClient.subscribeLive,
-    subscribeToReconnects: relayClient.subscribeToReconnects,
-    publishEvent: relayClient.publishEvent,
-  };
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async (_f, cb) => {
-    if (live) live.cb = cb;
-    return async () => {};
-  };
-  relayClient.subscribeToReconnects = (cb) => {
-    if (reconnect) reconnect.cb = cb;
-    return () => {};
-  };
-  relayClient.publishEvent = async (...args) => {
-    if (publishCalls) publishCalls.push(args);
-  };
-  return () => Object.assign(relayClient, orig);
-}
-
-/**
- * Install a Tauri mock for sort tests.
- *  - encrypt returns "ct" / sign returns a minimal event
- *  - decrypt returns `decryptPayload` (JSON string or callback)
- */
-function stubTauri(pubkey, decryptPayload) {
-  const orig = window.__TAURI_INTERNALS__;
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd, args) => {
-      if (cmd === "nip44_decrypt_from_self") {
-        const payload =
-          typeof decryptPayload === "function"
-            ? decryptPayload(args)
-            : decryptPayload;
-        return Promise.resolve(payload);
-      }
-      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
-      if (cmd === "sign_event")
-        return Promise.resolve(
-          JSON.stringify({
-            id: "signed",
-            pubkey,
-            content: "ct",
-            created_at: 0,
-            kind: 30078,
-            tags: [],
-            sig: "s",
-          }),
-        );
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
-  return () => {
-    window.__TAURI_INTERNALS__ = orig;
-  };
-}
-
-// Carl P1.1 regression (sort): a peer-cache storage event arriving while a
-// local whole-blob sort edit is pending must NOT clobber the optimistic edit.
-// Mutation: removing the `hasPendingEdit()` guard in the storage handler lets
-// B1 apply, so A2's `setStore` updater derives from B1, and the visible mode
-// reverts to B1's value.
+// Carl P1.1 regression: storage event while a local sort edit is pending must
+// NOT clobber the optimistic edit.
+// Mutation: removing `hasPendingEdit()` guard lets B1 apply, so A2 derives from B1.
 test("storage event while a local sort edit is pending is deferred, not applied", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
@@ -95,7 +32,6 @@ test("storage event while a local sort edit is pending is deferred, not applied"
 
   const restoreRelay = stubRelay(relayClient);
   const restoreTauri = stubTauri("pk-sort-sg", null);
-
   const pubkey = "pk-sort-sg";
   const relayUrl = "wss://r.sort-sg";
   let hook = null;
@@ -105,8 +41,6 @@ test("storage event while a local sort edit is pending is deferred, not applied"
       await Promise.resolve();
       await Promise.resolve();
     });
-
-    // A1: set "channels" to "alpha" — becomes the pending edit.
     await act(async () => {
       hook.result.current.setSortModeFor("channels", "alpha");
     });
@@ -115,8 +49,6 @@ test("storage event while a local sort edit is pending is deferred, not applied"
       "alpha",
       "A1: channels sort set to alpha",
     );
-
-    // Window B writes "recent" for "channels" to the shared cache.
     const b1Store = JSON.stringify({
       version: 1,
       groups: { channels: "recent" },
@@ -133,23 +65,19 @@ test("storage event while a local sort edit is pending is deferred, not applied"
       await Promise.resolve();
       await Promise.resolve();
     });
-
     assert.equal(
       hook.result.current.sortModeFor("channels"),
       "alpha",
-      "storage event while pending must not apply B1 (recent) over A1 (alpha)",
+      "storage event while pending must not apply B1",
     );
-
-    // A2: derived from A1 state (channels stays alpha).
     await act(async () => {
       hook.result.current.setSortModeFor("starred", "recent");
     });
     assert.equal(
       hook.result.current.sortModeFor("channels"),
       "alpha",
-      "A2 must be derived from A1 state — channels must remain alpha",
+      "A2 derived from A1 — channels remains alpha",
     );
-
     hook.unmount();
   } finally {
     cleanup();
@@ -158,8 +86,8 @@ test("storage event while a local sort edit is pending is deferred, not applied"
   }
 });
 
-// Carl P1-sort regression: a live remote while a local sort edit is pending
-// must NOT overwrite the optimistic edit or strand its durable outbox.
+// Carl P1-sort: live remote while a local sort edit is pending must NOT overwrite
+// the optimistic edit or strand its durable outbox.
 // Mutation: reverting applyRemote's hasPendingEdit() guard lets the remote clobber.
 test("live remote while a local edit is pending defers to the pending edit", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
@@ -174,7 +102,6 @@ test("live remote while a local edit is pending defers to the pending edit", asy
   const restoreTauri = stubTauri("pk-sort-pending", () =>
     JSON.stringify({ version: 1, groups: { "remote-group": "recent" } }),
   );
-
   const pubkey = "pk-sort-pending";
   const relayUrl = "wss://r.live";
   let hook = null;
@@ -186,7 +113,6 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       await Promise.resolve();
     });
     assert.ok(live.cb, "live subscription installed");
-
     await act(async () => {
       hook.result.current.setSortModeFor("channels", "recent");
     });
@@ -199,7 +125,6 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       "recent",
       "optimistic local edit applied",
     );
-
     await act(async () => {
       live.cb({
         id: "remote-event",
@@ -213,20 +138,19 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       await Promise.resolve();
       await Promise.resolve();
     });
-
     assert.equal(
       hook.result.current.sortModeFor("channels"),
       "recent",
-      "pending local edit must NOT be overwritten",
+      "pending local edit NOT overwritten",
     );
     assert.equal(
       hook.result.current.sortModeFor("remote-group"),
       "alpha",
-      "remote store must not have been applied over the pending edit",
+      "remote store not applied over pending edit",
     );
     assert.ok(
       readChannelSortOutbox(pubkey, relayUrl),
-      "outbox for the pending edit must survive the live remote",
+      "outbox survives live remote",
     );
     hook.unmount();
   } finally {
@@ -237,7 +161,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
 });
 
 // Equal-timestamp tie-break must match the relay's canonical winner (lowest id wins).
-// Mutation: reverting applyRemote's `>=` back to `<=` wrongly ignores the lower id.
+// Mutation: reverting applyRemote's `>=` back to `<=` ignores the lower id.
 test("equal-timestamp tie-break applies the lower event id (relay canonical winner)", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
@@ -247,12 +171,10 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
 
   const live = {};
   const restoreRelay = stubRelay(relayClient, { live });
-  // Decrypt echoes ciphertext as the group key so each event yields a distinct store.
   const restoreTauri = stubTauri("pk-sort-tie", (args) => {
     const id = args?.ciphertext ?? "";
     return JSON.stringify({ version: 1, groups: { [id]: "recent" } });
   });
-
   const pubkey = "pk-sort-tie";
   const relayUrl = "wss://r.tie";
   let hook = null;
@@ -264,7 +186,6 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
       await Promise.resolve();
     });
     assert.ok(live.cb, "live subscription installed");
-
     const deliver = async (id) => {
       await act(async () => {
         live.cb({
@@ -280,19 +201,17 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
         await Promise.resolve();
       });
     };
-
     await deliver("bbbb");
     await deliver("aaaa");
-
     assert.equal(
       hook.result.current.sortModeFor("aaaa"),
       "recent",
-      "lower event id (relay canonical winner) must be applied",
+      "lower event id (relay canonical winner) applied",
     );
     assert.equal(
       hook.result.current.sortModeFor("bbbb"),
       "alpha",
-      "larger id's store must be superseded by the lower-id whole-blob winner",
+      "larger id's store superseded",
     );
     hook.unmount();
   } finally {
@@ -302,10 +221,9 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
   }
 });
 
-// Carl P1-sort regression: on reconnect the hook must wake the EXISTING pending
-// edit (retryPendingPublish) rather than re-queue it via publishSortPrefs().
-// Mutation: reverting the reconnect handler to publishSortPrefs(pending) resets
-// the baseline and publishes the stale edit over the advanced remote.
+// Carl P1-sort: on reconnect the hook must wake the EXISTING pending edit
+// (retryPendingPublish) rather than re-queue it via publishSortPrefs().
+// Mutation: reverting to publishSortPrefs(pending) resets the baseline.
 test("reconnect adopts a remote that advanced while the edit was pending, never publishing over it", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
@@ -324,11 +242,10 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
   const origFetch = relayClient.fetchEvents;
   relayClient.fetchEvents = async () => [head];
   const restoreRelay = stubRelay(relayClient, { reconnect, publishCalls });
-  relayClient.fetchEvents = async () => [head]; // override stubRelay's fetchEvents
+  relayClient.fetchEvents = async () => [head];
   const restoreTauri = stubTauri("pk-sort-recon", () =>
     JSON.stringify({ version: 1, groups: { "remote-group": "recent" } }),
   );
-
   const pubkey = "pk-sort-recon";
   const relayUrl = "wss://r.recon";
   let hook = null;
@@ -340,11 +257,9 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
       await Promise.resolve();
     });
     assert.ok(reconnect.cb, "reconnect handler installed");
-
     await act(async () => {
       hook.result.current.setSortModeFor("channels", "recent");
     });
-
     head = {
       pubkey: "pk-sort-recon",
       content: "remote-cipher",
@@ -358,21 +273,20 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
       await Promise.resolve();
       await Promise.resolve();
     });
-
     assert.equal(
       publishCalls.length,
       0,
-      "must adopt the advanced remote on reconnect, never publish",
+      "must adopt advanced remote on reconnect, never publish",
     );
     assert.equal(
       hook.result.current.sortModeFor("channels"),
       "alpha",
-      "the losing local edit must be adopted away",
+      "losing local edit adopted away",
     );
     assert.equal(
       hook.result.current.sortModeFor("remote-group"),
       "recent",
-      "the advanced remote store must be adopted",
+      "advanced remote store adopted",
     );
     hook.unmount();
   } finally {
@@ -383,9 +297,9 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
   }
 });
 
-// Thufir pass-3 blocker: a legacy blob whose v2 transfer fails (quota) must NOT
-// write the consumed marker. Mutation: writing the marker unconditionally
-// consumes the legacy blob after a failed transfer and it is lost.
+// Thufir pass-3: legacy blob whose v2 transfer fails (quota) must NOT write the
+// consumed marker.
+// Mutation: writing the marker unconditionally loses the legacy blob.
 test("legacy replay whose v2 transfer fails (quota) does not write the consumed marker", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
@@ -396,7 +310,6 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
   const { normalizeRelayUrl } = await import("@/shared/lib/normalizeRelayUrl");
 
   const origLocalStorage = window.localStorage;
-
   const pubkey = "pk-quota";
   const relayUrl = "wss://r.quota";
   const scope = `${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
@@ -406,7 +319,6 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
     store: { version: 1, groups: { "legacy-group": "recent" } },
     queuedAt: 0,
   });
-
   const map = new Map([[legacyKey, legacyRaw]]);
   const throwingStorage = {
     getItem: (k) => (map.has(k) ? map.get(k) : null),
@@ -421,10 +333,8 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
     },
     key: (i) => [...map.keys()][i] ?? null,
   };
-
   const restoreRelay = stubRelay(relayClient);
   const restoreTauri = stubTauri(pubkey, null);
-
   let hook = null;
   try {
     Object.defineProperty(window, "localStorage", {
@@ -435,7 +345,6 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
       `buzz-sync-watermark.v1:channel-sort:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`,
       "1700000000",
     );
-
     await act(async () => {
       hook = renderHook(() => useChannelSortPreference(pubkey, relayUrl));
       await Promise.resolve();
@@ -443,25 +352,21 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
       await Promise.resolve();
       await Promise.resolve();
     });
-
-    const markerWritten = [...map.keys()].some((k) =>
-      k.includes("-legacy-consumed:"),
-    );
     assert.equal(
-      markerWritten,
+      [...map.keys()].some((k) => k.includes("-legacy-consumed:")),
       false,
-      "consumed marker must not be written after a failed v2 transfer",
+      "consumed marker must not be written after failed v2 transfer",
     );
     const resumed = readChannelSortOutbox(pubkey, relayUrl);
     assert.ok(resumed !== null, "legacy blob must remain replayable");
     assert.equal(
       resumed.store.groups["legacy-group"],
       "recent",
-      "the exact legacy intent survives",
+      "exact legacy intent survives",
     );
     assert.ok(
       resumed.legacyRawToConsume !== null,
-      "legacy record still reports itself for consumption",
+      "legacy record reports itself for consumption",
     );
     hook.unmount();
   } finally {

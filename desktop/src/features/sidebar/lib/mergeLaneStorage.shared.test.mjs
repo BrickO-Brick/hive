@@ -1,11 +1,10 @@
-// Authoritative merge-lane storage suite, run directly against
+// Authoritative merge-lane storage suite — runs directly against
 // channelStarsStorage.ts (the canonical merge-lane implementation).
 //
 // Covers all merge-lane storage invariants: parsePayload contract, mergeStores
 // algebra, boundStore, idsFromStore, storageKey, readStore/writeStore, and the
-// full claimLegacy state machine. channelStarsStorage.test.mjs and
-// channelMutesStorage.test.mjs each carry a compact adapter contract that catches
-// field/key/prefix wiring divergence without replaying this full suite.
+// full claimLegacy state machine. Lane adapter files carry compact contracts
+// that catch field/key/prefix wiring divergence without replaying this suite.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,38 +34,32 @@ if (typeof globalThis.window === "undefined") {
 
 const storageKeyPrefix = "buzz-channel-stars.v1";
 const MAX_ENTRIES = MAX_CHANNEL_STAR_ENTRIES;
-const entryValueField = "starred";
-
+const E = (v, updatedAt, rev) => ({ starred: v, updatedAt, rev });
+const S = (entry) => ({ version: 1, channels: { c: entry } });
 function makeStore(channels = {}) {
   return { version: 1, channels };
 }
-const E = (v, updatedAt, rev) => ({ starred: v, updatedAt, rev });
-const S = (entry) => makeStore({ c: entry });
 
-// ── parsePayload ──────────────────────────────────────────────────────────
+// ── parsePayload ──────────────────────────────────────────────────────────────
 
-test("parseStarPayload: valid payload with channels returns store (rev preserved)", () => {
+test("parseStarPayload: valid payload round-trips (rev preserved)", () => {
   const payload = {
     version: 1,
-    channels: {
-      "chan-1": E(true, 1000, 3),
-      "chan-2": E(false, 2000, 0),
-    },
+    channels: { "chan-1": E(true, 1000, 3), "chan-2": E(false, 2000, 0) },
   };
   assert.deepEqual(parseStarPayload(payload), payload);
 });
 
 test("parseStarPayload: missing rev normalizes to 0 (old-build blob, entry kept)", () => {
-  const raw = {
+  const result = parseStarPayload({
     version: 1,
     channels: { "chan-1": { starred: true, updatedAt: 1000 } },
-  };
-  const result = parseStarPayload(raw);
+  });
   assert.deepEqual(result.channels["chan-1"], E(true, 1000, 0));
 });
 
-test("parseStarPayload: malformed rev (string / negative / non-integer / NaN / unsafe) normalizes to 0", () => {
-  const raw = {
+test("parseStarPayload: malformed rev (string/negative/fraction/NaN/unsafe-int) normalizes to 0", () => {
+  const result = parseStarPayload({
     version: 1,
     channels: {
       str: { starred: true, updatedAt: 1, rev: "5" },
@@ -76,36 +69,23 @@ test("parseStarPayload: malformed rev (string / negative / non-integer / NaN / u
       boundary: { starred: true, updatedAt: 1, rev: Number.MAX_SAFE_INTEGER },
       huge: { starred: true, updatedAt: 1, rev: Number.MAX_SAFE_INTEGER + 1 },
     },
-  };
-  const result = parseStarPayload(raw);
-  for (const id of ["str", "neg", "frac", "nan", "boundary", "huge"]) {
+  });
+  for (const id of ["str", "neg", "frac", "nan", "boundary", "huge"])
     assert.equal(result.channels[id].rev, 0, `${id} rev normalized to 0`);
-    assert.equal(result.channels[id].starred, true, `${id} entry kept`);
-  }
 });
 
-test("parseStarPayload: missing version returns null", () => {
-  assert.equal(
-    parseStarPayload({ channels: { "chan-1": E(true, 1, 0) } }),
-    null,
-  );
-});
+for (const [title, input] of [
+  ["missing version", { channels: { c: E(true, 1, 0) } }],
+  ["wrong version (2)", { version: 2, channels: {} }],
+  ["null input", null],
+  ["string input", "string"],
+  ["number input", 42],
+]) {
+  test(`parseStarPayload: ${title} returns null`, () =>
+    assert.equal(parseStarPayload(input), null));
+}
 
-test("parseStarPayload: wrong version returns null", () => {
-  assert.equal(
-    parseStarPayload({ version: 2, channels: { "chan-1": E(true, 1, 0) } }),
-    null,
-  );
-});
-
-test("parseStarPayload: null / non-object input returns null", () => {
-  assert.equal(parseStarPayload(null), null);
-  assert.equal(parseStarPayload("string"), null);
-  assert.equal(parseStarPayload(42), null);
-  assert.equal(parseStarPayload(true), null);
-});
-
-test("parseStarPayload: malformed channel entries missing value field/updatedAt are filtered out", () => {
+test("parseStarPayload: malformed entries filtered; valid entry kept", () => {
   const result = parseStarPayload({
     version: 1,
     channels: {
@@ -120,7 +100,7 @@ test("parseStarPayload: malformed channel entries missing value field/updatedAt 
   assert.deepEqual(result, makeStore({ valid: E(false, 500, 0) }));
 });
 
-test("parseStarPayload: NaN/Infinity/negative/unsafe updatedAt entries are filtered out", () => {
+test("parseStarPayload: NaN/Infinity/negative/unsafe updatedAt entries filtered", () => {
   const result = parseStarPayload({
     version: 1,
     channels: {
@@ -140,89 +120,88 @@ test("parseStarPayload: empty channels / no channels key returns empty store", (
   assert.deepEqual(parseStarPayload({ version: 1 }), makeStore());
 });
 
-// ── mergeStores: tuple order ──────────────────────────────────────────────
+// ── mergeStores ───────────────────────────────────────────────────────────────
 
-test("mergeStores: non-overlapping channels returns union", () => {
-  const result = mergeStores(
-    makeStore({ a: E(true, 100, 1) }),
-    makeStore({ b: E(false, 200, 1) }),
-  );
+test("mergeStores: non-overlapping channels returns union", () =>
   assert.deepEqual(
-    result,
+    mergeStores(
+      makeStore({ a: E(true, 100, 1) }),
+      makeStore({ b: E(false, 200, 1) }),
+    ),
     makeStore({ a: E(true, 100, 1), b: E(false, 200, 1) }),
-  );
-});
+  ));
 
-test("mergeStores: strictly-later updatedAt wins regardless of rev (primary key)", () => {
-  const result = mergeStores(S(E(false, 200, 0)), S(E(true, 100, 7)));
-  assert.deepEqual(result.channels.c, E(false, 200, 0));
-});
+for (const [title, a, b, expected] of [
+  [
+    "strictly-later updatedAt wins (primary key)",
+    S(E(false, 200, 0)),
+    S(E(true, 100, 7)),
+    E(false, 200, 0),
+  ],
+  [
+    "equal updatedAt: higher rev wins (tiebreak)",
+    S(E(false, 100, 5)),
+    S(E(true, 100, 2)),
+    E(false, 100, 5),
+  ],
+  [
+    "equal updatedAt AND rev: true-value wins (leaf)",
+    S(E(false, 100, 3)),
+    S(E(true, 100, 3)),
+    E(true, 100, 3),
+  ],
+  [
+    "false with higher updatedAt overrides true",
+    S(E(true, 100, 9)),
+    S(E(false, 999, 1)),
+    E(false, 999, 1),
+  ],
+]) {
+  test(`mergeStores: ${title}`, () =>
+    assert.deepEqual(mergeStores(a, b).channels.c, expected));
+}
 
-test("mergeStores: equal updatedAt → higher rev wins (same-second tiebreak)", () => {
-  const result = mergeStores(S(E(false, 100, 5)), S(E(true, 100, 2)));
-  assert.deepEqual(result.channels.c, E(false, 100, 5));
-});
-
-test("mergeStores: equal updatedAt AND equal rev → true-value wins (leaf)", () => {
-  const result = mergeStores(S(E(false, 100, 3)), S(E(true, 100, 3)));
-  assert.deepEqual(result.channels.c, E(true, 100, 3));
-});
-
-test("mergeStores: same-second old-build click (rev 0) loses to an earlier new-build rev, heals next second", () => {
-  // ACCEPTED MIXED-FLEET RESIDUAL (Carl P1 #5).
-  const newBuildTrue = S(E(true, 100, 2));
-  const oldBuildFalseSameSecond = S(E(false, 100, 0));
+test("mergeStores: same-second old-build click (rev 0) loses to earlier new-build rev; heals next second", () => {
   assert.deepEqual(
-    mergeStores(newBuildTrue, oldBuildFalseSameSecond).channels.c,
+    mergeStores(S(E(true, 100, 2)), S(E(false, 100, 0))).channels.c,
     E(true, 100, 2),
-    "the earlier new-build rev-2 true wins the same-second tie",
+    "earlier new-build rev-2 true wins same-second tie",
   );
-  const oldBuildFalseNextSecond = S(E(false, 101, 0));
   assert.deepEqual(
-    mergeStores(newBuildTrue, oldBuildFalseNextSecond).channels.c,
+    mergeStores(S(E(true, 100, 2)), S(E(false, 101, 0))).channels.c,
     E(false, 101, 0),
-    "a strictly-later-second old-build false wins — the residual is transient",
+    "strictly-later-second old-build false wins — residual is transient",
   );
 });
 
-test("mergeStores: a boundary (MAX_SAFE_INTEGER) rev cannot wedge later same-second toggles", () => {
-  const raw = {
+test("mergeStores: boundary (MAX_SAFE_INTEGER) rev cannot wedge later same-second toggles", () => {
+  const wedged = parseStarPayload({
     version: 1,
     channels: {
       c: { starred: true, updatedAt: 100, rev: Number.MAX_SAFE_INTEGER },
     },
-  };
-  const wedged = parseStarPayload(raw);
-  assert.equal(wedged.channels.c.rev, 0, "boundary rev is normalized to 0");
+  });
+  assert.equal(wedged.channels.c.rev, 0, "boundary rev normalized to 0");
   const mint = (store, v) => {
-    const local = store.channels.c;
-    const rev = Math.max(local?.rev ?? 0, 0) + 1;
+    const rev = Math.max(store.channels.c?.rev ?? 0, 0) + 1;
     return { store: S(E(v, 100, rev)), rev };
   };
   let state = wedged;
-  let prevRev = state.channels.c.rev;
+  let prevRev = 0;
   for (const v of [false, true, false, true]) {
     const { store: click, rev } = mint(state, v);
-    assert.ok(
-      rev > prevRev,
-      `mint rev ${rev} strictly advances past ${prevRev}`,
-    );
+    assert.ok(rev > prevRev, `mint rev ${rev} advances past ${prevRev}`);
     state = mergeStores(state, click);
     assert.deepEqual(
       state.channels.c,
       E(v, 100, rev),
-      `same-second toggle to ${v} (rev ${rev}) wins`,
+      `toggle to ${v} (rev ${rev}) wins`,
     );
     prevRev = rev;
   }
 });
 
-test("mergeStores: false-value with higher updatedAt overrides true-value", () => {
-  const result = mergeStores(S(E(true, 100, 9)), S(E(false, 999, 1)));
-  assert.deepEqual(result.channels.c, E(false, 999, 1));
-});
-
-test("mergeStores: empty local / empty remote / both empty", () => {
+test("mergeStores: empty-store cases", () => {
   assert.deepEqual(
     mergeStores(makeStore(), S(E(true, 42, 1))).channels.c,
     E(true, 42, 1),
@@ -234,7 +213,7 @@ test("mergeStores: empty local / empty remote / both empty", () => {
   assert.deepEqual(mergeStores(makeStore(), makeStore()), makeStore());
 });
 
-// ── mergeStores: algebra ──────────────────────────────────────────────────
+// ── mergeStores: algebra ──────────────────────────────────────────────────────
 
 function randEntry(rng) {
   return E(rng() > 0.5, Math.floor(rng() * 5), Math.floor(rng() * 5));
@@ -252,65 +231,64 @@ function lcg(seed) {
   };
 }
 
-test("mergeStores: commutative — merge(a,b) === merge(b,a)", () => {
-  const rng = lcg(12345);
-  const ids = ["a", "b", "c", "d"];
-  for (let i = 0; i < 200; i++) {
-    const a = randStore(rng, ids);
-    const b = randStore(rng, ids);
-    assert.deepEqual(mergeStores(a, b), mergeStores(b, a));
-  }
-});
+for (const [title, check, seed] of [
+  [
+    "commutative — merge(a,b) === merge(b,a)",
+    (a, b) => assert.deepEqual(mergeStores(a, b), mergeStores(b, a)),
+    12345,
+  ],
+  [
+    "associative — merge(merge(a,b),c) === merge(a,merge(b,c))",
+    (a, b, c) =>
+      assert.deepEqual(
+        mergeStores(mergeStores(a, b), c),
+        mergeStores(a, mergeStores(b, c)),
+      ),
+    67890,
+  ],
+  [
+    "idempotent — merge(a, merge(a,b)) === merge(a,b)",
+    (a, b) => {
+      const ab = mergeStores(a, b);
+      assert.deepEqual(mergeStores(a, ab), ab);
+      assert.deepEqual(mergeStores(ab, ab), ab);
+    },
+    24680,
+  ],
+]) {
+  test(`mergeStores: ${title}`, () => {
+    const rng = lcg(seed);
+    const ids = ["a", "b", "c", "d"];
+    for (let i = 0; i < 200; i++)
+      check(randStore(rng, ids), randStore(rng, ids), randStore(rng, ids));
+  });
+}
 
-test("mergeStores: associative — merge(merge(a,b),c) === merge(a,merge(b,c))", () => {
-  const rng = lcg(67890);
-  const ids = ["a", "b", "c", "d"];
-  for (let i = 0; i < 200; i++) {
-    const a = randStore(rng, ids);
-    const b = randStore(rng, ids);
-    const c = randStore(rng, ids);
-    assert.deepEqual(
-      mergeStores(mergeStores(a, b), c),
-      mergeStores(a, mergeStores(b, c)),
-    );
-  }
-});
+// ── v1-blob compat ────────────────────────────────────────────────────────────
 
-test("mergeStores: idempotent — merge(a, merge(a,b)) === merge(a,b)", () => {
-  const rng = lcg(24680);
-  const ids = ["a", "b", "c", "d"];
-  for (let i = 0; i < 200; i++) {
-    const a = randStore(rng, ids);
-    const b = randStore(rng, ids);
-    const ab = mergeStores(a, b);
-    assert.deepEqual(mergeStores(a, ab), ab);
-    assert.deepEqual(mergeStores(ab, ab), ab);
-  }
-});
-
-// ── v1-blob bidirectional compatibility ───────────────────────────────────
-
-test("v1 compat: a rev-carrying blob round-trips through a rev-less parser view", () => {
-  const ours = makeStore({ c: E(true, 100, 7) });
-  const roundTripped = parseStarPayload(JSON.parse(JSON.stringify(ours)));
-  assert.equal(roundTripped.version, 1, "version stays 1");
+test("v1 compat: rev-carrying blob round-trips through a rev-less parser view", () => {
+  const roundTripped = parseStarPayload(
+    JSON.parse(JSON.stringify(makeStore({ c: E(true, 100, 7) }))),
+  );
+  assert.equal(roundTripped.version, 1);
   assert.equal(roundTripped.channels.c.starred, true);
   assert.equal(roundTripped.channels.c.updatedAt, 100);
 });
 
 test("v1 compat: old-build unstar (no rev, updatedAt+1) beats our stale star", () => {
-  const ours = S(E(true, 100, 7));
-  const oldBuildFalse = parseStarPayload({
-    version: 1,
-    channels: { c: { starred: false, updatedAt: 101 } },
-  });
   assert.deepEqual(
-    mergeStores(ours, oldBuildFalse).channels.c,
+    mergeStores(
+      S(E(true, 100, 7)),
+      parseStarPayload({
+        version: 1,
+        channels: { c: { starred: false, updatedAt: 101 } },
+      }),
+    ).channels.c,
     E(false, 101, 0),
   );
 });
 
-// ── boundStore ────────────────────────────────────────────────────────────
+// ── boundStore ────────────────────────────────────────────────────────────────
 
 test("boundStarStore: retains newest entries regardless of value", () => {
   const channels = Object.fromEntries(
@@ -328,7 +306,7 @@ test("boundStarStore: retains newest entries regardless of value", () => {
   assert.equal(result.channels["active-0"], undefined);
 });
 
-test("boundStarStore: uses channel ID as an updatedAt tie-breaker", () => {
+test("boundStarStore: uses channel ID as updatedAt tie-breaker", () => {
   const channels = Object.fromEntries(
     Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => [
       `channel-${String(MAX_ENTRIES - i).padStart(3, "0")}`,
@@ -354,7 +332,7 @@ test("boundStarStore: preserves a same-second mutation by key", () => {
   assert.equal(result.channels["z-channel-000"], undefined);
 });
 
-test("mergeStores: a fresh at-capacity unstar defeats an older remote star", () => {
+test("mergeStores: fresh at-capacity unstar defeats older remote star", () => {
   const channels = Object.fromEntries(
     Array.from({ length: MAX_ENTRIES }, (_, i) => [
       `active-${i}`,
@@ -363,11 +341,14 @@ test("mergeStores: a fresh at-capacity unstar defeats an older remote star", () 
   );
   channels.toggled = E(false, 9999, 1);
   const bounded = boundStarStore(makeStore(channels));
-  const result = mergeStores(bounded, makeStore({ toggled: E(true, 9998, 5) }));
-  assert.deepEqual(result.channels.toggled, E(false, 9999, 1));
+  assert.deepEqual(
+    mergeStores(bounded, makeStore({ toggled: E(true, 9998, 5) })).channels
+      .toggled,
+    E(false, 9999, 1),
+  );
 });
 
-test("mergeStores: evicted remote ID re-enters and the oldest state is re-trimmed", () => {
+test("mergeStores: evicted remote ID re-enters and oldest state is re-trimmed", () => {
   const localChannels = Object.fromEntries(
     Array.from({ length: MAX_ENTRIES }, (_, i) => [
       `active-${i}`,
@@ -387,17 +368,11 @@ test("mergeStores: evicted remote ID re-enters and the oldest state is re-trimme
   assert.equal(result.channels["active-1"], undefined);
 });
 
-// ── Eviction / remount (finding 3) ────────────────────────────────────────
-
-test("finding 3 easy branch: a fresh click beats an evicted high-rev entry at an older updatedAt", () => {
-  const click = S(E(true, 1000, 1));
-  const remote = S(E(false, 500, 100));
+test("finding 3 easy branch: fresh click beats evicted high-rev entry at older updatedAt", () =>
   assert.deepEqual(
-    mergeStores(click, remote).channels.c,
+    mergeStores(S(E(true, 1000, 1)), S(E(false, 500, 100))).channels.c,
     E(true, 1000, 1),
-    "fresh click wins on the primary updatedAt key",
-  );
-});
+  ));
 
 test("finding 3 hard branch: equal-second evicted click (rev 1) loses to observed remote (rev 100)", () => {
   const NOW = 777;
@@ -407,29 +382,27 @@ test("finding 3 hard branch: equal-second evicted click (rev 1) loses to observe
     channels[`z-${String(i).padStart(3, "0")}`] = E(true, NOW, 0);
   const bounded = boundStarStore(makeStore(channels));
   assert.equal(
-    Object.keys(bounded.channels).length,
-    MAX_ENTRIES,
-    "bound trims to the cap",
-  );
-  assert.equal(
     bounded.channels[TARGET],
     undefined,
-    "TARGET evicted by the id tiebreak",
+    "TARGET evicted by id tiebreak",
   );
-  const click = makeStore({ [TARGET]: E(true, NOW, 1) });
-  const remote = makeStore({ [TARGET]: E(false, NOW, 100) });
   assert.deepEqual(
-    mergeStores(click, remote).channels[TARGET],
+    mergeStores(
+      makeStore({ [TARGET]: E(true, NOW, 1) }),
+      makeStore({ [TARGET]: E(false, NOW, 100) }),
+    ).channels[TARGET],
     E(false, NOW, 100),
-    "equal updatedAt → higher rev wins",
   );
   assert.deepEqual(
-    mergeStores(remote, click).channels[TARGET],
+    mergeStores(
+      makeStore({ [TARGET]: E(false, NOW, 100) }),
+      makeStore({ [TARGET]: E(true, NOW, 1) }),
+    ).channels[TARGET],
     E(false, NOW, 100),
   );
 });
 
-// ── idsFromStore ─────────────────────────────────────────────────────────
+// ── idsFromStore ──────────────────────────────────────────────────────────────
 
 test("starredChannelIdsFromStore: returns set of IDs where starred=true", () => {
   const result = starredChannelIdsFromStore({
@@ -451,29 +424,20 @@ test("starredChannelIdsFromStore: all-false / empty returns empty set", () => {
   );
 });
 
-// ── storageKey + readStore/writeStore ─────────────────────────────────────
+// ── storageKey + readStore/writeStore ─────────────────────────────────────────
 
-test("storageKey: with relayUrl includes normalized+encoded relay in key", () => {
+test("storageKey: with/without relayUrl", () => {
   const relay = "wss://relay.example.com";
   assert.equal(
     storageKey("pk1", relay),
     `${storageKeyPrefix}:pk1:${encodeURIComponent(normalizeRelayUrl(relay))}`,
   );
-});
-
-test("storageKey: without relayUrl returns legacy pubkey-only key", () => {
   assert.equal(storageKey("pk1"), `${storageKeyPrefix}:pk1`);
   assert.equal(storageKey("pk1", undefined), `${storageKeyPrefix}:pk1`);
-});
-
-test("storageKey: two different relays produce different keys for same pubkey", () => {
   assert.notEqual(
     storageKey("pk1", "wss://relay-a.example.com"),
     storageKey("pk1", "wss://relay-b.example.com"),
   );
-});
-
-test("storageKey: equivalent relay URLs (case + trailing slash) map to the same key", () => {
   assert.equal(
     storageKey("pk1", "WSS://Relay.Example/"),
     storageKey("pk1", "wss://relay.example"),
@@ -481,229 +445,336 @@ test("storageKey: equivalent relay URLs (case + trailing slash) map to the same 
 });
 
 test("readChannelStarsStore + writeChannelStarsStore: scoped write/read roundtrip", () => {
-  const pubkey = "pk-stars-roundtrip";
-  const relay = "wss://relay.example.com";
   const store = makeStore({ chan1: E(true, 1000, 1) });
-  assert.ok(writeChannelStarsStore(pubkey, store, relay) !== null);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), store);
+  assert.ok(
+    writeChannelStarsStore(
+      "pk-stars-roundtrip",
+      store,
+      "wss://relay.example.com",
+    ) !== null,
+  );
+  assert.deepEqual(
+    readChannelStarsStore("pk-stars-roundtrip", "wss://relay.example.com"),
+    store,
+  );
 });
 
-test("readChannelStarsStore: scoped key is isolated from other relay's data (A→B no seed leak)", () => {
-  const pubkey = "pk-stars-isolation";
+test("readChannelStarsStore: scoped key isolated from other relay's data", () => {
   writeChannelStarsStore(
-    pubkey,
+    "pk-stars-isolation",
     makeStore({ cha: E(true, 100, 1) }),
     "wss://relay-a.example.com",
   );
   assert.deepEqual(
-    readChannelStarsStore(pubkey, "wss://relay-b.example.com"),
+    readChannelStarsStore("pk-stars-isolation", "wss://relay-b.example.com"),
     DEFAULT_STORE,
   );
 });
 
 test("readChannelStarsStore: migrates legacy unscoped data on first scoped read", () => {
-  const pubkey = "pk-stars-migrate";
-  const relay = "wss://relay-migrate.example.com";
   const legacy = makeStore({ chl: E(true, 500, 2) });
-  writeChannelStarsStore(pubkey, legacy);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-  assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-});
-
-test("readChannelStarsStore: migration is globally one-time — relay B sees DEFAULT_STORE after relay A migrates", () => {
-  const pubkey = "pk-stars-migrate-once";
-  writeChannelStarsStore(pubkey, makeStore({ chm: E(true, 1, 1) }));
-  readChannelStarsStore(pubkey, "wss://relay-a-once.example.com");
+  writeChannelStarsStore("pk-stars-migrate", legacy);
   assert.deepEqual(
-    readChannelStarsStore(pubkey, "wss://relay-b-once.example.com"),
-    DEFAULT_STORE,
+    readChannelStarsStore(
+      "pk-stars-migrate",
+      "wss://relay-migrate.example.com",
+    ),
+    legacy,
   );
   assert.equal(
-    window.localStorage.getItem(
-      storageKey(pubkey, "wss://relay-b-once.example.com"),
-    ),
+    window.localStorage.getItem(storageKey("pk-stars-migrate")),
     null,
+  );
+  assert.deepEqual(
+    readChannelStarsStore(
+      "pk-stars-migrate",
+      "wss://relay-migrate.example.com",
+    ),
+    legacy,
+  );
+});
+
+test("readChannelStarsStore: migration is globally one-time — relay B sees DEFAULT after relay A migrates", () => {
+  writeChannelStarsStore(
+    "pk-stars-migrate-once",
+    makeStore({ chm: E(true, 1, 1) }),
+  );
+  readChannelStarsStore(
+    "pk-stars-migrate-once",
+    "wss://relay-a-once.example.com",
+  );
+  assert.deepEqual(
+    readChannelStarsStore(
+      "pk-stars-migrate-once",
+      "wss://relay-b-once.example.com",
+    ),
+    DEFAULT_STORE,
   );
 });
 
 test("readChannelStarsStore: migration only copies non-empty legacy stores", () => {
-  const pubkey = "pk-stars-migrate-empty";
-  const relay = "wss://relay-empty.example.com";
-  writeChannelStarsStore(pubkey, DEFAULT_STORE);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-  assert.notEqual(window.localStorage.getItem(storageKey(pubkey)), null);
+  writeChannelStarsStore("pk-stars-migrate-empty", DEFAULT_STORE);
+  assert.deepEqual(
+    readChannelStarsStore(
+      "pk-stars-migrate-empty",
+      "wss://relay-empty.example.com",
+    ),
+    DEFAULT_STORE,
+  );
+  assert.notEqual(
+    window.localStorage.getItem(storageKey("pk-stars-migrate-empty")),
+    null,
+  );
 });
 
 test("readChannelStarsStore: scoped key takes precedence over legacy key", () => {
-  const pubkey = "pk-stars-precedence";
   const relay = "wss://relay-precedence.example.com";
-  writeChannelStarsStore(pubkey, makeStore({ old: E(true, 1, 1) }));
+  writeChannelStarsStore(
+    "pk-stars-precedence",
+    makeStore({ old: E(true, 1, 1) }),
+  );
   const scoped = makeStore({ new: E(true, 2, 1) });
-  writeChannelStarsStore(pubkey, scoped, relay);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), scoped);
+  writeChannelStarsStore("pk-stars-precedence", scoped, relay);
+  assert.deepEqual(readChannelStarsStore("pk-stars-precedence", relay), scoped);
 });
 
-// ── claimLegacy state machine (authoritative — not duplicated in lane files) ──
+// ── claimLegacy state machine ─────────────────────────────────────────────────
 
-test("claimLegacy: scoped-write failure returns DEFAULT and leaves neither relay able to seed the legacy value", () => {
-  const pubkey = "pk-stars-migrate-writefail";
-  const relayA = "wss://relay-a-writefail-stars.example.com";
-  const relayB = "wss://relay-b-writefail-stars.example.com";
-  const legacy = makeStore({ chw: E(true, 500, 2) });
-  writeChannelStarsStore(pubkey, legacy);
-  const scopedA = storageKey(pubkey, relayA);
-  const origSet = window.localStorage.setItem;
-  window.localStorage.setItem = (k, v) => {
-    if (k === scopedA) throw new Error("QuotaExceededError");
-    return origSet.call(window.localStorage, k, v);
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
-    assert.equal(window.localStorage.getItem(scopedA), null);
-  } finally {
-    window.localStorage.setItem = origSet;
-  }
-  assert.notEqual(window.localStorage.getItem(storageKey(pubkey)), null);
-  assert.deepEqual(readChannelStarsStore(pubkey, relayB), legacy);
-  assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
-  assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
-});
-
-test("claimLegacy: a legacy delete that does not take rolls back and returns DEFAULT", () => {
-  const pubkey = "pk-stars-migrate-delfail";
-  const relay = "wss://relay-delfail-stars.example.com";
-  const legacy = makeStore({ chd: E(true, 700, 3) });
-  writeChannelStarsStore(pubkey, legacy);
-  const legacyKey = storageKey(pubkey);
-  const scoped = storageKey(pubkey, relay);
-  const origRemove = window.localStorage.removeItem;
-  window.localStorage.removeItem = (k) => {
-    if (k === legacyKey) return;
-    return origRemove.call(window.localStorage, k);
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.equal(window.localStorage.getItem(scoped), null);
-  } finally {
-    window.localStorage.removeItem = origRemove;
-  }
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-  assert.equal(window.localStorage.getItem(legacyKey), null);
-});
-
-test("claimLegacy: legacy delete + rollback both throw — every read returns DEFAULT until storage recovers, never seeds", () => {
-  const pubkey = "pk-stars-migrate-delrollbackthrow";
-  const relay = "wss://relay-delrollbackthrow-stars.example.com";
-  const legacy = makeStore({ chr: E(true, 900, 4) });
-  writeChannelStarsStore(pubkey, legacy);
-  const legacyKey = storageKey(pubkey);
-  const scoped = storageKey(pubkey, relay);
-  const origRemove = window.localStorage.removeItem;
-  window.localStorage.removeItem = () => {
-    throw new Error("SecurityError");
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.notEqual(window.localStorage.getItem(legacyKey), null);
-  } finally {
-    window.localStorage.removeItem = origRemove;
-  }
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-  assert.equal(window.localStorage.getItem(legacyKey), null);
-  assert.notEqual(window.localStorage.getItem(scoped), null);
-});
-
-test("claimLegacy: legacy delete succeeds but the confirmation read throws — scoped copy retained, no data loss", () => {
-  const pubkey = "pk-stars-migrate-confirmthrow";
-  const relay = "wss://relay-confirmthrow-stars.example.com";
-  const legacy = makeStore({ chc: E(true, 800, 3) });
-  writeChannelStarsStore(pubkey, legacy);
-  const legacyKey = storageKey(pubkey);
-  const scoped = storageKey(pubkey, relay);
-  const origGet = window.localStorage.getItem;
-  const origRemove = window.localStorage.removeItem;
-  let legacyDeleted = false;
-  let threwOnce = false;
-  window.localStorage.removeItem = (k) => {
-    if (k === legacyKey) legacyDeleted = true;
-    return origRemove.call(window.localStorage, k);
-  };
-  window.localStorage.getItem = (k) => {
-    if (k === legacyKey && legacyDeleted && !threwOnce) {
-      threwOnce = true;
-      throw new Error("SecurityError");
+for (const {
+  title,
+  pubkey,
+  relayA,
+  relayB,
+  setupFailure,
+  assertions,
+  assertionsAfterRestore,
+} of [
+  {
+    title: "scoped-write failure returns DEFAULT; relay B still claims legacy",
+    pubkey: "pk-stars-migrate-writefail",
+    relayA: "wss://relay-a-writefail-stars.example.com",
+    relayB: "wss://relay-b-writefail-stars.example.com",
+    setupFailure: (ls, scopedA) => {
+      const orig = ls.setItem;
+      ls.setItem = (k, v) => {
+        if (k === scopedA) throw new Error("QuotaExceededError");
+        return orig.call(ls, k, v);
+      };
+      return () => {
+        ls.setItem = orig;
+      };
+    },
+    assertions: (pubkey, relayA, relayB, legacy) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.equal(
+        window.localStorage.getItem(storageKey(pubkey, relayA)),
+        null,
+      );
+      assert.notEqual(
+        window.localStorage.getItem(storageKey(pubkey)),
+        null,
+        "legacy not yet deleted",
+      );
+      assert.deepEqual(readChannelStarsStore(pubkey, relayB), legacy);
+      assert.equal(
+        window.localStorage.getItem(storageKey(pubkey)),
+        null,
+        "relay B claims+deletes legacy",
+      );
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+    },
+  },
+  {
+    title: "legacy delete no-op rolls back and returns DEFAULT",
+    pubkey: "pk-stars-migrate-delfail",
+    relayA: "wss://relay-delfail-stars.example.com",
+    setupFailure: (ls, _scopedA, legacyKey) => {
+      const orig = ls.removeItem;
+      ls.removeItem = (k) => {
+        if (k === legacyKey) return;
+        return orig.call(ls, k);
+      };
+      return () => {
+        ls.removeItem = orig;
+      };
+    },
+    assertions: (pubkey, relayA) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.equal(
+        window.localStorage.getItem(storageKey(pubkey, relayA)),
+        null,
+      );
+    },
+    assertionsAfterRestore: (pubkey, relayA, _relayB, legacy) => {
+      assert.deepEqual(
+        readChannelStarsStore(pubkey, relayA),
+        legacy,
+        "legacy claimable after storage recovers",
+      );
+      assert.equal(
+        window.localStorage.getItem(storageKey(pubkey)),
+        null,
+        "legacy deleted by healthy claim",
+      );
+    },
+  },
+  {
+    title:
+      "legacy delete + rollback both throw — DEFAULT until storage recovers",
+    pubkey: "pk-stars-migrate-delrollbackthrow",
+    relayA: "wss://relay-delrollbackthrow-stars.example.com",
+    setupFailure: (ls) => {
+      const orig = ls.removeItem;
+      ls.removeItem = () => {
+        throw new Error("SecurityError");
+      };
+      return () => {
+        ls.removeItem = orig;
+      };
+    },
+    assertions: (pubkey, relayA, _relayB, _legacy, _scopedA, legacyKey) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.notEqual(
+        window.localStorage.getItem(legacyKey),
+        null,
+        "legacy still present",
+      );
+    },
+    assertionsAfterRestore: (pubkey, relayA, _relayB, legacy) => {
+      assert.deepEqual(
+        readChannelStarsStore(pubkey, relayA),
+        legacy,
+        "legacy claimable after storage recovers",
+      );
+    },
+  },
+  {
+    title:
+      "legacy delete succeeds; confirmation read throws — scoped copy retained, no data loss",
+    pubkey: "pk-stars-migrate-confirmthrow",
+    relayA: "wss://relay-confirmthrow-stars.example.com",
+    setupFailure: (ls, _scopedA, legacyKey) => {
+      const origGet = ls.getItem;
+      const origRemove = ls.removeItem;
+      let legacyDeleted = false;
+      let threwOnce = false;
+      ls.removeItem = (k) => {
+        if (k === legacyKey) legacyDeleted = true;
+        return origRemove.call(ls, k);
+      };
+      ls.getItem = (k) => {
+        if (k === legacyKey && legacyDeleted && !threwOnce) {
+          threwOnce = true;
+          throw new Error("SecurityError");
+        }
+        return origGet.call(ls, k);
+      };
+      return () => {
+        ls.getItem = origGet;
+        ls.removeItem = origRemove;
+      };
+    },
+    assertions: (pubkey, relayA, _relayB, legacy, scopedA) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.notEqual(window.localStorage.getItem(scopedA), null);
+      assert.equal(window.localStorage.getItem(storageKey(pubkey)), null);
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), legacy);
+    },
+  },
+  {
+    title:
+      "legacy delete throws while probe stays healthy — rollback, DEFAULT, single future claimant",
+    pubkey: "pk-stars-migrate-delthrow-probeok",
+    relayA: "wss://relay-delthrow-probeok-stars.example.com",
+    setupFailure: (ls, _scopedA, legacyKey) => {
+      const orig = ls.removeItem;
+      let thrown = false;
+      ls.removeItem = (k) => {
+        if (k === legacyKey && !thrown) {
+          thrown = true;
+          throw new Error("SecurityError");
+        }
+        return orig.call(ls, k);
+      };
+      return () => {
+        ls.removeItem = orig;
+      };
+    },
+    assertions: (pubkey, relayA, _relayB, legacy, scopedA, legacyKey) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.equal(window.localStorage.getItem(scopedA), null);
+      assert.notEqual(window.localStorage.getItem(legacyKey), null);
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), legacy);
+      assert.equal(window.localStorage.getItem(legacyKey), null);
+    },
+  },
+  {
+    title:
+      "delete and probe both throw — scoped kept but hidden while legacy remains",
+    pubkey: "pk-stars-migrate-delthrow-probethrow",
+    relayA: "wss://relay-delthrow-probethrow-stars.example.com",
+    setupFailure: (ls, _scopedA, legacyKey) => {
+      const origGet = ls.getItem;
+      const origRemove = ls.removeItem;
+      let removeAttempted = false;
+      ls.removeItem = (k) => {
+        if (k === legacyKey) {
+          removeAttempted = true;
+          throw new Error("SecurityError");
+        }
+        return origRemove.call(ls, k);
+      };
+      ls.getItem = (k) => {
+        if (k === legacyKey && removeAttempted)
+          throw new Error("SecurityError");
+        return origGet.call(ls, k);
+      };
+      return () => {
+        ls.getItem = origGet;
+        ls.removeItem = origRemove;
+      };
+    },
+    assertions: (pubkey, relayA, _relayB, _legacy, scopedA) => {
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+      assert.notEqual(window.localStorage.getItem(scopedA), null);
+      assert.deepEqual(readChannelStarsStore(pubkey, relayA), DEFAULT_STORE);
+    },
+    assertionsAfterRestore: (
+      pubkey,
+      relayA,
+      _relayB,
+      legacy,
+      _scopedA,
+      legacyKey,
+    ) => {
+      assert.deepEqual(
+        readChannelStarsStore(pubkey, relayA),
+        legacy,
+        "legacy claimable after storage recovers",
+      );
+      assert.equal(window.localStorage.getItem(legacyKey), null);
+    },
+  },
+]) {
+  test(`claimLegacy: ${title}`, () => {
+    const legacy = makeStore({ ch: E(true, 500, 2) });
+    writeChannelStarsStore(pubkey, legacy);
+    const scopedA = storageKey(pubkey, relayA);
+    const legacyKey = storageKey(pubkey);
+    const restore = setupFailure(window.localStorage, scopedA, legacyKey);
+    try {
+      assertions(pubkey, relayA, relayB, legacy, scopedA, legacyKey);
+    } finally {
+      restore();
     }
-    return origGet.call(window.localStorage, k);
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.notEqual(window.localStorage.getItem(scoped), null);
-  } finally {
-    window.localStorage.getItem = origGet;
-    window.localStorage.removeItem = origRemove;
-  }
-  assert.equal(window.localStorage.getItem(legacyKey), null);
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-});
-
-test("claimLegacy: legacy delete throws while the probe stays healthy — scoped rollback, DEFAULT, single future claimant", () => {
-  const pubkey = "pk-stars-migrate-delthrow-probeok";
-  const relay = "wss://relay-delthrow-probeok-stars.example.com";
-  const legacy = makeStore({ cht: E(true, 600, 2) });
-  writeChannelStarsStore(pubkey, legacy);
-  const legacyKey = storageKey(pubkey);
-  const scoped = storageKey(pubkey, relay);
-  const origRemove = window.localStorage.removeItem;
-  let thrown = false;
-  window.localStorage.removeItem = (k) => {
-    if (k === legacyKey && !thrown) {
-      thrown = true;
-      throw new Error("SecurityError");
-    }
-    return origRemove.call(window.localStorage, k);
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.equal(window.localStorage.getItem(scoped), null);
-    assert.notEqual(window.localStorage.getItem(legacyKey), null);
-  } finally {
-    window.localStorage.removeItem = origRemove;
-  }
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-  assert.equal(window.localStorage.getItem(legacyKey), null);
-});
-
-test("claimLegacy: legacy delete and the catch probe both throw — scoped kept but hidden while legacy remains", () => {
-  const pubkey = "pk-stars-migrate-delthrow-probethrow";
-  const relay = "wss://relay-delthrow-probethrow-stars.example.com";
-  const legacy = makeStore({ chb: E(true, 500, 1) });
-  writeChannelStarsStore(pubkey, legacy);
-  const legacyKey = storageKey(pubkey);
-  const scoped = storageKey(pubkey, relay);
-  const origGet = window.localStorage.getItem;
-  const origRemove = window.localStorage.removeItem;
-  let removeAttempted = false;
-  window.localStorage.removeItem = (k) => {
-    if (k === legacyKey) {
-      removeAttempted = true;
-      throw new Error("SecurityError");
-    }
-    return origRemove.call(window.localStorage, k);
-  };
-  window.localStorage.getItem = (k) => {
-    if (k === legacyKey && removeAttempted) throw new Error("SecurityError");
-    return origGet.call(window.localStorage, k);
-  };
-  try {
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-    assert.notEqual(window.localStorage.getItem(scoped), null);
-    assert.deepEqual(readChannelStarsStore(pubkey, relay), DEFAULT_STORE);
-  } finally {
-    window.localStorage.getItem = origGet;
-    window.localStorage.removeItem = origRemove;
-  }
-  assert.deepEqual(readChannelStarsStore(pubkey, relay), legacy);
-  assert.equal(window.localStorage.getItem(legacyKey), null);
-});
+    assertionsAfterRestore?.(
+      pubkey,
+      relayA,
+      relayB,
+      legacy,
+      scopedA,
+      legacyKey,
+    );
+  });
+}

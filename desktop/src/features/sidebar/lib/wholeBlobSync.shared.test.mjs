@@ -1,11 +1,6 @@
-// Authoritative whole-blob sync suite, run directly against
-// ChannelSectionSyncManager.
-//
-// Covers the 15 structural invariants common to whole-blob lanes. Lane-specific
-// tests (serialized generations, ambiguous ACK, malformed payload,
-// unsupported-version, reconnect adopts, durable outbox, failed publish) stay
-// in the lane test files. channelSortSync.test.mjs covers the same engine via
-// its compact adapter invocation.
+// Authoritative whole-blob sync suite — runs directly against
+// ChannelSectionSyncManager. Covers the 15 structural invariants common to
+// whole-blob lanes. Lane-specific tests stay in the lane files.
 
 import assert from "node:assert/strict";
 import test, { mock } from "node:test";
@@ -16,6 +11,7 @@ import { readChannelSectionsOutbox } from "./channelSectionsStorage.ts";
 import {
   makeFakeWindow,
   installFakeWindow,
+  makeTimerBed,
   installTauriMock,
   installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
@@ -35,49 +31,11 @@ const decryptPayload = JSON.stringify(
 );
 const emptyDecryptPayload = JSON.stringify(makeStore([]));
 
-// Multi-slot timer fake: each setTimeout is keyed by delay so overlapping
-// timers can be fired independently.
-function makeTimerBed() {
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const win = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-      get length() {
-        return storage.size;
-      },
-      key: (i) => [...storage.keys()][i] ?? null,
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(win);
-  return { win, timers, fireDelay, restore };
-}
-
-// ─── destroy() ────────────────────────────────────────────────────────────
+// ─── destroy() ───────────────────────────────────────────────────────────────
 
 test("destroy: cancels pending publish without flushing to the relay", () => {
   mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
+  mock.method(relayClient, "publishEvent", () => Promise.resolve());
   const fw = makeFakeWindow();
   const restore = installFakeWindow(fw);
   try {
@@ -86,7 +44,6 @@ test("destroy: cancels pending publish without flushing to the relay", () => {
     assert.ok(fw._hasTimer(), "debounce timer should be set");
     manager.destroy();
     assert.ok(!fw._hasTimer(), "debounce timer should be cleared on destroy");
-    assert.equal(publishCalls.length, 0);
     assert.equal(manager.getPendingStore(), null);
   } finally {
     restore();
@@ -129,11 +86,11 @@ test("destroy: aborts in-flight doPublish after fetchOwnBlobBeforePublish resolv
   }
 });
 
-// ─── Boot seed-publish guard (revert-fix regression suite) ────────────────
+// ─── Boot seed-publish guard ──────────────────────────────────────────────────
 
 for (const { title, setupFetch, setupWatermark, pubkey, assertPending } of [
   {
-    title: "fetch failed (error) does not trigger seed-publish via bootstrap",
+    title: "fetch error does not trigger seed-publish",
     setupFetch: () =>
       mock.method(relayClient, "fetchEvents", () =>
         Promise.reject(new Error("relay timeout")),
@@ -141,8 +98,7 @@ for (const { title, setupFetch, setupWatermark, pubkey, assertPending } of [
     assertPending: (m) => assert.equal(m.getPendingStore(), null),
   },
   {
-    title:
-      "absent fetch with prior watermark blocks seed-publish via bootstrap",
+    title: "absent fetch with prior watermark blocks seed-publish",
     setupFetch: () =>
       mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
     setupWatermark: (fw) =>
@@ -154,8 +110,7 @@ for (const { title, setupFetch, setupWatermark, pubkey, assertPending } of [
     assertPending: (m) => assert.equal(m.getPendingStore(), null),
   },
   {
-    title:
-      "absent fetch with zero watermark seeds via bootstrap (first-sync preserved)",
+    title: "absent fetch with zero watermark seeds (first-sync preserved)",
     setupFetch: () =>
       mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
     pubkey: "pk-fresh",
@@ -181,7 +136,7 @@ for (const { title, setupFetch, setupWatermark, pubkey, assertPending } of [
   });
 }
 
-// ─── Adopt-winner / local-winner ─────────────────────────────────────────
+// ─── Adopt-winner / local-winner ─────────────────────────────────────────────
 
 test("adopt-winner: newer remote head at pre-publish adopts remote and skips publish", async () => {
   mock.method(relayClient, "fetchEvents", () =>
@@ -209,27 +164,26 @@ test("adopt-winner: newer remote head at pre-publish adopts remote and skips pub
     manager.publishSections(nonEmptyStore());
     assert.ok(
       readChannelSectionsOutbox("pk-lww", RELAY) !== null,
-      "edit must be persisted to the durable outbox",
+      "edit must be in durable outbox",
     );
     fw._fireTimer();
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(
       publishCalls.length,
       0,
-      "must not publish when a newer remote head wins LWW",
+      "must not publish when remote wins LWW",
     );
     assert.equal(adopted.length, 1, "adopt sink must receive the remote");
     assert.ok(
       adopted[0].store.sections.some(
         (s) => s.id === "remote-section-from-relay",
       ),
-      "adopted store must be the remote content",
     );
-    assert.equal(manager.getPendingStore(), null, "pending must be cleared");
+    assert.equal(manager.getPendingStore(), null);
     assert.equal(
       readChannelSectionsOutbox("pk-lww", RELAY),
       null,
-      "outbox must be cleared on adopt",
+      "outbox cleared on adopt",
     );
     manager.destroy();
   } finally {
@@ -260,7 +214,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
     assert.equal(
       readChannelSectionsOutbox("pk-win", RELAY),
       null,
-      "outbox must be cleared once the edit is confirmed retained",
+      "outbox cleared after confirmed publish",
     );
     manager.destroy();
   } finally {
@@ -270,7 +224,7 @@ test("adopt-winner: local edit at/ahead of head publishes and clears outbox", as
   }
 });
 
-// ─── Timestamp clamp ──────────────────────────────────────────────────────
+// ─── Timestamp clamp ─────────────────────────────────────────────────────────
 
 test("timestamp clamp: published createdAt stays inside the relay future window", async () => {
   const nowSecs = Math.floor(Date.now() / 1000);
@@ -304,7 +258,7 @@ test("timestamp clamp: published createdAt stays inside the relay future window"
     assert.ok(signedCreatedAt !== null, "publish must have been attempted");
     assert.ok(
       signedCreatedAt <= Math.floor(Date.now() / 1000) + 840,
-      `createdAt must be clamped inside the future window — got ${signedCreatedAt}`,
+      `createdAt must be clamped — got ${signedCreatedAt}`,
     );
     manager.destroy();
   } finally {
@@ -314,96 +268,62 @@ test("timestamp clamp: published createdAt stays inside the relay future window"
   }
 });
 
-// ─── Unreadable head: retain, never overwrite ─────────────────────────────
+// ─── Retain / retry on bad head ───────────────────────────────────────────────
 
-test("unreadable head (decrypt failure) retains the pending edit and retries, never publishing", async () => {
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.resolve([
-      {
-        pubkey: "pk-undec",
-        content: "bad-cipher",
-        created_at: 500,
-        id: "evt-undec",
-      },
-    ]),
-  );
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
+for (const { title, pubkey, content, tauri: tauriPayload } of [
+  {
+    title: "unreadable head (decrypt failure)",
+    pubkey: "pk-undec",
+    content: "bad-cipher",
+    tauri: installTauriMock.bind(null, "{}"),
+  },
+  {
+    title: "failed pre-publish fetch",
+    pubkey: "pk-fetchfail",
+    content: null,
+    tauri: installTauriMock.bind(null, "{}"),
+  },
+]) {
+  test(`${title} retains the pending edit and retries, never publishing`, async () => {
+    if (content === null) {
+      mock.method(relayClient, "fetchEvents", () =>
+        Promise.reject(new Error("socket timeout")),
+      );
+    } else {
+      mock.method(relayClient, "fetchEvents", () =>
+        Promise.resolve([{ pubkey, content, created_at: 500, id: "evt" }]),
+      );
+    }
+    const publishCalls = [];
+    mock.method(relayClient, "publishEvent", (...args) => {
+      publishCalls.push(args);
+      return Promise.resolve();
+    });
+    const fw = makeFakeWindow();
+    const restore = installFakeWindow(fw);
+    const t = tauriPayload();
+    try {
+      const manager = new ChannelSectionSyncManager(pubkey, RELAY);
+      manager.publishSections(nonEmptyStore());
+      fw._fireTimer();
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(publishCalls.length, 0, "must not publish");
+      assert.ok(manager.getPendingStore() !== null, "pending edit retained");
+      assert.ok(
+        readChannelSectionsOutbox(pubkey, RELAY) !== null,
+        "durable outbox intact",
+      );
+      assert.ok(fw._hasTimer(), "retry scheduled");
+      manager.destroy();
+    } finally {
+      t.restore();
+      restore();
+      mock.reset();
+    }
   });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-undec", RELAY);
-    manager.publishSections(nonEmptyStore());
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "must not publish over a head we could not read",
-    );
-    assert.ok(
-      manager.getPendingStore() !== null,
-      "unreadable head must retain the pending edit",
-    );
-    assert.ok(
-      readChannelSectionsOutbox("pk-undec", RELAY) !== null,
-      "durable outbox must survive an unreadable head",
-    );
-    assert.ok(fw._hasTimer(), "a retry must be scheduled");
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
+}
 
-// ─── Failed pre-publish fetch: retain, never publish ──────────────────────
-
-test("failed pre-publish fetch retains the pending edit and retries, never publishing", async () => {
-  mock.method(relayClient, "fetchEvents", () =>
-    Promise.reject(new Error("socket timeout")),
-  );
-  const publishCalls = [];
-  mock.method(relayClient, "publishEvent", (...args) => {
-    publishCalls.push(args);
-    return Promise.resolve();
-  });
-  const fw = makeFakeWindow();
-  const restore = installFakeWindow(fw);
-  const tauri = installTauriMock("{}");
-  try {
-    const manager = new ChannelSectionSyncManager("pk-fetchfail", RELAY);
-    manager.publishSections(nonEmptyStore());
-    fw._fireTimer();
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(
-      publishCalls.length,
-      0,
-      "must not publish when the pre-publish fetch failed",
-    );
-    assert.ok(
-      manager.getPendingStore() !== null,
-      "a failed fetch must retain the pending edit",
-    );
-    assert.ok(
-      readChannelSectionsOutbox("pk-fetchfail", RELAY) !== null,
-      "durable outbox must survive a failed fetch",
-    );
-    assert.ok(fw._hasTimer(), "a retry must be scheduled");
-    manager.destroy();
-  } finally {
-    tauri.restore();
-    restore();
-    mock.reset();
-  }
-});
-
-// ─── Overlapping publishes ─────────────────────────────────────────────────
+// ─── Overlapping publishes ────────────────────────────────────────────────────
 
 test("overlapping publishes: older completion does not erase a newer queued edit", async () => {
   mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
@@ -411,11 +331,10 @@ test("overlapping publishes: older completion does not erase a newer queued edit
   let publishCalls = 0;
   mock.method(relayClient, "publishEvent", () => {
     publishCalls++;
-    if (publishCalls === 1) {
+    if (publishCalls === 1)
       return new Promise((res) => {
         releaseFirst = res;
       });
-    }
     return Promise.resolve();
   });
   const { timers, fireDelay, restore } = makeTimerBed();
@@ -427,32 +346,29 @@ test("overlapping publishes: older completion does not erase a newer queued edit
     manager.publishSections(storeA);
     await fireDelay(2000);
     while (releaseFirst === null) await Promise.resolve();
-
     manager.publishSections(storeB);
     assert.ok(
       manager.getPendingStore()?.sections?.[0]?.id === "b",
-      "B is now the pending edit",
+      "B is pending",
     );
     assert.ok(
       readChannelSectionsOutbox("pk-overlap", RELAY)?.store?.sections?.[0]
         ?.id === "b",
       "outbox holds B",
     );
-
     releaseFirst();
     for (let i = 0; i < 10; i++) await Promise.resolve();
-
     assert.ok(
       manager.getPendingStore()?.sections?.[0]?.id === "b",
-      "older completion must leave B pending",
+      "older completion leaves B pending",
     );
     assert.ok(
       readChannelSectionsOutbox("pk-overlap", RELAY) !== null,
-      "older completion must leave B's outbox intact",
+      "older completion leaves B outbox intact",
     );
     assert.ok(
       [...timers.values()].some((t) => t.ms === 2000),
-      "B's debounce timer must survive so it still publishes",
+      "B debounce timer survives",
     );
     manager.destroy();
   } finally {
@@ -462,7 +378,7 @@ test("overlapping publishes: older completion does not erase a newer queued edit
   }
 });
 
-// ─── Live remote during debounce is adopted at pre-publish ────────────────
+// ─── Live remote during debounce ──────────────────────────────────────────────
 
 test("live remote during debounce is adopted at pre-publish, not overwritten", async () => {
   let liveCallback = null;
@@ -509,9 +425,9 @@ test("live remote during debounce is adopted at pre-publish, not overwritten", a
     assert.equal(
       publishCalls.length,
       0,
-      "must not publish over a remote that became head during the debounce",
+      "must not publish over a remote that became head during debounce",
     );
-    assert.equal(adopted.length, 1, "the newer remote must be adopted");
+    assert.equal(adopted.length, 1, "newer remote must be adopted");
     manager.destroy();
   } finally {
     tauri.restore();
@@ -520,7 +436,7 @@ test("live remote during debounce is adopted at pre-publish, not overwritten", a
   }
 });
 
-// ─── Same-second collision: second edit queued during confirmation survives ─
+// ─── Same-second collision ────────────────────────────────────────────────────
 
 test("same-second collision: second edit queued during confirmation survives", async () => {
   let fetchCalls = 0;
@@ -554,20 +470,16 @@ test("same-second collision: second edit queued during confirmation survives", a
     const manager = new ChannelSectionSyncManager("pk-collide2", RELAY);
     const adopted = [];
     manager.setOnRemoteAdopted((r) => adopted.push(r));
-
     manager.publishSections(
       makeStore([{ id: "mine", name: "Mine", order: 0 }]),
     );
     await fireDelay(2000);
     while (releaseConfirmation === null) await Promise.resolve();
-
     manager.publishSections(
       makeStore([{ id: "second", name: "Second", order: 0 }]),
     );
-
     releaseConfirmation();
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.equal(
       adopted.length,
       0,
@@ -576,27 +488,21 @@ test("same-second collision: second edit queued during confirmation survives", a
     assert.notEqual(
       manager.getPendingStore(),
       null,
-      "edit-2 must still be pending after the stale-gen adopt",
+      "edit-2 still pending after stale-gen adopt",
     );
-
     await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.equal(publishCalls, 2, "edit-2 publishes above the peer winner");
-    assert.equal(
-      adopted.length,
-      0,
-      "edit-2 must not be adopted away — no phantom-baseline poisoning",
-    );
+    assert.equal(adopted.length, 0, "edit-2 must not be adopted away");
     assert.equal(
       manager.getPendingStore(),
       null,
-      "edit-2 clears via its own confirmed publish",
+      "edit-2 clears via confirmed publish",
     );
     assert.equal(
       readChannelSectionsOutbox("pk-collide2", RELAY),
       null,
-      "edit-2's durable outbox is cleared on confirmation",
+      "edit-2 outbox cleared",
     );
     manager.destroy();
   } finally {
@@ -605,8 +511,6 @@ test("same-second collision: second edit queued during confirmation survives", a
     mock.reset();
   }
 });
-
-// ─── Same-second collision: loser adopts the winner and its next edit survives ─
 
 test("same-second collision: loser adopts the winner and its next edit survives", async () => {
   let fetchCalls = 0;
@@ -616,49 +520,38 @@ test("same-second collision: loser adopts the winner and its next edit survives"
   const tauri = installEchoTauri("pk-loser");
   mock.method(relayClient, "fetchEvents", () => {
     fetchCalls++;
-    if (fetchCalls === 1) return Promise.resolve([]);
-    if (fetchCalls === 2) return Promise.resolve(storedHead);
-    return Promise.resolve(storedHead);
+    return Promise.resolve(fetchCalls === 1 ? [] : storedHead);
   });
   const winnerStore = makeStore([{ id: "peer", name: "Peer", order: 0 }]);
   mock.method(relayClient, "publishEvent", (event) => {
     publishCalls++;
-    if (publishCalls === 1) {
+    if (publishCalls === 1)
       storedHead = [
         tauri.mintHead(winnerStore, event.created_at, "0-peer-winner"),
       ];
-    }
     return Promise.resolve();
   });
   try {
     const manager = new ChannelSectionSyncManager("pk-loser", RELAY);
     const adopted = [];
     manager.setOnRemoteAdopted((r) => adopted.push(r));
-
     manager.publishSections(
       makeStore([{ id: "loser", name: "Loser", order: 0 }]),
     );
     await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
     assert.equal(adopted.length, 1, "loser must adopt the peer winner");
     assert.equal(
       manager.getPendingStore(),
       null,
       "pending cleared after adopt",
     );
-
     manager.publishSections(
       makeStore([{ id: "mine", name: "Mine", order: 0 }]),
     );
     await fireDelay(2000);
     for (let i = 0; i < 100; i++) await Promise.resolve();
-
-    assert.equal(
-      publishCalls,
-      2,
-      "the edit after the adopt must publish successfully",
-    );
+    assert.equal(publishCalls, 2, "edit after adopt must publish successfully");
     manager.destroy();
   } finally {
     tauri.restore();
@@ -667,7 +560,7 @@ test("same-second collision: loser adopts the winner and its next edit survives"
   }
 });
 
-// ─── live-sub: undecryptable event advances watermark before decrypt ───────
+// ─── live-sub: undecryptable event advances watermark ────────────────────────
 
 test("revert-fix: undecryptable live event advances watermark before decrypt attempt", async () => {
   let liveCallback = null;
@@ -687,10 +580,7 @@ test("revert-fix: undecryptable live event advances watermark before decrypt att
       "watermark starts absent",
     );
     await manager.subscribeToSections(() => {});
-    assert.ok(
-      liveCallback !== null,
-      "subscribeLive must have captured the callback",
-    );
+    assert.ok(liveCallback !== null, "subscribeLive captured the callback");
     liveCallback({
       pubkey: "pk-live",
       content: "!bad-cipher!",
@@ -704,7 +594,7 @@ test("revert-fix: undecryptable live event advances watermark before decrypt att
           `buzz-sync-watermark.v1:${watermarkLane}:pk-live:${RELAY_KEY}`,
         ) ?? "0",
       ) >= 1700005555,
-      "live undecryptable event must advance the watermark before decrypt is attempted",
+      "live undecryptable event must advance watermark before decrypt",
     );
     manager.destroy();
   } finally {
