@@ -1,4 +1,4 @@
-import { Activity, Bot, Folders, Inbox, Zap } from "lucide-react";
+import { Activity, Bot, Folders, Inbox, Store, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { SidebarProjectsSection } from "@/features/sidebar/ui/SidebarProjectsSection";
@@ -20,6 +20,7 @@ type SidebarSelectedView =
   | "agents"
   | "workflows"
   | "pulse"
+  | "market"
   | "projects";
 
 type AppSidebarPinnedHeaderProps = {
@@ -42,6 +43,7 @@ type AppSidebarPrimaryMenuProps = {
   homeBadgeCount: number;
   onSelectAgents: () => void;
   onSelectHome: () => void;
+  onSelectMarket: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
@@ -92,6 +94,7 @@ export function AppSidebarPrimaryMenu({
   homeBadgeCount,
   onSelectAgents,
   onSelectHome,
+  onSelectMarket,
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
@@ -140,6 +143,18 @@ export function AppSidebarPrimaryMenu({
               </SidebarMenuButton>
             </SidebarMenuItem>
           </FeatureGate>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              data-testid="open-market-view"
+              isActive={selectedView === "market"}
+              onClick={onSelectMarket}
+              tooltip="Market"
+              type="button"
+            >
+              <Store className="h-4 w-4" />
+              <SidebarMenuLabel>Market</SidebarMenuLabel>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <FeatureGate feature="projects">
             <SidebarMenuItem>
               <SidebarMenuButton

@@ -104,6 +104,18 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goMarket = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/market",
+          search: { scenario: "finite" },
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goProfile = React.useCallback(
     (pubkey: string, behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -464,6 +476,7 @@ export function useAppNavigation() {
     goEditWorkflow,
     goForumPost,
     goHome,
+    goMarket,
     goNewMessage,
     goNewWorkflow,
     goNewWorkflowForChannel,

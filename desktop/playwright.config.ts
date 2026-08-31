@@ -124,6 +124,7 @@ export default defineConfig({
         "**/project-empty-state-alignment.spec.ts",
         "**/project-inbox.spec.ts",
         "**/projects-v3-screenshots.spec.ts",
+        "**/market-prototype-screenshots.spec.ts",
         "**/project-issue-comments.spec.ts",
         "**/project-pr-review.spec.ts",
         "**/persona-model-combobox-screenshots.spec.ts",
