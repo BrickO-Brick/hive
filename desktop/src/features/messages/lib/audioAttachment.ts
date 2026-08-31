@@ -27,13 +27,17 @@ export function isVoiceNoteAttachment(
   entry: AudioAttachmentImetaEntry | undefined,
 ): boolean {
   const mime = entry?.m?.toLowerCase() ?? "";
-  if (mime.startsWith("audio/")) return true;
   const filename = entry?.filename?.toLowerCase() ?? "";
-  return (
-    mime === "video/mp4" &&
-    filename.startsWith("voice-note-") &&
-    filename.endsWith(".mp4")
-  );
+  if (!filename.startsWith("voice-note-")) return false;
+  if (mime.startsWith("audio/")) return true;
+  return mime === "video/mp4" && filename.endsWith(".mp4");
+}
+
+function isAudioAttachment(
+  entry: AudioAttachmentImetaEntry | undefined,
+): boolean {
+  const mime = entry?.m?.toLowerCase() ?? "";
+  return mime.startsWith("audio/") || isVoiceNoteAttachment(entry);
 }
 
 export function resolveAudioAttachment(
@@ -41,7 +45,7 @@ export function resolveAudioAttachment(
   href: string | undefined,
   childText: string,
 ): ResolvedAudioAttachment | null {
-  if (!href || !entry || !isVoiceNoteAttachment(entry)) return null;
+  if (!href || !entry || !isAudioAttachment(entry)) return null;
 
   return {
     duration: entry.duration,

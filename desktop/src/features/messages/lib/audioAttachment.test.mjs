@@ -50,6 +50,28 @@ test("resolveAudioAttachment accepts audio imeta and preserves metadata", () => 
   );
 });
 
+test("generic audio renders without triggering voice-note exclusivity", () => {
+  const entry = {
+    duration: 42,
+    filename: "meeting.mp3",
+    m: "audio/mpeg",
+  };
+  assert.equal(isVoiceNoteAttachment(entry), false);
+  assert.deepEqual(
+    resolveAudioAttachment(
+      entry,
+      "https://relay.example/media/meeting.mp3",
+      "meeting.mp3",
+    ),
+    {
+      duration: 42,
+      filename: "meeting.mp3",
+      href: "https://relay.example/media/meeting.mp3",
+      size: undefined,
+    },
+  );
+});
+
 test("resolveAudioAttachment leaves non-audio files on the generic path", () => {
   assert.equal(
     resolveAudioAttachment(
