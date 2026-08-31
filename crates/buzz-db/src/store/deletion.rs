@@ -92,6 +92,7 @@ pub const PURGE_SCOPED_TABLES: &[&str] = &[
     "scheduled_workflow_fires",
     "workflow_runs",
     "push_wake_outbox",
+    "project_revision_heads",
     "join_policy_acceptances",
     "moderation_reports",
     "subscriptions",

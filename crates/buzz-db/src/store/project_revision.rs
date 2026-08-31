@@ -503,6 +503,68 @@ mod tests {
                 .unwrap();
         assert_eq!(stored_actor, admin.public_key().to_bytes());
 
+        let add_before_promotion = revision_event(
+            &owner,
+            &coordinate,
+            &remove.id.to_hex(),
+            ProjectRevisionOperation::AddRelatedChannel,
+            related_b,
+        );
+        let parsed = ProjectRevision::parse(&add_before_promotion).unwrap();
+        assert_eq!(
+            db.apply_project_revision(community, &add_before_promotion, &parsed)
+                .await
+                .unwrap()
+                .status,
+            ProjectRevisionApplyStatus::Applied
+        );
+        let promoted_home =
+            project_event_with_related(&owner, "shared", related_b, &[], replacement_timestamp + 1);
+        assert!(
+            db.replace_parameterized_event(community, &promoted_home, "shared", None)
+                .await
+                .expect("promote an effective related channel to Project home")
+                .1
+        );
+        let reset_home =
+            project_event_with_related(&owner, "shared", home, &[], replacement_timestamp + 2);
+        assert!(
+            db.replace_parameterized_event(community, &reset_home, "shared", None)
+                .await
+                .expect("restore the original Project home")
+                .1
+        );
+
+        let deletion_time = reset_home.created_at.as_secs() + 10;
+        assert!(db
+            .soft_delete_by_coordinate(
+                community,
+                KIND_PROJECT as i32,
+                owner.public_key().to_bytes().as_slice(),
+                "shared",
+                deletion_time as i64,
+            )
+            .await
+            .unwrap());
+        let revision_head_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM project_revision_heads \
+             WHERE community_id=$1 AND project_owner=$2 AND project_d_tag=$3",
+        )
+        .bind(community.as_uuid())
+        .bind(owner.public_key().to_bytes().as_slice())
+        .bind("shared")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(revision_head_count, 0);
+        let recreated = project_event_with_related(&owner, "shared", home, &[], deletion_time + 1);
+        assert!(
+            db.replace_parameterized_event(community, &recreated, "shared", None)
+                .await
+                .expect("recreate deleted Project without stale revision state")
+                .1
+        );
+
         sqlx::query("UPDATE channels SET deleted_at=NOW() WHERE community_id=$1 AND id=$2")
             .bind(community.as_uuid())
             .bind(home)
@@ -512,7 +574,7 @@ mod tests {
         let after_delete = revision_event(
             &admin,
             &coordinate,
-            &remove.id.to_hex(),
+            &recreated.id.to_hex(),
             ProjectRevisionOperation::AddRelatedChannel,
             related_b,
         );

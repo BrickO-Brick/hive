@@ -17,6 +17,7 @@ import { getChannelMembers } from "@/shared/api/tauri";
 import { canManageProjectChannels } from "@/features/projects/ui/ProjectChannelManagement";
 
 export function ProjectsCategoryCreateDialogs({
+  channelCandidateProjects,
   channelOpen,
   editableProjects,
   identityPubkey,
@@ -25,6 +26,7 @@ export function ProjectsCategoryCreateDialogs({
   ownerControlAgentPubkeyFor,
   repositoryOpen,
 }: {
+  channelCandidateProjects: Project[];
   channelOpen: boolean;
   editableProjects: Project[];
   identityPubkey?: string;
@@ -35,7 +37,7 @@ export function ProjectsCategoryCreateDialogs({
 }) {
   const { goChannel, goProject } = useAppNavigation();
   const homeRosterQueries = useQueries({
-    queries: editableProjects.map((project) => {
+    queries: channelCandidateProjects.map((project) => {
       const homeChannelId = project.projectChannelId;
       return {
         enabled:
@@ -51,7 +53,7 @@ export function ProjectsCategoryCreateDialogs({
       };
     }),
   });
-  const channelProjects = editableProjects.filter((project, index) => {
+  const channelProjects = channelCandidateProjects.filter((project, index) => {
     const role = homeRosterQueries[index]?.data?.find(
       (member) => member.pubkey.toLowerCase() === identityPubkey?.toLowerCase(),
     )?.role;

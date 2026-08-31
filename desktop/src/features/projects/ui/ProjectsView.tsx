@@ -648,7 +648,8 @@ export function ProjectsView() {
   );
 
   const contextPanelProps = {
-    canCreateTarget: editableProjects.length > 0,
+    canAddChannelTarget: projects.some((project) => project.projectChannelId),
+    canAddRepositoryTarget: editableProjects.length > 0,
     filter,
     issues: contextIssues,
     onAddChannel: () => setCreateChannelOpen(true),
@@ -779,6 +780,7 @@ export function ProjectsView() {
             projects={projects}
           />
           <ProjectsCategoryCreateDialogs
+            channelCandidateProjects={projects}
             channelOpen={createChannelOpen}
             editableProjects={editableProjects}
             identityPubkey={currentPubkey}

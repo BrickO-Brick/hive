@@ -873,6 +873,45 @@ pub async fn soft_delete_by_coordinate(
 ) -> Result<bool> {
     let deletion_created_at = DateTime::from_timestamp(deletion_created_at_secs, 0)
         .ok_or(DbError::InvalidTimestamp(deletion_created_at_secs))?;
+    if kind == buzz_core::kind::KIND_PROJECT as i32 {
+        let mut tx = pool.begin().await?;
+        let lock_key = crate::replaceable::event_replacement_lock_key(
+            community_id,
+            kind,
+            pubkey,
+            Some(d_tag.as_bytes()),
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *tx)
+            .await?;
+        let result = sqlx::query(
+            "UPDATE events SET deleted_at = NOW() \
+             WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 AND deleted_at IS NULL \
+             AND created_at <= $5",
+        )
+        .bind(community_id.as_uuid())
+        .bind(kind)
+        .bind(pubkey)
+        .bind(d_tag)
+        .bind(deletion_created_at)
+        .execute(&mut *tx)
+        .await?;
+        let deleted = result.rows_affected() > 0;
+        if deleted {
+            sqlx::query(
+                "DELETE FROM project_revision_heads \
+                 WHERE community_id=$1 AND project_owner=$2 AND project_d_tag=$3",
+            )
+            .bind(community_id.as_uuid())
+            .bind(pubkey)
+            .bind(d_tag)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        return Ok(deleted);
+    }
     let result = sqlx::query(
         "UPDATE events SET deleted_at = NOW() \
          WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 AND deleted_at IS NULL \

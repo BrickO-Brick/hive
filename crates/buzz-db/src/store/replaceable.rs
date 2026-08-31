@@ -267,7 +267,11 @@ async fn replace_parameterized_event_in_transaction_impl(
         .fetch_optional(&mut **tx)
         .await?;
         if let Some((base_id, revision_id, effective)) = head {
-            if base_id != revision_id && incoming != effective {
+            let effective_for_home: Vec<_> = effective
+                .into_iter()
+                .filter(|channel| Some(*channel) != home)
+                .collect();
+            if existing.is_some() && base_id != revision_id && incoming != effective_for_home {
                 return Ok(ParameterizedReplaceResult::new(
                     event,
                     received_at,
