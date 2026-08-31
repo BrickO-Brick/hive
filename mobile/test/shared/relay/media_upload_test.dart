@@ -1222,6 +1222,64 @@ void main() {
     });
   });
 
+  group('uploadVoiceNote', () {
+    test('uploads the packaged voice note as a video MP4 audio card', () async {
+      final sourceDirectory = await Directory.systemTemp.createTemp(
+        'voice_note_source_',
+      );
+      final packagedDirectory = await Directory.systemTemp.createTemp(
+        'voice_note_packaged_',
+      );
+      final source = File('${sourceDirectory.path}/voice-note-test.m4a');
+      final packaged = File('${packagedDirectory.path}/voice-note-test.mp4');
+      await source.writeAsBytes(const [1, 2, 3]);
+      await packaged.writeAsBytes(const [4, 5, 6]);
+      var packagedSourcePath = '';
+      final service = MediaUploadService(
+        baseUrl: 'https://relay.example',
+        nsec: nostr.Keys.generate().nsec,
+        httpClient: http_testing.MockClient((request) async {
+          expect(request.headers['Content-Type'], 'video/mp4');
+          expect(request.bodyBytes, const [4, 5, 6]);
+          return http.Response(
+            jsonEncode({
+              'url': 'https://relay.example/media/voice-note.mp4',
+              'sha256':
+                  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+              'size': request.bodyBytes.length,
+              'type': 'video/mp4',
+              'uploaded': 1,
+            }),
+            HttpStatus.ok,
+          );
+        }),
+        pickGalleryVideo: () async => null,
+        pickGalleryImage: () async => null,
+        packageVoiceNoteForUpload: (path) async {
+          packagedSourcePath = path;
+          return packaged.path;
+        },
+      );
+
+      try {
+        final descriptor = await service.uploadVoiceNote(
+          XFile(source.path, mimeType: 'audio/mp4'),
+          duration: const Duration(milliseconds: 3250),
+        );
+
+        expect(packagedSourcePath, source.path);
+        expect(descriptor.type, 'video/mp4');
+        expect(descriptor.filename, 'voice-note-test.mp4');
+        expect(descriptor.duration, 3.25);
+        expect(descriptor.toMarkdownImage(), '![audio](${descriptor.url})');
+        expect(await packaged.exists(), isFalse);
+      } finally {
+        await sourceDirectory.delete(recursive: true);
+        await packagedDirectory.delete(recursive: true);
+      }
+    });
+  });
+
   group('pickAndUploadVideo', () {
     // Helper: build ftyp header bytes for a given brand.
     Uint8List buildFtypHeader(String brand) {

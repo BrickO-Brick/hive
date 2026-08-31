@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-enum MessageMediaKind { image, video }
+enum MessageMediaKind { image, video, audio }
 
 @immutable
 class ImetaEntry {
@@ -10,6 +10,9 @@ class ImetaEntry {
   final String? thumb;
   final String? image;
   final String? alt;
+  final double? duration;
+  final String? filename;
+  final int? size;
 
   const ImetaEntry({
     required this.url,
@@ -18,9 +21,14 @@ class ImetaEntry {
     this.thumb,
     this.image,
     this.alt,
+    this.duration,
+    this.filename,
+    this.size,
   });
 
   bool get isVideo => mimeType?.startsWith('video/') == true;
+
+  bool get isAudio => mimeType?.startsWith('audio/') == true;
 
   String? get posterUrl => image ?? thumb;
 
@@ -47,6 +55,9 @@ Map<String, ImetaEntry> parseImetaTags(List<List<String>> tags) {
     String? thumb;
     String? image;
     String? alt;
+    double? duration;
+    String? filename;
+    int? size;
 
     for (final part in tag.skip(1)) {
       final separator = part.indexOf(' ');
@@ -66,6 +77,12 @@ Map<String, ImetaEntry> parseImetaTags(List<List<String>> tags) {
           image = value;
         case 'alt':
           alt = value;
+        case 'duration':
+          duration = double.tryParse(value);
+        case 'filename':
+          filename = value;
+        case 'size':
+          size = int.tryParse(value);
       }
     }
 
@@ -77,6 +94,9 @@ Map<String, ImetaEntry> parseImetaTags(List<List<String>> tags) {
       thumb: thumb,
       image: image,
       alt: alt,
+      duration: duration,
+      filename: filename,
+      size: size,
     );
   }
   return byUrl;
@@ -85,11 +105,19 @@ Map<String, ImetaEntry> parseImetaTags(List<List<String>> tags) {
 MessageMediaKind? classifyMediaUrl(String url, {ImetaEntry? imeta}) {
   final mimeType = imeta?.mimeType;
   if (mimeType != null) {
+    final filename = imeta?.filename?.toLowerCase();
+    if (mimeType == 'video/mp4' &&
+        filename != null &&
+        filename.startsWith('voice-note-') &&
+        filename.endsWith('.mp4')) {
+      return MessageMediaKind.audio;
+    }
     // An imeta MIME type is authoritative. The native video player chooses
     // whether the device can decode the specific codec/container; rejecting
     // every non-MP4 video here prevents it from even trying.
     if (mimeType.startsWith('video/')) return MessageMediaKind.video;
     if (mimeType.startsWith('image/')) return MessageMediaKind.image;
+    if (mimeType.startsWith('audio/')) return MessageMediaKind.audio;
   }
 
   final path = (Uri.tryParse(url)?.path ?? url).toLowerCase();
@@ -98,6 +126,9 @@ MessageMediaKind? classifyMediaUrl(String url, {ImetaEntry? imeta}) {
   }
   if (_imageExtensions.any(path.endsWith)) {
     return MessageMediaKind.image;
+  }
+  if (path.endsWith('.m4a') || path.endsWith('.aac')) {
+    return MessageMediaKind.audio;
   }
   return null;
 }

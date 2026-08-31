@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
@@ -9,11 +10,14 @@ import 'package:buzz/features/channels/channel.dart';
 import 'package:buzz/features/channels/channels_provider.dart';
 import 'package:buzz/features/channels/message_content.dart';
 import 'package:buzz/features/channels/media_viewer_page.dart';
+import 'package:buzz/features/channels/voice_note_waveform.dart';
+import 'package:buzz/features/channels/voice_note_recording.dart';
 import 'package:buzz/shared/deeplink/deep_link.dart';
 import 'package:buzz/shared/deeplink/pending_deep_link_provider.dart';
 import 'package:buzz/shared/emoji/emoji_only.dart';
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/theme/theme.dart';
+import 'package:buzz/shared/widgets/buzz_loading_indicator.dart';
 
 Widget _testable(
   Widget child, {
@@ -45,6 +49,59 @@ Widget _testable(
 void _setSurfaceSize(WidgetTester tester, Size size) {
   tester.view.devicePixelRatio = 1.0;
   tester.view.physicalSize = size;
+}
+
+class _FakeVoiceNotePlayer extends VoiceNotePlayerController {
+  VoiceNotePlaybackState _state = const VoiceNotePlaybackState();
+
+  @override
+  VoiceNotePlaybackState get state => _state;
+
+  double speed = 1;
+
+  @override
+  Future<void> loadLocal(
+    String path, {
+    required Duration fallbackDuration,
+  }) async {
+    _state = VoiceNotePlaybackState(duration: fallbackDuration);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> loadRemote(
+    String url, {
+    required Map<String, String> headers,
+    required Duration fallbackDuration,
+  }) => loadLocal(url, fallbackDuration: fallbackDuration);
+
+  @override
+  Future<void> seek(Duration position) async {
+    _state = _state.copyWith(position: position);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setSpeed(double value) async => speed = value;
+
+  @override
+  Future<void> toggle() async {
+    _state = _state.copyWith(isPlaying: !_state.isPlaying);
+    notifyListeners();
+  }
+}
+
+class _LoadingVoiceNotePlayer extends _FakeVoiceNotePlayer {
+  @override
+  VoiceNotePlaybackState get state =>
+      const VoiceNotePlaybackState(isLoading: true);
+
+  @override
+  Future<void> loadRemote(
+    String url, {
+    required Map<String, String> headers,
+    required Duration fallbackDuration,
+  }) async {}
 }
 
 Finder _imagePreview(String imageUrl) {
@@ -171,6 +228,21 @@ class _TestChannelsNotifier extends ChannelsNotifier {
 }
 
 void main() {
+  test('wide voice-note waveforms distribute bars across their full width', () {
+    const width = 320.0;
+    const sampleCount = 48;
+    final layout = voiceNoteWaveformBarLayout(
+      width: width,
+      sampleCount: sampleCount,
+    );
+
+    expect(layout.barWidth, 3);
+    expect(
+      (layout.barWidth * sampleCount) + (layout.gap * (sampleCount - 1)),
+      closeTo(width, 0.001),
+    );
+  });
+
   group('MessageContent', () {
     testWidgets('forwards text alignment to markdown rendering', (
       tester,
@@ -817,6 +889,176 @@ void main() {
     });
 
     group('media attachments', () {
+      testWidgets('uses the shared Buzz loader while a voice note loads', (
+        tester,
+      ) async {
+        const url = 'https://example.com/media/loading-voice-note.mp4';
+
+        await tester.pumpWidget(
+          _testable(
+            const MessageContent(
+              content: '![audio]($url)',
+              tags: [
+                [
+                  'imeta',
+                  'url $url',
+                  'm video/mp4',
+                  'duration 3.0',
+                  'filename voice-note-loading.mp4',
+                ],
+              ],
+            ),
+            overrides: [
+              voiceNotePlayerFactoryProvider.overrideWithValue(
+                _LoadingVoiceNotePlayer.new,
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+
+        expect(find.byType(BuzzLoadingIndicator), findsOneWidget);
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(find.bySemanticsLabel('Loading voice note'), findsOneWidget);
+      });
+
+      testWidgets('renders an audio imeta attachment as a voice note card', (
+        tester,
+      ) async {
+        const url = 'https://example.com/media/voice-note.mp4';
+        final player = _FakeVoiceNotePlayer();
+        final hapticCalls = <MethodCall>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'HapticFeedback.vibrate') hapticCalls.add(call);
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        await tester.pumpWidget(
+          _testable(
+            const MessageContent(
+              content: '![audio]($url)',
+              tags: [
+                [
+                  'imeta',
+                  'url $url',
+                  'm video/mp4',
+                  'duration 3.0',
+                  'filename voice-note-test.mp4',
+                ],
+              ],
+            ),
+            overrides: [
+              voiceNotePlayerFactoryProvider.overrideWithValue(() => player),
+            ],
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          find.byKey(const ValueKey('voice-note-attachment:$url')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('voice-note-play-pause')),
+          findsOneWidget,
+        );
+        final cardFinder = find.byKey(
+          const ValueKey('voice-note-attachment:$url'),
+        );
+        final rateFinder = find.byKey(
+          const ValueKey('voice-note-playback-rate'),
+        );
+        final card = tester.widget<Container>(cardFinder);
+        expect(card.padding, const EdgeInsets.all(Grid.twelve));
+        expect(
+          tester.getTopLeft(find.byType(VoiceNoteWaveform)).dx,
+          tester
+              .getTopLeft(find.byKey(const ValueKey('voice-note-duration')))
+              .dx,
+        );
+        final leadingInset =
+            tester
+                .getTopLeft(find.byKey(const ValueKey('voice-note-play-pause')))
+                .dx -
+            tester.getTopLeft(cardFinder).dx;
+        final trailingInset =
+            tester.getTopRight(cardFinder).dx -
+            tester.getTopRight(rateFinder).dx;
+        expect(leadingInset, Grid.twelve + 1);
+        expect(trailingInset, leadingInset);
+        expect(rateFinder, findsOneWidget);
+        final rateSize = tester.getSize(rateFinder);
+        final ratePadding = tester
+            .widgetList<Padding>(
+              find.descendant(of: rateFinder, matching: find.byType(Padding)),
+            )
+            .singleWhere(
+              (widget) =>
+                  widget.padding ==
+                  const EdgeInsets.symmetric(
+                    horizontal: Grid.xxs,
+                    vertical: Grid.half + Grid.quarter,
+                  ),
+            );
+        expect(
+          ratePadding.padding,
+          const EdgeInsets.symmetric(
+            horizontal: Grid.xxs,
+            vertical: Grid.half + Grid.quarter,
+          ),
+        );
+        final rateValueFinder = find.byKey(
+          const ValueKey('voice-note-playback-rate-value'),
+        );
+        hapticCalls.clear();
+        await tester.tap(find.byKey(const ValueKey('voice-note-play-pause')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(hapticCalls.last.arguments, 'HapticFeedbackType.selectionClick');
+        expect(
+          tester
+              .widget<VoiceNoteWaveform>(find.byType(VoiceNoteWaveform))
+              .progress,
+          greaterThan(0),
+        );
+
+        final waveformRect = tester.getRect(find.byType(VoiceNoteWaveform));
+        await tester.dragFrom(
+          Offset(
+            waveformRect.left + waveformRect.width * 0.25,
+            waveformRect.center.dy,
+          ),
+          Offset(waveformRect.width * 0.5, 0),
+        );
+        await tester.pump();
+        expect(player.state.position.inMilliseconds, closeTo(2250, 80));
+
+        expect(tester.widget<Text>(rateValueFinder).data, '1×');
+        hapticCalls.clear();
+        await tester.tap(rateFinder);
+        await tester.pump();
+        expect(tester.widget<Text>(rateValueFinder).data, '1.5×');
+        expect(player.speed, 1.5);
+        expect(hapticCalls.last.arguments, 'HapticFeedbackType.selectionClick');
+        expect(tester.getSize(rateFinder), rateSize);
+        await tester.tap(rateFinder);
+        await tester.pump();
+        expect(tester.widget<Text>(rateValueFinder).data, '2×');
+        expect(tester.getSize(rateFinder), rateSize);
+        await tester.tap(rateFinder);
+        await tester.pump();
+        expect(tester.widget<Text>(rateValueFinder).data, '.5×');
+        expect(tester.getSize(rateFinder), rateSize);
+      });
+
       testWidgets(
         'renders image markdown as a media preview and opens viewer',
         (tester) async {

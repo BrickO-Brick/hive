@@ -29,6 +29,7 @@ import 'channels_provider.dart';
 import 'media_viewer_page.dart';
 import 'message_content/link_normalizer.dart';
 import 'message_media.dart';
+import 'voice_note_attachment.dart';
 
 part 'message_content/media_carousel.dart';
 part 'message_content/token_pill.dart';
@@ -323,6 +324,17 @@ class MessageContent extends HookConsumerWidget {
 
   Widget _buildMedia(BuildContext context, String imageUrl, ImetaEntry? imeta) {
     final mediaKind = classifyMediaUrl(imageUrl, imeta: imeta);
+    if (mediaKind == MessageMediaKind.audio) {
+      return Padding(
+        padding: const EdgeInsets.only(top: Grid.half),
+        child: VoiceNoteAttachment.remote(
+          url: imageUrl,
+          duration: Duration(
+            milliseconds: ((imeta?.duration ?? 0) * 1000).round(),
+          ),
+        ),
+      );
+    }
     if (mediaKind == MessageMediaKind.video) {
       return _MessageVideoPreview(
         url: imageUrl,

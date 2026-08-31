@@ -6,8 +6,7 @@ class ComposeBar extends HookConsumerWidget {
   final String? hintText;
   final ComposeBarOnSend onSend;
 
-  /// Runs immediately before the editor requests focus, allowing a parent to
-  /// prepare focus-dependent layout (for example, following a thread tail).
+  /// Lets a parent prepare its layout before the editor requests focus.
   final VoidCallback? onFocusRequested;
 
   /// Parent-owned if set; otherwise internally created and disposed.
@@ -39,14 +38,9 @@ class ComposeBar extends HookConsumerWidget {
       () => controller.text,
     );
     useEffect(() => controller.dispose, [controller]);
-    // Draft identity is part of the effect key because an in-place account or
-    // community switch can leave this composer mounted. Reload that identity's
-    // draft so old text cannot be persisted into the new identity's store.
     final draftKey = composeDraftKey(channelId, threadHeadId: threadHeadId);
     final draftRevision = useRef(0);
-    final draftIdentity =
-        '${ref.watch(relayConfigProvider).baseUrl}'
-        ':${ref.watch(myPubkeyProvider) ?? 'anon'}';
+    final draftIdentity = _composerDraftIdentity(ref);
     final isComposerExpanded = useState(false);
     final androidImeTransitionStarted = useState(
       defaultTargetPlatform != TargetPlatform.android,
@@ -80,6 +74,17 @@ class ComposeBar extends HookConsumerWidget {
     final uploadProgress = useState(0.0);
     final uploadGeneration = useRef(0);
     final activeUploadCancellation = useRef<UploadCancellationToken?>(null);
+    final voiceNote = _useComposerVoiceNote(
+      context: context,
+      ref: ref,
+      focusNode: focusNode,
+      isComposerExpanded: isComposerExpanded,
+      showFormatting: showFormatting,
+      attachmentSurface: attachmentSurface,
+      uploadError: uploadError,
+      draftRevision: draftRevision,
+      attachments: attachments,
+    );
     _useComposeDraftLifecycle(
       ref: ref,
       controller: controller,
@@ -136,13 +141,14 @@ class ComposeBar extends HookConsumerWidget {
           if (defaultTargetPlatform == TargetPlatform.android) {
             androidImeTransitionStarted.value = false;
           }
+          voiceNote.onKeyboardHidden();
           collapseComposer();
           focusNode.unfocus();
         },
       );
       WidgetsBinding.instance.addObserver(observer);
       return () => WidgetsBinding.instance.removeObserver(observer);
-    }, [appView, focusNode]);
+    }, [appView, focusNode, voiceNote.isPreparing]);
     final resolvedHint =
         hintText ??
         (channelName.isNotEmpty ? 'Message #$channelName' : 'Message\u2026');
@@ -756,23 +762,16 @@ class ComposeBar extends HookConsumerWidget {
       focusNode.requestFocus();
     }
 
-    // ----- Widget tree ----------------------------------------------------
-
     void chooseAttachment(
       Future<void> Function() choose, {
       String? errorMessage,
-    }) {
-      attachmentSurface.value = _AttachmentSurface.closed;
-      unawaited(() async {
-        try {
-          await choose();
-        } catch (error) {
-          if (context.mounted) {
-            uploadError.value = errorMessage ?? _formatUploadError(error);
-          }
-        }
-      }());
-    }
+    }) => _chooseComposerAttachment(
+      context,
+      attachmentSurface,
+      uploadError,
+      choose,
+      errorMessage: errorMessage,
+    );
 
     void toggleAttachments() {
       attachmentSurface.value = switch (attachmentSurface.value) {
@@ -809,6 +808,7 @@ class ComposeBar extends HookConsumerWidget {
                   kind: _PendingAttachmentKind.video,
                 );
               }),
+              onVoiceNote: voiceNote.start,
               onFiles: () => chooseAttachment(() {
                 final service = ref.read(mediaUploadServiceProvider);
                 return pickThenQueue(
@@ -893,6 +893,7 @@ class ComposeBar extends HookConsumerWidget {
             kind: _PendingAttachmentKind.video,
           );
         }),
+        onVoiceNote: voiceNote.start,
         onFiles: () => chooseAttachment(() {
           final service = ref.read(mediaUploadServiceProvider);
           return pickThenQueue(
@@ -920,6 +921,7 @@ class ComposeBar extends HookConsumerWidget {
     final hasPendingUploads = uploadingCount.value > 0;
     return _ComposerDockFrame(
       expansionAnimation: composerExpansionController,
+      forceFullWidth: _voiceNoteFullWidth(voiceNote, attachments.value),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -943,6 +945,7 @@ class ComposeBar extends HookConsumerWidget {
               attachmentSurface.value = _AttachmentSurface.closed;
             },
             child: _ComposeBarLayout(
+              voiceNoteRecorder: voiceNote.recorder,
               attachments: attachments.value,
               onRemoveAttachment: removeAttachment,
               uploadError: uploadError.value,

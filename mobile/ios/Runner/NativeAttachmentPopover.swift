@@ -234,6 +234,18 @@ final class NativeAttachmentPopoverViewController:
     )
     stack.addArrangedSubview(
       makeNativeAttachmentMenuButton(
+        title: "Voice note",
+        symbol: "mic",
+        action: { [weak self] in
+          self?.finish(
+            method: "recordVoiceNote",
+            notifyBeforeDismissal: true
+          )
+        }
+      )
+    )
+    stack.addArrangedSubview(
+      makeNativeAttachmentMenuButton(
         title: "Files",
         symbol: "doc",
         action: { [weak self] in
@@ -1037,7 +1049,8 @@ final class NativeAttachmentPopoverViewController:
   private func finish(
     method: String,
     arguments: Any? = nil,
-    temporaryPaths: [String] = []
+    temporaryPaths: [String] = [],
+    notifyBeforeDismissal: Bool = false
   ) {
     guard !isFinishing else {
       Self.removeTemporaryFiles(temporaryPaths)
@@ -1050,13 +1063,20 @@ final class NativeAttachmentPopoverViewController:
     selectionTask?.cancel()
     selectionTask = nil
     stopCamera()
+    if notifyBeforeDismissal {
+      channel.invokeMethod(method, arguments: arguments) { _ in
+        Self.removeTemporaryFiles(temporaryPaths)
+      }
+    }
     dismiss(animated: true) { [weak self] in
       guard let self else {
         Self.removeTemporaryFiles(temporaryPaths)
         return
       }
-      self.channel.invokeMethod(method, arguments: arguments) { _ in
-        Self.removeTemporaryFiles(temporaryPaths)
+      if !notifyBeforeDismissal {
+        self.channel.invokeMethod(method, arguments: arguments) { _ in
+          Self.removeTemporaryFiles(temporaryPaths)
+        }
       }
       self.notifyDismissalIfNeeded()
     }
