@@ -427,11 +427,14 @@ mod tests {
     }
 
     async fn pool_acquire_records_success_timeout_and_error_with_wait_time() {
+        // This timeout also bounds the pool's initial connection. Leave enough
+        // headroom for a cold PostgreSQL start under the lane's eight workers;
+        // the assertion below cares about classification, not a 75 ms budget.
         let database_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_owned()); // sadscan:disable np.postgres.1 -- local test-only credentials
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
-            .acquire_timeout(Duration::from_millis(75))
+            .acquire_timeout(Duration::from_secs(1))
             .connect(&database_url)
             .await
             .expect("connect size-one test pool");
