@@ -1,24 +1,21 @@
-//! NIP-FI federated-identity authorization — canonical assertion verifier and
-//! contracts (Phase A, PR 1).
+//! NIP-FI federated-identity authorization — assertion verifier, JWKS runtime,
+//! startup validation, and discovery (Phase A, PRs 1–3).
 //!
-//! This module is the closed, provider-neutral contract layer at the root of
-//! the NIP-FI dependency graph. It defines:
+//! ## Module layout
 //!
-//! - the multi-issuer assertion-policy [`config`] and the two deterministic
-//!   semantic contract identities ([`AssertionPolicyId`],
-//!   [`TransportContractId`]);
-//! - the origin-sealed normalized [`VerifiedAssertion`] result (`FI-INV-16`);
-//! - the single [`FederatedAssertionVerifier`] (`FI-INV-16` canonical verifier);
-//! - the privacy-preserving four-class [`DenialClass`] wire contract
-//!   (`FI-INV-13`).
+//! | Module | Introduced | Responsibility |
+//! |--------|-----------|----------------|
+//! | [`assertion`] | PR 1 | Sealed [`VerifiedAssertion`] result and its fields |
+//! | [`config`] | PR 1 | Multi-issuer policy, contract IDs, size/time bounds |
+//! | [`denial`] | PR 1 | Privacy-preserving four-class denial wire contract |
+//! | [`verifier`] | PR 1 | Single canonical [`FederatedAssertionVerifier`] |
+//! | [`jwks`] | PR 3 | JWKS fetch, cache, and [`ProductionJwksSource`] |
+//! | [`startup`] | PR 3 | Startup validation gate ([`validate_nip_fi_config`]) |
+//! | [`discovery`] | PR 3 | NIP-11 [`FederatedIdentityDiscovery`] object |
 //!
-//! It has no dependencies on other NIP-FI PRs. It defines no database schema,
-//! migration, runtime JWKS fetching, binding resolution, enrollment, or
-//! request/proof binding — those belong to later PRs. Identity is issuer-
-//! qualified `(iss, sub)` throughout: the `sub` claim is the fixed subject
-//! coordinate and `nostr_pubkey` is the fixed key claim, never configurable,
-//! so no deployment can seal a mutable attribute as identity. Issuer URL and
-//! audience remain deployment configuration.
+//! Identity is issuer-qualified `(iss, sub)` throughout. No database schema,
+//! binding resolution, or request/proof binding is defined here — those belong
+//! to PRs 4–5.
 
 /// The exact client-attached header field ([NIP-FI.md](../../../docs/nips/NIP-FI.md),
 /// "Client-attached transport"). `Authorization` remains reserved for NIP-98.
@@ -27,6 +24,9 @@ pub const CLIENT_ATTACHED_HEADER: &str = "Nostr-Federated-Identity";
 pub mod assertion;
 pub mod config;
 pub mod denial;
+pub mod discovery;
+pub mod jwks;
+pub mod startup;
 pub mod verifier;
 
 pub use assertion::{
@@ -39,4 +39,11 @@ pub use config::{
     NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 pub use denial::DenialClass;
+pub use discovery::{
+    AssertionFreshnessDiscovery, FederatedIdentityDiscovery, FreshnessClassDiscovery,
+};
+pub use jwks::{
+    HttpJwksFetcher, IssuerJwksConfig, JwksFetchError, JwksFetcher, ProductionJwksSource,
+};
+pub use startup::{validate_nip_fi_config, NipFiMode, NipFiStartupError};
 pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, IssuerKeySource, VerifierError};
