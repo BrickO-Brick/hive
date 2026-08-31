@@ -25,22 +25,29 @@ mkdirSync(output, { recursive: true });
 writeFileSync(path.join(output, "variant.txt"), process.env.VITE_BUZZ_BESTIE);
 await new Promise((resolve) => setTimeout(resolve, 100));
 const observed = readFileSync(path.join(output, "variant.txt"), "utf8");
-writeFileSync(process.env.BUZZ_TEST_RESULT, JSON.stringify({ output, observed }));
+writeFileSync(
+  process.env.BUZZ_TEST_RESULT,
+  JSON.stringify({ args, output, observed }),
+);
 `,
 );
 
-function packageVariant(variant, result) {
+function packageVariant(variant, result, runnerArguments = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [wrapper, "build"], {
-      cwd: desktopRoot,
-      env: {
-        ...process.env,
-        BUZZ_TAURI_CLI_ENTRYPOINT: fakeCli,
-        BUZZ_TEST_RESULT: result,
-        VITE_BUZZ_BESTIE: variant,
+    const child = spawn(
+      process.execPath,
+      [wrapper, "build", ...runnerArguments],
+      {
+        cwd: desktopRoot,
+        env: {
+          ...process.env,
+          BUZZ_TAURI_CLI_ENTRYPOINT: fakeCli,
+          BUZZ_TEST_RESULT: result,
+          VITE_BUZZ_BESTIE: variant,
+        },
+        stdio: "inherit",
       },
-      stdio: "inherit",
-    });
+    );
     child.once("error", reject);
     child.once("exit", (code) =>
       code === 0 ? resolve() : reject(new Error(`wrapper exited ${code}`)),
@@ -64,4 +71,27 @@ test("opposite Tauri package variants own private frontend artifacts", async () 
   assert.equal(oss.observed, "0");
   assert.equal(internal.observed, "1");
   assert.notEqual(oss.output, internal.output);
+});
+
+test("private config precedes Cargo runner arguments", async () => {
+  const result = path.join(
+    tmpdir(),
+    `buzz-tauri-runner-arguments-${process.pid}.json`,
+  );
+  await packageVariant("0", result, [
+    "--config",
+    '{"bundle":{"active":false}}',
+    "--",
+    "--locked",
+  ]);
+
+  const invocation = JSON.parse(readFileSync(result, "utf8"));
+  const delimiterIndex = invocation.args.indexOf("--");
+  const privateConfigIndex = invocation.args.lastIndexOf("--config");
+  assert.ok(privateConfigIndex < delimiterIndex);
+  assert.equal(invocation.args[delimiterIndex + 1], "--locked");
+  assert.equal(
+    JSON.parse(invocation.args[privateConfigIndex + 1]).build.frontendDist,
+    invocation.output,
+  );
 });

@@ -43,7 +43,11 @@ export function runTauriCommand(args) {
   const outputOverride = JSON.stringify({ build: { frontendDist } });
 
   try {
-    return runTauri([...args, "--config", outputOverride], {
+    const delimiterIndex = args.indexOf("--");
+    const configIndex = delimiterIndex === -1 ? args.length : delimiterIndex;
+    const tauriArgs = [...args];
+    tauriArgs.splice(configIndex, 0, "--config", outputOverride);
+    return runTauri(tauriArgs, {
       env: { BUZZ_PROTECTED_BUILD_OUTPUT: frontendDist },
     });
   } finally {
