@@ -394,7 +394,6 @@ jobs:
             -p buzz-relay \
             -p buzz-test-client \
             --lib \
-            --bin buzz-relay \
             --test e2e_event_reminder \
             --archive-file target/ci/backend-integration-tests.tar.zst
           postgres_package_args=()
