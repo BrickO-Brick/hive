@@ -498,6 +498,93 @@ async fn spawn_stub_with_held_sticky_refresh(tok: &'static str) -> (Stub, Refres
     (stub, gate)
 }
 
+/// Spawn a stub that holds the FIRST refresh request and returns
+/// `invalid_grant` (RefreshRejected) on release. Subsequent requests return
+/// immediately as `invalid_grant` too, so every caller using this stub gets
+/// `RefreshRejected`. Used by the headless adoption test to make A's lock
+/// tenure long enough that B can deterministically snapshot gen=0 before A
+/// writes the attempt sidecar.
+#[cfg(unix)]
+async fn spawn_stub_with_held_reject_refresh() -> (Stub, RefreshGate) {
+    let code_grants = Arc::new(AtomicU64::new(0));
+    let refresh_grants = Arc::new(AtomicU64::new(0));
+    let request_received = Arc::new(tokio::sync::Notify::new());
+    let proceed = Arc::new(tokio::sync::Notify::new());
+
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let disco_base = base.clone();
+
+    let discovery = move || {
+        let base = disco_base.clone();
+        async move {
+            Json(json!({
+                "authorization_endpoint": format!("{base}/authorize"),
+                "token_endpoint": format!("{base}/token"),
+            }))
+        }
+    };
+
+    let code_for_token = code_grants.clone();
+    let refresh_for_token = refresh_grants.clone();
+    let received_for_handler = request_received.clone();
+    let proceed_for_handler = proceed.clone();
+    let first_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let app = Router::new()
+        .route("/disco/a", get(discovery.clone()))
+        .route("/disco/b", get(discovery))
+        .route(
+            "/token",
+            post(move |Form(form): Form<TokenForm>| {
+                let code_grants = code_for_token.clone();
+                let refresh_grants = refresh_for_token.clone();
+                let received = received_for_handler.clone();
+                let proceed = proceed_for_handler.clone();
+                let first_released = first_released.clone();
+                async move {
+                    if form.grant_type == "refresh_token" {
+                        refresh_grants.fetch_add(1, Ordering::SeqCst);
+                        if !first_released.swap(true, Ordering::SeqCst) {
+                            received.notify_one();
+                            proceed.notified().await;
+                        }
+                        return (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            Json(json!({ "error": "invalid_grant" })),
+                        );
+                    }
+                    let n = code_grants.fetch_add(1, Ordering::SeqCst) + 1;
+                    (
+                        axum::http::StatusCode::OK,
+                        Json(json!({
+                            "access_token": format!("browser-token-{n}"),
+                            "refresh_token": "browser-refresh",
+                            "expires_in": 3600,
+                        })),
+                    )
+                }
+            }),
+        );
+
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let stub = Stub {
+        base,
+        code_grants,
+        refresh_grants,
+    };
+    let gate = RefreshGate {
+        request_received,
+        proceed,
+    };
+    (stub, gate)
+}
+
 fn config(stub: &Stub, disco_path: &str, cache_dir: &std::path::Path) -> PkceOAuthConfig {
     PkceOAuthConfig {
         discovery_url: format!("{}{disco_path}", stub.base),
@@ -2572,14 +2659,19 @@ async fn test_crossprocess_two_coordinators_race_to_one_grant_and_cache() {
 #[tokio::test]
 async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected() {
     // Two real headless processes on one key. The cache holds an expired
-    // token with a dead refresh. Both workers are released simultaneously
-    // into a lock race: one wins the lock, runs the dead refresh, gets
-    // `RefreshRejected`, writes the attempt sidecar, and releases the lock;
-    // the other was waiting, acquires the lock after the leader, sees that
-    // the attempt generation advanced past its snapshot, and adopts
-    // `RefreshRejected` without re-running the refresh — ONE refresh grant
+    // token with a dead refresh. A wins the lock and calls the stub; the
+    // stub holds A's response so B can deterministically snapshot gen=0
+    // and queue on the lock before A completes. Once B's snapshot marker
+    // fires, A is released: it gets `invalid_grant`, writes the attempt
+    // sidecar (gen=1), and releases the lock. B acquires the lock, sees
+    // gen=1 > snap=0, and adopts `RefreshRejected` — ONE refresh grant
     // total across both processes.
-    let stub = spawn_stub(true).await; // reject_refresh = true
+    //
+    // This replaces the prior simultaneous-start design, which was not
+    // deterministic: the instant-reject stub could complete A before B
+    // ever snapshotted, giving B snap=1 and causing a spurious second
+    // refresh grant.
+    let (stub, gate) = spawn_stub_with_held_reject_refresh().await;
     let cache = TempDir::new().unwrap();
     let cfg = config(&stub, "/disco/a", cache.path());
 
@@ -2595,37 +2687,37 @@ async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected(
         }),
     );
 
-    let ready_a = cache.path().join("a.ready");
-    let ready_b = cache.path().join("b.ready");
-    let start = cache.path().join("start");
+    let snapshot_b = cache.path().join("b.snapshot");
 
-    let worker_a = spawn_worker(
-        &cfg,
-        cache.path(),
-        "headless",
-        "approve",
-        "a",
-        &[
-            ("AUTH_WORKER_READY_MARKER", ready_a.as_path()),
-            ("AUTH_WORKER_START_MARKER", start.as_path()),
-        ],
-    );
+    // ---- Phase 1: spawn A. It acquires the lock and immediately calls the
+    //              stub's refresh endpoint; the stub holds the response.
+    let worker_a = spawn_worker(&cfg, cache.path(), "headless", "approve", "a", &[]);
+
+    // ---- Phase 2: wait until the stub has received A's refresh request.
+    //              This is an in-process await — no polling or timing.
+    //              Once the stub is holding A's request, A owns the lock.
+    gate.wait_for_request().await;
+
+    // ---- Phase 3: spawn B with SNAPSHOT_MARKER. B starts, reads the
+    //              attempt sidecar (gen=0, absent), emits its snapshot
+    //              event, and then queues on the lock behind A.
     let worker_b = spawn_worker(
         &cfg,
         cache.path(),
         "headless",
         "approve",
         "b",
-        &[
-            ("AUTH_WORKER_READY_MARKER", ready_b.as_path()),
-            ("AUTH_WORKER_START_MARKER", start.as_path()),
-        ],
+        &[("AUTH_WORKER_SNAPSHOT_MARKER", snapshot_b.as_path())],
     );
 
-    // Both processes are ready; release them simultaneously into the lock race.
-    wait_for_marker(&ready_a, "worker A ready").await;
-    wait_for_marker(&ready_b, "worker B ready").await;
-    std::fs::write(&start, b"go").unwrap();
+    // ---- Phase 4: wait for B's snapshot marker. Proves B holds snap=0
+    //              and is queued behind A on the lock.
+    wait_for_marker(&snapshot_b, "worker B snapshot").await;
+
+    // ---- Phase 5: release A. Stub returns invalid_grant; A records
+    //              RefreshRejected with gen=1 and releases the lock. B
+    //              acquires the lock, sees gen=1 > snap=0, and adopts.
+    gate.release();
 
     let (out_a, out_b) = tokio::join!(worker_a.join(), worker_b.join());
 
