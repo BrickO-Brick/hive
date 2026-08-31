@@ -130,17 +130,19 @@ test("options expand in place without replacing the people list", async () => {
   assert.match(options.parentElement?.className ?? "", /(?:^|\s)w-24(?:\s|$)/);
   assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
   assert.equal(
-    view.queryByRole("switch", { name: "Automatically mention agents" }),
+    view.queryByRole("switch", {
+      name: "Automatically mention agents in threads",
+    }),
     null,
   );
 
   fireEvent.click(options);
   assert.equal(options.getAttribute("aria-expanded"), "true");
   const toggle = view.getByRole("switch", {
-    name: "Automatically mention agents",
+    name: "Automatically mention agents in threads",
   });
   assert.equal(toggle.getAttribute("data-state"), "checked");
-  assert.ok(view.getByText("After you mention them once"));
+  assert.ok(view.getByText("After you mention them once in a thread"));
   assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
 
   fireEvent.click(toggle);
@@ -171,7 +173,9 @@ test("options expand in place without replacing the people list", async () => {
     "false",
   );
   assert.equal(
-    view.queryByRole("switch", { name: "Automatically mention agents" }),
+    view.queryByRole("switch", {
+      name: "Automatically mention agents in threads",
+    }),
     null,
   );
   assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
@@ -211,7 +215,7 @@ test("automatic selection loads the setting once, then updates it in place", asy
     "true",
   );
   const toggle = view.getByRole("switch", {
-    name: "Automatically mention agents",
+    name: "Automatically mention agents in threads",
   });
   const settings = view.getByTestId("mention-options-settings");
   assert.equal(toggle.getAttribute("data-state"), "unchecked");

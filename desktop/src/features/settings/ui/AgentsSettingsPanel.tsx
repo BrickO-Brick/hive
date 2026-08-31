@@ -31,17 +31,17 @@ export function AgentsSettingsPanel() {
                 className="font-medium text-foreground"
                 htmlFor="settings-automatic-agent-mentions-switch"
               >
-                Automatically mention agents
+                Automatically mention agents in threads
               </label>
               <p
                 className="mt-0.5 text-sm text-muted-foreground/70"
                 data-settings-subcopy
               >
-                After you mention them once
+                After you mention them once in a thread
               </p>
             </div>
             <Switch
-              aria-label="Automatically mention agents"
+              aria-label="Automatically mention agents in threads"
               checked={automaticallyMentionAgents}
               id="settings-automatic-agent-mentions-switch"
               onCheckedChange={setKeepMentionedAgentsPinned}
