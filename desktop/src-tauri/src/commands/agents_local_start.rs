@@ -102,6 +102,20 @@ pub(in crate::commands) async fn start_local_agent_pairs_with_preflight(
     summarize_from_disk(app, record, &runtimes)
 }
 
+// Shared continuation for no-journal Start and fresh create-start. Validate
+// current state without replacing the captured values consumed by spawn.
+fn revalidate_first_start_scope(
+    state: &AppState,
+    captured_relay_url: &str,
+    captured_owner: &str,
+) -> Result<(), String> {
+    crate::relay::bind_expected_relay_scope(
+        Some(captured_relay_url),
+        crate::relay::relay_ws_url_with_override(state),
+    )?;
+    crate::relay::assert_expected_signer(Some(captured_owner), &workspace_owner_hex(state)?)
+}
+
 pub(in crate::commands) async fn start_local_agent_with_preflight(
     app: &AppHandle,
     state: &AppState,
@@ -194,13 +208,10 @@ pub(in crate::commands) async fn start_local_agent_with_preflight(
     // Recovery adds another suspension even when there is no journal yet.
     // Revalidate the captured pair/owner before the legacy first-start path;
     // never let that await retarget or authorize a stale workspace action.
-    crate::relay::assert_expected_relay_scope(
-        Some(workspace_relay_url.as_str()),
-        &crate::relay::relay_ws_url_with_override(state),
-    )?;
-    crate::relay::assert_expected_signer(
-        Some(workspace_owner.as_str()),
-        &workspace_owner_hex(state)?,
+    revalidate_first_start_scope(
+        state,
+        workspace_relay_url.as_str(),
+        workspace_owner.as_str(),
     )?;
     let _store_guard = state
         .managed_agents_store_lock
@@ -259,4 +270,43 @@ pub(in crate::commands) async fn start_local_agent_with_preflight(
         &load_teams(app).unwrap_or_default(),
         &crate::managed_agents::load_global_agent_config(app).unwrap_or_default(),
     )
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    // This exercises the production continuation (including its WS getter),
+    // not just the generic relay helper. State is ephemeral: no app setup,
+    // identity resolution, keyring, files, network or child process is used.
+    #[test]
+    fn first_start_continuation_accepts_unchanged_ws_and_wss_communities() {
+        let state = crate::app_state::build_app_state();
+        let owner = workspace_owner_hex(&state).unwrap();
+        for relay in ["ws://localhost:3000", "wss://community.example"] {
+            *state.relay_url_override.lock().unwrap() = Some(relay.to_owned());
+            revalidate_first_start_scope(&state, relay, &owner).unwrap();
+        }
+    }
+
+    #[test]
+    fn first_start_continuation_rejects_community_changed_during_recovery() {
+        let state = crate::app_state::build_app_state();
+        let owner = workspace_owner_hex(&state).unwrap();
+        *state.relay_url_override.lock().unwrap() = Some("wss://other.example".to_owned());
+        let error =
+            revalidate_first_start_scope(&state, "wss://community.example", &owner).unwrap_err();
+        assert!(error.contains("active community changed"), "{error}");
+    }
+
+    #[test]
+    fn first_start_continuation_rejects_owner_changed_during_recovery() {
+        let state = crate::app_state::build_app_state();
+        let owner = workspace_owner_hex(&state).unwrap();
+        *state.relay_url_override.lock().unwrap() = Some("wss://community.example".to_owned());
+        *state.keys.lock().unwrap() = Keys::generate();
+        let error =
+            revalidate_first_start_scope(&state, "wss://community.example", &owner).unwrap_err();
+        assert!(error.contains("active identity changed"), "{error}");
+    }
 }
