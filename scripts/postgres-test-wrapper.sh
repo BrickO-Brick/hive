@@ -48,9 +48,11 @@ database="buzz_nt_${database_hash}"
 schema_mode="desired"
 source_database="$BUZZ_POSTGRES_DESIRED_TEMPLATE"
 
+# A leading separator lets the same patterns cover root and nested test paths.
+qualified_test_name="::$NEXTEST_TEST_NAME"
 # These tests own the migration lifecycle and intentionally begin empty.
-case "$NEXTEST_TEST_NAME" in
-  migration::postgres_tests::* | migration_schema_* | *::migration_schema_*)
+case "$qualified_test_name" in
+  *::migration::postgres_tests::* | *::migration_schema_*)
     schema_mode="migration"
     source_database="template0"
     ;;

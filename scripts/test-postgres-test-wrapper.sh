@@ -54,6 +54,10 @@ run_case() {
 run_case migration_schema_root_level migration template0
 run_case module::migration_schema_nested migration template0
 run_case migration::postgres_tests::legacy migration template0
+run_case \
+  runtime::migration::postgres_tests::run_migrations_applies_consolidated_initial_schema_on_fresh_database \
+  migration \
+  template0
 run_case ordinary_database_test desired desired_template
 
 echo "PostgreSQL wrapper schema-mode checks passed"
