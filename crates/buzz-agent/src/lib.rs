@@ -327,7 +327,6 @@ async fn build_agent(
                         ext,
                         Arc::new(client),
                         info,
-                        None,
                     )
                     .await;
                 prompt

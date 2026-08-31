@@ -44,6 +44,108 @@ pub enum Provider {
     DatabricksV2,
 }
 
+/// Optional visibility filter for the Databricks model catalog.
+///
+/// Each comma-separated pattern is trimmed and matched against the complete,
+/// case-sensitive model id. Only `*` (zero or more characters) and `?` (one
+/// character) have wildcard semantics; all other characters are literals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabricksModelFilter {
+    patterns: Vec<String>,
+}
+
+impl DatabricksModelFilter {
+    /// Parse `DATABRICKS_MODEL_FILTER`-style input.
+    ///
+    /// Unset or whitespace-only input disables filtering. A nonblank value must
+    /// contain at least one nonblank comma-separated pattern.
+    pub fn parse(raw: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+
+        if raw.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let patterns: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|pattern| !pattern.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if patterns.is_empty() {
+            return Err(
+                "config: DATABRICKS_MODEL_FILTER must contain at least one nonblank pattern".into(),
+            );
+        }
+
+        Ok(Some(Self { patterns }))
+    }
+
+    /// Return whether the complete model id matches at least one pattern.
+    pub fn matches(&self, model_id: &str) -> bool {
+        self.patterns
+            .iter()
+            .any(|pattern| glob_matches(pattern, model_id))
+    }
+}
+
+/// Match one full-string `*`/`?` pattern without treating any other character
+/// as syntax. The inputs are converted to Unicode scalar values so `?` means
+/// one character rather than one UTF-8 byte.
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let mut pattern_index = 0;
+    let mut value_index = 0;
+    let mut star_index = None;
+    let mut star_value_index = 0;
+
+    while value_index < value.len() {
+        match pattern.get(pattern_index) {
+            Some('?') => {
+                pattern_index += 1;
+                value_index += 1;
+            }
+            Some('*') => {
+                star_index = Some(pattern_index);
+                star_value_index = value_index;
+                pattern_index += 1;
+            }
+            Some(character) if *character == value[value_index] => {
+                pattern_index += 1;
+                value_index += 1;
+            }
+            _ if star_index.is_some() => {
+                if let Some(star_index) = star_index {
+                    pattern_index = star_index + 1;
+                }
+                star_value_index += 1;
+                value_index = star_value_index;
+            }
+            _ => return false,
+        }
+    }
+
+    while matches!(pattern.get(pattern_index), Some('*')) {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
+}
+
+/// Which OpenAI-family HTTP API to call. Set via `OPENAI_COMPAT_API`
+/// (`auto|chat|responses`); ignored when `provider = Anthropic`. `Auto`
+/// picks Responses for `*.openai.com`, Chat Completions otherwise, and
+/// permits a one-shot chat→responses upgrade on a "use /v1/responses"
+/// provider error.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OpenAiApi {
+    Chat,
+    Responses,
+    Auto,
+}
+
 /// Credentials and host for a discovery call.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -53,16 +155,24 @@ pub struct Config {
     pub api_key: String,
     /// Provider host, e.g. `DATABRICKS_HOST`.
     pub base_url: String,
+    /// Optional model-id visibility filter.
+    pub databricks_model_filter: Option<DatabricksModelFilter>,
 }
 
 impl Config {
     /// Signature preserved from the pre-goose crate — the desktop calls this
     /// directly (`commands/agent_models.rs:785`).
-    pub fn for_discovery(provider: Provider, api_key: String, base_url: String) -> Self {
+    pub fn for_discovery(
+        provider: Provider,
+        api_key: String,
+        base_url: String,
+        databricks_model_filter: Option<DatabricksModelFilter>,
+    ) -> Self {
         Self {
             provider,
             api_key,
             base_url,
+            databricks_model_filter,
         }
     }
 }

@@ -347,7 +347,12 @@ test-unit:
         # capabilities without linking goose. Enumerated explicitly because
         # nothing in CI runs `cargo test --workspace`; without this step a
         # manifest edit that diverges Rust from the corpus ships green.
-        cargo nextest run -p buzz-agent --lib
+        # buzz-agent's Buzz-owned loop contracts live in both src unit tests
+        # and infra-free tests/ integration tests (ACP stdio, cancellation,
+        # steering, permissions, hooks, skills). The real-dev-MCP tests launch
+        # the sibling binary directly, so build that fixture first.
+        cargo build -p buzz-dev-mcp
+        cargo nextest run -p buzz-agent
         cargo nextest run -p buzz-model-catalog --lib
     else
         ./scripts/run-tests.sh unit

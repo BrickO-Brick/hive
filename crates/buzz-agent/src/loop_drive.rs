@@ -88,6 +88,9 @@ const MAX_REFLECTIONS: usize = 8;
 /// tool-calls forever is a runaway spend.
 const DEFAULT_MAX_ROUNDS: u32 = 1000;
 
+/// Output-token upper bound for the silent-turn diagnostic.
+const SILENT_TURN_TOKEN_THRESHOLD: u64 = 12;
+
 /// Outcome of a single round, as decided by this loop.
 enum Round {
     /// The model asked for tools; they ran and their results are in history.
@@ -378,7 +381,7 @@ async fn round(
 ) -> Result<Round, AgentError> {
     let conversation = state.conversation();
 
-    let assistant = match infer(ctx, state.session(), &conversation, tokens).await? {
+    let mut assistant = match infer(ctx, state.session(), &conversation, tokens).await? {
         Some(Inference {
             message,
             total_tokens,
@@ -395,9 +398,26 @@ async fn round(
         None => return Ok(Round::Stopped(StopReason::EndTurn)),
     };
 
+    let tool_call_count = assistant
+        .content
+        .iter()
+        .filter(|content| matches!(content, MessageContent::ToolRequest(_)))
+        .count();
+    if tool_call_count > crate::config::MAX_TOOL_CALLS_PER_TURN {
+        tracing::warn!(
+            requested = tool_call_count,
+            limit = crate::config::MAX_TOOL_CALLS_PER_TURN,
+            "capping model-requested tool calls"
+        );
+        retain_first_tool_requests(&mut assistant, crate::config::MAX_TOOL_CALLS_PER_TURN);
+    }
+
+    // Persist only the calls that can actually run. The reply guard examines
+    // conversation history, so a publish-shaped call discarded by the cap
+    // must not suppress its reminder.
     state.push(assistant.clone());
 
-    let mut requests: Vec<ToolRequest> = assistant
+    let requests: Vec<ToolRequest> = assistant
         .content
         .iter()
         .filter_map(|content| match content {
@@ -406,16 +426,16 @@ async fn round(
         })
         .collect();
 
-    if requests.len() > crate::config::MAX_TOOL_CALLS_PER_TURN {
-        tracing::warn!(
-            requested = requests.len(),
-            limit = crate::config::MAX_TOOL_CALLS_PER_TURN,
-            "capping model-requested tool calls"
-        );
-        requests.truncate(crate::config::MAX_TOOL_CALLS_PER_TURN);
-    }
-
     if requests.is_empty() {
+        let text_is_empty = assistant.content.iter().all(|content| match content {
+            MessageContent::Text(text) => text.text.trim().is_empty(),
+            _ => true,
+        });
+        warn_if_silent_turn(
+            conversation_has_publish_attempt(&state.conversation()),
+            text_is_empty,
+            tokens.output,
+        );
         return Ok(Round::WantsToEnd);
     }
 
@@ -552,6 +572,55 @@ fn merge_chunk(target: &mut Message, chunk: Message) {
             }
             _ => target.content.push(content),
         }
+    }
+}
+
+fn retain_first_tool_requests(message: &mut Message, limit: usize) {
+    let mut kept = 0;
+    message.content.retain(|content| {
+        if !matches!(content, MessageContent::ToolRequest(_)) {
+            return true;
+        }
+        kept += 1;
+        kept <= limit
+    });
+}
+
+fn conversation_has_publish_attempt(conversation: &Conversation) -> bool {
+    conversation.messages().iter().any(|message| {
+        message.content.iter().any(|content| {
+            let MessageContent::ToolRequest(request) = content else {
+                return false;
+            };
+            let Ok(call) = &request.tool_call else {
+                return false;
+            };
+            call.name.ends_with("__shell")
+                && call
+                    .arguments
+                    .as_ref()
+                    .and_then(|args| args.get("command"))
+                    .and_then(|command| command.as_str())
+                    .is_some_and(|command| {
+                        command.contains("messages send") || command.contains("reactions add")
+                    })
+        })
+    })
+}
+
+fn warn_if_silent_turn(published: bool, text_is_empty: bool, output_tokens: Option<u64>) {
+    if published || !text_is_empty {
+        return;
+    }
+    match output_tokens {
+        Some(tokens) if tokens <= SILENT_TURN_TOKEN_THRESHOLD => tracing::warn!(
+            output_tokens = tokens,
+            "agent: turn ended with no publish attempt and near-zero output tokens — possible silent model/gateway early-stop"
+        ),
+        None => tracing::warn!(
+            "agent: turn ended with no publish attempt and no usage reported — cannot confirm output size"
+        ),
+        _ => {}
     }
 }
 
@@ -769,6 +838,45 @@ mod tests {
             state.session().usage.total_tokens,
             Some(12_000),
             "the post-compaction round must not accumulate the old 190k total"
+        );
+    }
+
+    #[test]
+    fn tool_call_cap_removes_calls_that_cannot_run_from_history() {
+        let mut assistant = Message::assistant().with_text("working");
+        for index in 0..crate::config::MAX_TOOL_CALLS_PER_TURN + 1 {
+            assistant = assistant.with_tool_request(
+                format!("call_{index}"),
+                Ok(rmcp::model::CallToolRequestParams::new("developer__shell")),
+            );
+        }
+
+        let tool_call_count = assistant
+            .content
+            .iter()
+            .filter(|content| matches!(content, MessageContent::ToolRequest(_)))
+            .count();
+        assert_eq!(tool_call_count, crate::config::MAX_TOOL_CALLS_PER_TURN + 1);
+
+        retain_first_tool_requests(&mut assistant, crate::config::MAX_TOOL_CALLS_PER_TURN);
+
+        let kept_ids: Vec<_> = assistant
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                MessageContent::ToolRequest(request) => Some(request.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept_ids.len(), crate::config::MAX_TOOL_CALLS_PER_TURN);
+        assert_eq!(kept_ids.first().copied(), Some("call_0"));
+        assert_eq!(kept_ids.last().copied(), Some("call_63"));
+        assert!(
+            !assistant.content.iter().any(|content| matches!(
+                content,
+                MessageContent::ToolRequest(request) if request.id == "call_64"
+            )),
+            "the over-cap request must not survive in conversation history"
         );
     }
 
