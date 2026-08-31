@@ -10,6 +10,7 @@ import {
   automaticallyMention,
   channelComposer,
   emitMockMessage,
+  expectComposerCaretAtEnd,
   focusComposerEnd,
   installAudienceFixtures,
   keepMentionedAgentsPinned,
@@ -122,7 +123,13 @@ for (const surface of ["channel", "thread"] as const) {
         await input.pressSequentially("review ");
         await addMention(composer, "Vogue", mode);
         await input.pressSequentially("now");
-        await expect(input).toHaveText("@Morgarita @Vogue review @Vogue now");
+        const rawDraft = (await input.textContent()) ?? "";
+        // Chromium may preserve the authored trailing separator as NBSP when
+        // focus moves to the toolbar. Preserve it; do not normalize sent text.
+        expect(rawDraft).toMatch(
+          /^@Morgarita @Vogue review[ \u00a0]@Vogue now$/,
+        );
+        const expectedMessage = rawDraft.replaceAll("@Vogue ", "");
         await expect(
           composer.getByTestId("composer-address-lock-avatar"),
         ).toHaveCount(2);
@@ -144,7 +151,7 @@ for (const surface of ["channel", "thread"] as const) {
             exact: true,
           })
           .click();
-        await expect(input).toHaveText("@Morgarita review now");
+        expect(await input.textContent()).toBe(expectedMessage);
         await expect(
           composer.getByTestId("composer-address-lock-avatar"),
         ).toHaveCount(1);
@@ -153,7 +160,7 @@ for (const surface of ["channel", "thread"] as const) {
         ).toHaveCount(0);
         await input.press("Enter");
         await expect
-          .poll(() => readOutgoingMentionPubkeys(page, "@Morgarita review now"))
+          .poll(() => readOutgoingMentionPubkeys(page, expectedMessage))
           .toEqual([AGENT_A]);
         await expect(composer.getByTestId("message-composer")).toHaveAttribute(
           "data-submit-locked",
@@ -1279,7 +1286,10 @@ test("a restored multi-word automatic mention remains a chip with the caret afte
   const originalComposer = channelComposer(page);
   await automaticallyMention(originalComposer, "claude code");
   const originalInput = originalComposer.getByTestId("message-input");
+  await expectComposerCaretAtEnd(originalInput);
+  expect(await originalInput.textContent()).toBe("@claude code ");
   await originalInput.pressSequentially("hello");
+  expect(await originalInput.textContent()).toBe("@claude code hello");
   await originalInput.press("Enter");
   await expect
     .poll(() => readOutgoingMentionPubkeys(page, "@claude code hello"))
