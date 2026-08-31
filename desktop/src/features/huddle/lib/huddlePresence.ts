@@ -150,9 +150,6 @@ function compactSession(session: HuddleSession): void {
       session.admissionsByParticipant.delete(participant);
     }
   }
-  for (const [participant, state] of session.legacyStateByParticipant) {
-    if (!state.present) session.legacyStateByParticipant.delete(participant);
-  }
 }
 
 type FetchEvents = (filter: RelaySubscriptionFilter) => Promise<RelayEvent[]>;

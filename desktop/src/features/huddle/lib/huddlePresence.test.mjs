@@ -168,6 +168,22 @@ test("ignores an older replay for the same admission", () => {
   assert.equal(tracker.snapshot().has(BOB), false);
 });
 
+test("retains a legacy leave tombstone across snapshots", () => {
+  const tracker = new HuddlePresenceTracker(RELAY);
+  tracker.apply(event({ id: "1", kind: 48100, createdAt: 1 }));
+  tracker.apply(participantEvent({ id: "2", kind: 48101, createdAt: 2 }));
+  assert.equal(tracker.snapshot().has(BOB), true);
+
+  tracker.apply(participantEvent({ id: "3", kind: 48102, createdAt: 3 }));
+  assert.equal(tracker.snapshot().has(BOB), false);
+
+  assert.equal(
+    tracker.apply(participantEvent({ id: "2", kind: 48101, createdAt: 2 })),
+    false,
+  );
+  assert.equal(tracker.snapshot().has(BOB), false);
+});
+
 test("ignores an older revision from a different admission", () => {
   const tracker = new HuddlePresenceTracker(RELAY);
   tracker.apply(event({ id: "1", kind: 48100 }));

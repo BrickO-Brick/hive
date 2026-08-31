@@ -32,25 +32,24 @@ function statusIsExpired(
 
 /** Remove expired entries from every mounted user-status lookup. */
 export function expireUserStatusQueries(
-  queryClient: Pick<QueryClient, "setQueriesData">,
+  queryClient: Pick<QueryClient, "getQueriesData" | "setQueryData">,
   nowSeconds = Math.floor(Date.now() / 1_000),
 ): boolean {
   let changed = false;
-  queryClient.setQueriesData<UserStatusLookup>(
-    { queryKey: ["user-status"] },
-    (old) => {
-      if (!old) return old;
-      let next: UserStatusLookup | null = null;
-      for (const [pubkey, status] of Object.entries(old)) {
-        if (!statusIsExpired(status, nowSeconds)) continue;
-        next ??= { ...old };
-        next[pubkey] = null;
-      }
-      if (!next) return old;
-      changed = true;
-      return next;
-    },
-  );
+  for (const [queryKey, old] of queryClient.getQueriesData<UserStatusLookup>({
+    queryKey: ["user-status"],
+  })) {
+    if (!old) continue;
+    let next: UserStatusLookup | null = null;
+    for (const [pubkey, status] of Object.entries(old)) {
+      if (!statusIsExpired(status, nowSeconds)) continue;
+      next ??= { ...old };
+      next[pubkey] = null;
+    }
+    if (!next) continue;
+    queryClient.setQueryData(queryKey, next);
+    changed = true;
+  }
   return changed;
 }
 

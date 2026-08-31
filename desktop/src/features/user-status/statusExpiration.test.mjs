@@ -37,3 +37,24 @@ test("expires due statuses in every cached lookup without relay traffic", () => 
     [BOB]: status(101),
   });
 });
+
+test("an ordinary cache update settles without an expiration write loop", () => {
+  const queryClient = new QueryClient();
+  let statusUpdates = 0;
+  const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+    if (event.type !== "updated" || event.query.queryKey[0] !== "user-status") {
+      return;
+    }
+    statusUpdates += 1;
+    if (statusUpdates < 5) {
+      expireUserStatusQueries(queryClient, 99);
+    }
+  });
+
+  queryClient.setQueryData(userStatusQueryKey([ALICE]), {
+    [ALICE]: status(100),
+  });
+  unsubscribe();
+
+  assert.equal(statusUpdates, 1);
+});

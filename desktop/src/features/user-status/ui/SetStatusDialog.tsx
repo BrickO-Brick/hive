@@ -208,11 +208,36 @@ export function SetStatusDialog({
     }
   }, [open, initialText, initialEmoji, initialExpiresAt, initialUpdatedAt]);
 
+  const initialExpiration = initialExpiresAt
+    ? new Date(initialExpiresAt * 1_000)
+    : null;
+  const hasFutureInitialExpiration = Boolean(
+    initialExpiration && initialExpiration.getTime() > Date.now(),
+  );
+  const roundedInitialExpiration = initialExpiration
+    ? roundUpToHalfHour(initialExpiration)
+    : null;
+  const initialDuration = hasFutureInitialExpiration
+    ? inferredDuration(initialExpiresAt, initialUpdatedAt)
+    : "Today";
   const hasContent = Boolean(text.trim() || emoji);
   const effectiveEmoji =
     emoji || (text.trim() ? DEFAULT_USER_STATUS_EMOJI : "");
+  const initialEffectiveEmoji =
+    initialEmoji || (initialText.trim() ? DEFAULT_USER_STATUS_EMOJI : "");
+  const isDirty =
+    text.trim() !== initialText.trim() ||
+    effectiveEmoji !== initialEffectiveEmoji ||
+    duration !== initialDuration ||
+    (duration === "Custom" &&
+      initialDuration === "Custom" &&
+      hasFutureInitialExpiration &&
+      roundedInitialExpiration !== null &&
+      customUntil.getTime() !== roundedInitialExpiration.getTime());
   const canSave =
-    hasContent && (duration !== "Custom" || customUntil.getTime() > Date.now());
+    hasContent &&
+    isDirty &&
+    (duration !== "Custom" || customUntil.getTime() > Date.now());
 
   function handlePresetClick(preset: { text: string; emoji: string }) {
     setText(preset.text);
@@ -444,25 +469,27 @@ export function SetStatusDialog({
           ) : null}
         </StatusSection>
 
-        <StatusSection label="Quick statuses">
-          {PRESETS.map((preset) => (
-            <button
-              className={ROW_CLASS}
-              data-testid={`set-status-preset-${preset.text.toLowerCase().replace(/\s+/g, "-")}`}
-              key={preset.text}
-              onClick={() => handlePresetClick(preset)}
-              type="button"
-            >
-              <span
-                aria-hidden="true"
-                className="flex w-5 justify-center text-lg"
+        {!hasExistingStatus ? (
+          <StatusSection label="Quick statuses">
+            {PRESETS.map((preset) => (
+              <button
+                className={ROW_CLASS}
+                data-testid={`set-status-preset-${preset.text.toLowerCase().replace(/\s+/g, "-")}`}
+                key={preset.text}
+                onClick={() => handlePresetClick(preset)}
+                type="button"
               >
-                {preset.emoji}
-              </span>
-              <span>{preset.text}</span>
-            </button>
-          ))}
-        </StatusSection>
+                <span
+                  aria-hidden="true"
+                  className="flex w-5 justify-center text-lg"
+                >
+                  {preset.emoji}
+                </span>
+                <span>{preset.text}</span>
+              </button>
+            ))}
+          </StatusSection>
+        ) : null}
       </ChooserDialogContent>
     </Dialog>
   );

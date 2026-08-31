@@ -32,7 +32,7 @@ async function openProfilePopover(page: import("@playwright/test").Page) {
 }
 
 test.beforeEach(async ({ page }) => {
-  await installMockBridge(page);
+  await installMockBridge(page, { relaySelf: MOCK_IDENTITY_PUBKEY });
   const PNG = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR4nGMwuBPxnxLMMGrAqAGjBgwXAwBwOGMf1PPhVwAAAABJRU5ErkJggg==",
     "base64",
@@ -110,9 +110,18 @@ test("set status dialog uses the desktop modal with shared status choices", asyn
 
   await openProfilePopover(page);
   await page.getByTestId("profile-popover-set-status").click();
+  await expect(dialog.getByText("Quick statuses", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(dialog.getByLabel("Save status")).toBeDisabled();
   await expect(page.getByTestId("set-status-duration")).toContainText(
     "8 hours",
   );
+
+  await dialog.getByTestId("set-status-input").fill("Working remotely today");
+  await expect(dialog.getByLabel("Save status")).toBeEnabled();
+  await dialog.getByTestId("set-status-input").fill("Working remotely");
+  await expect(dialog.getByLabel("Save status")).toBeDisabled();
 
   await page.getByTestId("set-status-duration").click();
   await page.getByRole("menuitem", { name: "Custom" }).click();
