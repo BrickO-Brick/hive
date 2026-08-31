@@ -10,47 +10,16 @@ import {
   installTauriMock,
   installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
-import { runWholeBlobSyncSuite } from "./wholeBlobSync.shared.test.mjs";
+
+// Shared whole-blob engine invariants are covered by wholeBlobSync.shared.test.mjs
+// (which runs directly against ChannelSectionSyncManager). This file contains
+// only sort-specific adapter and lane behavior tests.
 
 function makeStore(groups = {}) {
   return { version: 1, groups };
 }
 
 const RELAY = "wss://r.test";
-
-// ─── 17 shared whole-blob sync invariants ─────────────────────────────────────
-
-runWholeBlobSyncSuite({
-  label: "sort",
-  SyncManager: ChannelSortSyncManager,
-  publishMethod: "publishSortPrefs",
-  fetchRemoteMethod: "fetchRemoteSortPrefs",
-  subscribeMethod: "subscribeToSortPrefs",
-  watermarkLane: "channel-sort",
-  readOutbox: readChannelSortOutbox,
-  makeNonEmptyStore: () => makeStore({ channels: "recent" }),
-  decryptPayload: JSON.stringify({
-    version: 1,
-    groups: { "remote-group-from-relay": "recent" },
-  }),
-  emptyDecryptPayload: JSON.stringify({ version: 1, groups: {} }),
-  checkAdoptedStore: (store) => "remote-group-from-relay" in store.groups,
-  makeOverlapStoreA: () => makeStore({ channels: "recent" }),
-  makeOverlapStoreB: () => makeStore({ dms: "alpha" }),
-  checkOverlapPending: (store) =>
-    Object.keys(store?.groups ?? {}).includes("dms"),
-  checkOverlapOutbox: (outbox) =>
-    Object.keys(outbox?.store?.groups ?? {}).includes("dms"),
-  makeLiveDebounceStore: () => makeStore({ "local-group": "alpha" }),
-  liveRemoteDecryptPayload: JSON.stringify({
-    version: 1,
-    groups: { "remote-during-debounce": "recent" },
-  }),
-  makeCollisionStoreA: () => makeStore({ channels: "recent" }),
-  makeCollisionWinnerStore: () => makeStore({ channels: "alpha" }),
-  makeCollisionStoreSnd: () => makeStore({ dms: "recent" }),
-  makeCollisionStoreLsr: () => makeStore({ loser: "recent" }),
-});
 
 // ─── Sort-specific: unsupported head payload version ─────────────────────────
 

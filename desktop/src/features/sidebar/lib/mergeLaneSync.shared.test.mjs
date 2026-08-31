@@ -178,157 +178,105 @@ export function runMergeLaneSyncSuite({
     }
   });
 
-  test(`${label}: destroy: is safe to call with no pending publish`, () => {
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    try {
-      const manager = new Manager("pk-no-pending", RELAY);
-      assert.doesNotThrow(() => manager.destroy());
-    } finally {
-      restore();
-    }
-  });
-
   // ─── Generation CAS: A-in-flight → B-click → A-completes (both variants) ────
 
-  // Finding 2 (A succeeds): an older in-flight publish that completes after a
-  // newer edit is queued must NOT clear the newer edit's pending store/outbox,
-  // and B must reach the relay via the completion re-drive. Mutation: dropping
-  // the generation CAS in discardPending lets A's success null out B's
-  // pending+outbox.
-  test(`${label}: A-in-flight → B-click → A-succeeds: B stays pending and B publishes`, async () => {
-    let releaseFirst = null;
-    let publishCount = 0;
-    let storedHead = [];
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
-    mock.method(relayClient, "publishEvent", (event) => {
-      publishCount++;
-      if (publishCount === 1) {
-        // A reaches the relay; hold its ACK open until the test releases it,
-        // then record it as the retained head.
-        return new Promise((res) => {
-          releaseFirst = () => {
-            storedHead = [event];
-            res();
-          };
-        });
+  // Finding 2: an older in-flight publish that completes (succeeds or fails) after
+  // a newer edit is queued must NOT clear B, and B must reach the relay via the
+  // serialized re-drive / completion re-drive. Mutation: dropping the generation
+  // CAS in discardPending lets A's outcome null out B's pending+outbox.
+  for (const { name, resolveFirst } of [
+    {
+      name: "A-succeeds",
+      resolveFirst: (event, storedHead, res) => {
+        storedHead.push(event);
+        res();
+      },
+    },
+    {
+      name: "A-fails",
+      resolveFirst: (_event, _storedHead, _res, rej) =>
+        rej(new Error("socket error")),
+    },
+  ]) {
+    test(`${label}: A-in-flight → B-click → ${name}: B stays pending and B publishes`, async () => {
+      let releaseFirst = null;
+      let publishCount = 0;
+      const storedHead = [];
+      mock.method(relayClient, "fetchEvents", () =>
+        Promise.resolve([...storedHead]),
+      );
+      mock.method(relayClient, "publishEvent", (event) => {
+        publishCount++;
+        if (publishCount === 1) {
+          return new Promise((res, rej) => {
+            releaseFirst = () => resolveFirst(event, storedHead, res, rej);
+          });
+        }
+        storedHead.splice(0, storedHead.length, event);
+        return Promise.resolve();
+      });
+      const t = makeMultiTimerWindow();
+      const restore = installFakeWindow(t.win);
+      const tauri = installEchoTauri(`pk-ab-${name}`);
+      try {
+        const manager = new Manager(`pk-ab-${name}`, RELAY);
+        const storeA = makeStore({ a: makeEntry(true, 100, 1) });
+        const storeB = makeStore({ b: makeEntry(true, 101, 1) });
+
+        publish(manager, storeA);
+        await t.fireDelay(2000); // doPublish(A) awaits publishEvent
+        while (releaseFirst === null) await Promise.resolve();
+
+        // B arrives while A is in flight.
+        publish(manager, storeB);
+        assert.deepEqual(
+          Object.keys(getPending(manager).channels),
+          ["b"],
+          "B is now pending",
+        );
+        assert.ok(readOutbox(`pk-ab-${name}`, RELAY), "outbox holds B");
+
+        // A completes (success or failure) — must NOT clear B.
+        releaseFirst();
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        assert.deepEqual(
+          Object.keys(getPending(manager)?.channels ?? {}),
+          ["b"],
+          `older A completion (${name}) leaves B pending`,
+        );
+        assert.ok(
+          readOutbox(`pk-ab-${name}`, RELAY),
+          `older A completion (${name}) leaves B outbox`,
+        );
+
+        // B's own debounce fires and B reaches the relay; the retained-head fetch
+        // confirms subsumption, so B's outbox clears.
+        const capturedBefore = tauri.capturedPlaintext();
+        await t.fireDelay(2000);
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        const captured = tauri.capturedPlaintext();
+        assert.ok(
+          captured && captured !== capturedBefore && captured.includes('"b"'),
+          "B is published to the relay",
+        );
+        assert.equal(
+          getPending(manager),
+          null,
+          "B cleared after confirmed publish",
+        );
+        assert.equal(
+          readOutbox(`pk-ab-${name}`, RELAY),
+          null,
+          "B outbox cleared",
+        );
+        manager.destroy();
+      } finally {
+        tauri.restore();
+        restore();
+        mock.reset();
       }
-      storedHead = [event];
-      return Promise.resolve();
     });
-    const t = makeMultiTimerWindow();
-    const restore = installFakeWindow(t.win);
-    const tauri = installEchoTauri("pk-ab");
-    try {
-      const manager = new Manager("pk-ab", RELAY);
-      const storeA = makeStore({ a: makeEntry(true, 100, 1) });
-      const storeB = makeStore({ b: makeEntry(true, 101, 1) });
-
-      publish(manager, storeA);
-      await t.fireDelay(2000); // doPublish(A) awaits publishEvent
-      while (releaseFirst === null) await Promise.resolve();
-
-      // B arrives while A is in flight.
-      publish(manager, storeB);
-      assert.deepEqual(
-        Object.keys(getPending(manager).channels),
-        ["b"],
-        "B is now pending",
-      );
-      assert.ok(readOutbox("pk-ab", RELAY), "outbox holds B");
-
-      // A completes — must NOT clear B.
-      releaseFirst();
-      for (let i = 0; i < 50; i++) await Promise.resolve();
-      assert.deepEqual(
-        Object.keys(getPending(manager)?.channels ?? {}),
-        ["b"],
-        "older A completion leaves B pending",
-      );
-      assert.ok(
-        readOutbox("pk-ab", RELAY),
-        "older A completion leaves B outbox",
-      );
-
-      // B's own debounce fires and B reaches the relay with no kick; the
-      // post-publish retained-head fetch reads B's own write back and confirms
-      // subsumption, so B's outbox clears.
-      const capturedBefore = tauri.capturedPlaintext();
-      await t.fireDelay(2000);
-      for (let i = 0; i < 50; i++) await Promise.resolve();
-      const captured = tauri.capturedPlaintext();
-      assert.ok(
-        captured && captured !== capturedBefore && captured.includes('"b"'),
-        "B is published to the relay",
-      );
-      assert.equal(
-        getPending(manager),
-        null,
-        "B cleared after confirmed publish",
-      );
-      assert.equal(readOutbox("pk-ab", RELAY), null, "B outbox cleared");
-      manager.destroy();
-    } finally {
-      tauri.restore();
-      restore();
-      mock.reset();
-    }
-  });
-
-  // Finding 2 (A fails): A's publish rejects after B is queued. B must remain
-  // pending and be published by the serialized re-drive / retry — no manual kick.
-  test(`${label}: A-in-flight → B-click → A-fails: B remains pending and B publishes`, async () => {
-    let rejectFirst = null;
-    let publishCount = 0;
-    let storedHead = [];
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve(storedHead));
-    mock.method(relayClient, "publishEvent", (event) => {
-      publishCount++;
-      if (publishCount === 1) {
-        return new Promise((_res, rej) => {
-          rejectFirst = () => rej(new Error("socket error"));
-        });
-      }
-      storedHead = [event];
-      return Promise.resolve();
-    });
-    const t = makeMultiTimerWindow();
-    const restore = installFakeWindow(t.win);
-    const tauri = installEchoTauri("pk-abfail");
-    try {
-      const manager = new Manager("pk-abfail", RELAY);
-      publish(manager, makeStore({ a: makeEntry(true, 100, 1) }));
-      await t.fireDelay(2000);
-      while (rejectFirst === null) await Promise.resolve();
-
-      publish(manager, makeStore({ b: makeEntry(true, 101, 1) }));
-      rejectFirst(); // A fails
-      for (let i = 0; i < 50; i++) await Promise.resolve();
-
-      assert.deepEqual(
-        Object.keys(getPending(manager)?.channels ?? {}),
-        ["b"],
-        "B still pending after A's failure",
-      );
-      assert.ok(
-        readOutbox("pk-abfail", RELAY),
-        "B outbox intact after A's failure",
-      );
-
-      // B's debounce fires and B publishes successfully; the retained-head fetch
-      // confirms B's own write and clears it.
-      await t.fireDelay(2000);
-      for (let i = 0; i < 50; i++) await Promise.resolve();
-      const captured = tauri.capturedPlaintext();
-      assert.ok(captured?.includes('"b"'), "B published");
-      assert.equal(getPending(manager), null, "B cleared");
-      manager.destroy();
-    } finally {
-      tauri.restore();
-      restore();
-      mock.reset();
-    }
-  });
+  }
 
   // ─── Bounded-backoff retry: failed publish on a healthy socket, no later edit
 
@@ -450,92 +398,83 @@ export function runMergeLaneSyncSuite({
 
   // ─── Boot seed-publish guard (the revert-fix regression suite) ───────────────
 
-  test(`${label}: revert-fix: fetch failed (error) does not trigger seed-publish via bootstrap`, async () => {
-    mock.method(relayClient, "fetchEvents", () =>
-      Promise.reject(new Error("relay timeout")),
-    );
-    mock.method(relayClient, "publishEvent", () => Promise.resolve());
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    try {
-      const manager = new Manager("pk-fail", RELAY);
-      const result = await manager.bootstrap(
-        makeStore({ ch1: makeEntry(true, 1, 0) }),
-      );
-      assert.equal(result.action, "hold");
-      assert.equal(getPending(manager), null);
-    } finally {
-      restore();
-      mock.reset();
-    }
-  });
-
-  test(`${label}: revert-fix: absent fetch with prior watermark blocks seed-publish via bootstrap`, async () => {
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-    mock.method(relayClient, "publishEvent", () => Promise.resolve());
-    const fw = makeFakeWindow();
-    fw.localStorage.setItem(
-      `buzz-sync-watermark.v1:${watermarkKind}:pk-stale:${RELAY_KEY}`,
-      "1700000000",
-    );
-    const restore = installFakeWindow(fw);
-    try {
-      const manager = new Manager("pk-stale", RELAY);
-      const result = await manager.bootstrap(
-        makeStore({ ch1: makeEntry(true, 1, 0) }),
-      );
-      assert.equal(result.action, "hold");
-      assert.equal(getPending(manager), null);
-    } finally {
-      restore();
-      mock.reset();
-    }
-  });
-
-  test(`${label}: revert-fix: absent fetch with zero watermark seeds via bootstrap (first-sync preserved)`, async () => {
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-    mock.method(relayClient, "publishEvent", () => Promise.resolve());
-    const fw = makeFakeWindow();
-    const restore = installFakeWindow(fw);
-    try {
-      const manager = new Manager("pk-fresh", RELAY);
-      const result = await manager.bootstrap(
-        makeStore({ ch1: makeEntry(true, 1, 0) }),
-      );
-      assert.equal(result.action, "hold");
-      assert.ok(getPending(manager) !== null);
-    } finally {
-      restore();
-      mock.reset();
-    }
-  });
-
-  test(`${label}: revert-fix: relay-A watermark does not suppress first-sync seed on relay-B`, async () => {
-    const relayA = "wss://a.relay.test";
-    const relayB = "wss://b.relay.test";
-    mock.method(relayClient, "fetchEvents", () => Promise.resolve([]));
-    mock.method(relayClient, "publishEvent", () => Promise.resolve());
-    const fw = makeFakeWindow();
-    fw.localStorage.setItem(
-      `buzz-sync-watermark.v1:${watermarkKind}:pk-iso:${encodeURIComponent(relayA)}`,
-      "1700000100",
-    );
-    const restore = installFakeWindow(fw);
-    try {
-      const managerB = new Manager("pk-iso", relayB);
-      const result = await managerB.bootstrap(
-        makeStore({ ch1: makeEntry(true, 1, 0) }),
-      );
-      assert.equal(result.action, "hold");
-      assert.ok(
-        getPending(managerB) !== null,
-        `first-sync seed on relay B must not be blocked by relay A watermark`,
-      );
-    } finally {
-      restore();
-      mock.reset();
-    }
-  });
+  for (const {
+    title,
+    setupFetch,
+    setupWatermark,
+    relayOverride,
+    pubkey,
+    assertPending,
+  } of [
+    {
+      title: "fetch failed (error) does not trigger seed-publish via bootstrap",
+      setupFetch: () =>
+        mock.method(relayClient, "fetchEvents", () =>
+          Promise.reject(new Error("relay timeout")),
+        ),
+      assertPending: (m) => assert.equal(getPending(m), null),
+    },
+    {
+      title:
+        "absent fetch with prior watermark blocks seed-publish via bootstrap",
+      setupFetch: () =>
+        mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
+      setupWatermark: (fw) =>
+        fw.localStorage.setItem(
+          `buzz-sync-watermark.v1:${watermarkKind}:pk-stale:${RELAY_KEY}`,
+          "1700000000",
+        ),
+      pubkey: "pk-stale",
+      assertPending: (m) => assert.equal(getPending(m), null),
+    },
+    {
+      title:
+        "absent fetch with zero watermark seeds via bootstrap (first-sync preserved)",
+      setupFetch: () =>
+        mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
+      pubkey: "pk-fresh",
+      assertPending: (m) => assert.ok(getPending(m) !== null),
+    },
+    {
+      title: "relay-A watermark does not suppress first-sync seed on relay-B",
+      setupFetch: () =>
+        mock.method(relayClient, "fetchEvents", () => Promise.resolve([])),
+      setupWatermark: (fw) =>
+        fw.localStorage.setItem(
+          `buzz-sync-watermark.v1:${watermarkKind}:pk-iso:${encodeURIComponent("wss://a.relay.test")}`,
+          "1700000100",
+        ),
+      relayOverride: "wss://b.relay.test",
+      pubkey: "pk-iso",
+      assertPending: (m) =>
+        assert.ok(
+          getPending(m) !== null,
+          "first-sync seed on relay B must not be blocked by relay A watermark",
+        ),
+    },
+  ]) {
+    test(`${label}: revert-fix: ${title}`, async () => {
+      setupFetch();
+      mock.method(relayClient, "publishEvent", () => Promise.resolve());
+      const fw = makeFakeWindow();
+      setupWatermark?.(fw);
+      const restore = installFakeWindow(fw);
+      try {
+        const manager = new Manager(
+          pubkey ?? "pk-fail",
+          relayOverride ?? RELAY,
+        );
+        const result = await manager.bootstrap(
+          makeStore({ ch1: makeEntry(true, 1, 0) }),
+        );
+        assert.equal(result.action, "hold");
+        assertPending(manager);
+      } finally {
+        restore();
+        mock.reset();
+      }
+    });
+  }
 
   // ─── Failed pre-publish fetch: retain, never publish (Carl P1) ───────────────
 

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
 import { relayClient } from "@/shared/api/relayClient";
-import { readChannelSectionsOutbox } from "./channelSectionsStorage.ts";
 import { ChannelSectionSyncManager } from "./channelSectionsSync.ts";
 import {
   makeFakeWindow,
@@ -10,7 +9,10 @@ import {
   installTauriMock,
   installEchoTauri,
 } from "./sidebarSyncTestHelpers.mjs";
-import { runWholeBlobSyncSuite } from "./wholeBlobSync.shared.test.mjs";
+
+// Shared whole-blob engine invariants are covered by wholeBlobSync.shared.test.mjs
+// (which runs directly against ChannelSectionSyncManager). This file contains
+// only sections-specific adapter and lane behavior tests.
 
 function makeSectionsStore(sections = []) {
   return { version: 1, sections, assignments: {} };
@@ -18,52 +20,35 @@ function makeSectionsStore(sections = []) {
 
 const RELAY = "wss://r.test";
 
-// ─── 17 shared whole-blob sync invariants ─────────────────────────────────────
-
-runWholeBlobSyncSuite({
-  label: "sections",
-  SyncManager: ChannelSectionSyncManager,
-  publishMethod: "publishSections",
-  fetchRemoteMethod: "fetchRemoteSections",
-  subscribeMethod: "subscribeToSections",
-  watermarkLane: "channel-sections",
-  readOutbox: readChannelSectionsOutbox,
-  makeNonEmptyStore: () =>
-    makeSectionsStore([{ id: "s1", name: "Work", order: 0 }]),
-  decryptPayload: JSON.stringify({
-    version: 1,
-    sections: [{ id: "remote-section-from-relay", name: "Remote", order: 0 }],
-    assignments: {},
-  }),
-  emptyDecryptPayload: JSON.stringify({
-    version: 1,
-    sections: [],
-    assignments: {},
-  }),
-  checkAdoptedStore: (store) =>
-    store.sections.some((s) => s.id === "remote-section-from-relay"),
-  makeOverlapStoreA: () =>
-    makeSectionsStore([{ id: "a", name: "A", order: 0 }]),
-  makeOverlapStoreB: () =>
-    makeSectionsStore([{ id: "b", name: "B", order: 0 }]),
-  checkOverlapPending: (store) => store?.sections?.[0]?.id === "b",
-  checkOverlapOutbox: (outbox) => outbox?.store?.sections?.[0]?.id === "b",
-  makeLiveDebounceStore: () =>
-    makeSectionsStore([{ id: "local", name: "Local", order: 0 }]),
-  liveRemoteDecryptPayload: JSON.stringify({
-    version: 1,
-    sections: [{ id: "remote-during-debounce", name: "Remote", order: 0 }],
-    assignments: {},
-  }),
-  makeCollisionStoreA: () =>
-    makeSectionsStore([{ id: "mine", name: "Mine", order: 0 }]),
-  makeCollisionWinnerStore: () =>
-    makeSectionsStore([{ id: "peer", name: "Peer", order: 0 }]),
-  makeCollisionStoreSnd: () =>
-    makeSectionsStore([{ id: "second", name: "Second", order: 0 }]),
-  makeCollisionStoreLsr: () =>
-    makeSectionsStore([{ id: "loser", name: "Loser", order: 0 }]),
-});
+// Multi-slot timer fake: each setTimeout call is keyed by delay so overlapping
+// timers can be fired independently. Mirrors the merge-lane convention.
+function makeTimerBed() {
+  const storage = new Map();
+  const timers = new Map();
+  let nextId = 1;
+  const win = {
+    localStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, v),
+      removeItem: (k) => storage.delete(k),
+    },
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+  };
+  const fireDelay = async (ms) => {
+    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
+    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
+    timers.delete(entry[0]);
+    entry[1].fn();
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  };
+  const restore = installFakeWindow(win);
+  return { win, timers, fireDelay, restore };
+}
 
 // ─── Sections-specific: malformed (non-JSON) head payload ─────────────────────
 
@@ -195,30 +180,7 @@ test("serialized generations: older completion does not make the newer edit adop
     storedHead = [event];
     return Promise.resolve();
   });
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
+  const { timers, fireDelay, restore } = makeTimerBed();
   const tauri = installEchoTauri("pk-serial");
   try {
     const manager = new ChannelSectionSyncManager("pk-serial", RELAY);
@@ -277,30 +239,7 @@ test("serialized generations: a stale generation aborts before publishing", asyn
     publishCalls.push(args);
     return Promise.resolve();
   });
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
+  const { fireDelay, restore } = makeTimerBed();
   const tauri = installTauriMock("{}");
   try {
     const manager = new ChannelSectionSyncManager("pk-stale", RELAY);
@@ -428,30 +367,7 @@ test("ambiguous ACK: an accepted-but-unacked A does not make B adopt and disappe
     ];
     return Promise.resolve();
   });
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
+  const { timers, fireDelay, restore } = makeTimerBed();
   const tauri = installSeamTauriMock(
     JSON.stringify({
       version: 1,
@@ -528,30 +444,7 @@ test("ambiguous ACK: a foreign head is adopted, not folded as our own", async ()
       );
     return Promise.resolve();
   });
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
+  const { timers, fireDelay, restore } = makeTimerBed();
   const tauri = installSeamTauriMock(
     JSON.stringify({
       version: 1,
@@ -605,30 +498,7 @@ test("serialized generations: a newer edit during encrypt/sign aborts the pre-si
     publishCalls.push(event);
     return Promise.resolve();
   });
-  const storage = new Map();
-  const timers = new Map();
-  let nextId = 1;
-  const fakeWindow = {
-    localStorage: {
-      getItem: (k) => storage.get(k) ?? null,
-      setItem: (k, v) => storage.set(k, v),
-      removeItem: (k) => storage.delete(k),
-    },
-    setTimeout: (fn, ms) => {
-      const id = nextId++;
-      timers.set(id, { fn, ms });
-      return id;
-    },
-    clearTimeout: (id) => timers.delete(id),
-  };
-  const fireDelay = async (ms) => {
-    const entry = [...timers.entries()].find(([, v]) => v.ms === ms);
-    assert.ok(entry, `expected a timer scheduled at ${ms}ms`);
-    timers.delete(entry[0]);
-    entry[1].fn();
-    for (let i = 0; i < 100; i++) await Promise.resolve();
-  };
-  const restore = installFakeWindow(fakeWindow);
+  const { timers, fireDelay, restore } = makeTimerBed();
   const tauri = installSeamTauriMock("{}", ["event-a", "event-b"]);
   try {
     const manager = new ChannelSectionSyncManager("pk-seam", RELAY);

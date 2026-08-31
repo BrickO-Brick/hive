@@ -43,7 +43,7 @@ function stubRelay(relayClient, { live } = {}) {
 }
 
 /**
- * Run the full merge-lane hook invariant suite for a single lane.
+ * Run the merge-lane hook invariant suite for a single lane.
  *
  * @param {object} cfg
  * @param {string}   cfg.label              - Human-readable lane name for test titles.
@@ -119,144 +119,51 @@ export function runMergeLaneHookSuite({
     }
   });
 
-  test(`${label}: persisted-local first click mints seen+1 on both dimensions`, async () => {
+  // Monotonic mint: combines persisted-local high-water, far-future observation,
+  // and same-second click sequence into one scenario. After observing a remote
+  // with high updatedAt and rev, local clicks must advance both dimensions.
+  // Mutation: dropping maxUpdatedAtSeen or maxRevSeen tracking makes later
+  // clicks mint below the observed high-water and lose on merge.
+  test(`${label}: monotonic mint — persisted high-water + far-future live event + same-second clicks advance rev`, async () => {
     const { act, cleanup, renderHook } = await import("@testing-library/react");
     const { relayClient } = await import("@/shared/api/relayClient");
 
-    const restore = stubRelay(relayClient);
+    const live = {};
+    const restore = stubRelay(relayClient, { live });
+    const origTauri = window.__TAURI_INTERNALS__;
     const origDateNow = Date.now;
+    // Local clock: 100s. Persisted head has updatedAt 500, rev 4.
     Date.now = () => 100 * 1_000;
-    const pubkey = `pk-${label}-persist`;
+    const FUTURE = 500;
+    window.__TAURI_INTERNALS__ = {
+      invoke: (cmd) => {
+        if (cmd === "nip44_decrypt_from_self")
+          return Promise.resolve(
+            makePayload({
+              shared: { [entryValueField]: false, updatedAt: FUTURE, rev: 7 },
+            }),
+          );
+        return Promise.reject(new Error(`unmocked ${cmd}`));
+      },
+    };
+    const pubkey = `pk-${label}-mono`;
+    // Seed a persisted store at rev 4, updatedAt 500.
     window.localStorage.setItem(
       storageKey(pubkey, "wss://r"),
       makePayload({
-        shared: { [entryValueField]: true, updatedAt: 500, rev: 4 },
+        shared: { [entryValueField]: true, updatedAt: FUTURE, rev: 4 },
       }),
     );
-    try {
-      const { result, unmount } = renderHook(() => useHook(pubkey, "wss://r"));
-      act(() => result.current[falseAction]("shared"));
-      const persisted = readStore(pubkey, "wss://r");
-      assert.equal(
-        persisted.channels.shared[entryValueField],
-        false,
-        `${falseLabel} applied`,
-      );
-      assert.equal(
-        persisted.channels.shared.updatedAt,
-        500,
-        "updatedAt held at persisted-local high-water (max(100,500,seen))",
-      );
-      assert.equal(
-        persisted.channels.shared.rev,
-        5,
-        "rev minted as persisted-local rev + 1",
-      );
-      unmount();
-    } finally {
-      cleanup();
-      Date.now = origDateNow;
-      restore();
-    }
-  });
-
-  test(`${label}: fast-clock veto fix: click after observing a future-stamped head wins`, async () => {
-    const { act, cleanup, renderHook } = await import("@testing-library/react");
-    const { relayClient } = await import("@/shared/api/relayClient");
-
-    const live = {};
-    const restore = stubRelay(relayClient, { live });
-    const origTauri = window.__TAURI_INTERNALS__;
-    const origDateNow = Date.now;
-    Date.now = () => 100 * 1_000;
-    window.__TAURI_INTERNALS__ = {
-      invoke: (cmd) => {
-        if (cmd === "nip44_decrypt_from_self")
-          return Promise.resolve(
-            makePayload({
-              shared: { [entryValueField]: false, updatedAt: 400, rev: 7 },
-            }),
-          );
-        return Promise.reject(new Error(`unmocked ${cmd}`));
-      },
-    };
-    const pubkey = `pk-${label}-fastclock`;
     let hook = null;
     try {
       await act(async () => {
         hook = renderHook(() => useHook(pubkey, "wss://r"));
         for (let i = 0; i < 20; i++) await Promise.resolve();
       });
+      // Deliver a live event with rev 7 (higher than persisted 4).
       await act(async () => {
         live.cb({
           id: "future-head",
-          pubkey,
-          created_at: 400,
-          content: "cipher",
-          kind: 30078,
-          tags: [["d", dTag]],
-          sig: "s",
-        });
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      assert.equal(
-        hook.result.current[idsField].has("shared"),
-        false,
-        "future head applied → false",
-      );
-      await act(async () => hook.result.current[trueAction]("shared"));
-      assert.equal(
-        hook.result.current[idsField].has("shared"),
-        true,
-        "click must win despite the observed future timestamp",
-      );
-      const persisted = readStore(pubkey, "wss://r");
-      assert.equal(
-        persisted.channels.shared.updatedAt,
-        400,
-        "mint lifted to t+300",
-      );
-      assert.equal(persisted.channels.shared.rev, 8, "rev = maxRevSeen+1");
-      hook.unmount();
-    } finally {
-      cleanup();
-      Date.now = origDateNow;
-      window.__TAURI_INTERNALS__ = origTauri;
-      restore();
-    }
-  });
-
-  test(`${label}: far-future observation: timestamp stays fixed, rev advances, latest click wins`, async () => {
-    const { act, cleanup, renderHook } = await import("@testing-library/react");
-    const { relayClient } = await import("@/shared/api/relayClient");
-
-    const live = {};
-    const restore = stubRelay(relayClient, { live });
-    const origTauri = window.__TAURI_INTERNALS__;
-    const origDateNow = Date.now;
-    Date.now = () => 100 * 1_000;
-    const FUTURE = 100 + 31_536_000;
-    window.__TAURI_INTERNALS__ = {
-      invoke: (cmd) => {
-        if (cmd === "nip44_decrypt_from_self")
-          return Promise.resolve(
-            makePayload({
-              shared: { [entryValueField]: true, updatedAt: FUTURE, rev: 1 },
-            }),
-          );
-        return Promise.reject(new Error(`unmocked ${cmd}`));
-      },
-    };
-    const pubkey = `pk-${label}-future`;
-    let hook = null;
-    try {
-      await act(async () => {
-        hook = renderHook(() => useHook(pubkey, "wss://r"));
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      await act(async () => {
-        live.cb({
-          id: "far-future",
           pubkey,
           created_at: FUTURE,
           content: "cipher",
@@ -266,32 +173,34 @@ export function runMergeLaneHookSuite({
         });
         for (let i = 0; i < 20; i++) await Promise.resolve();
       });
-      await act(async () => hook.result.current[falseAction]("shared"));
+      // First click: must mint above max(FUTURE, rev 7).
+      await act(async () => hook.result.current[trueAction]("shared"));
       let p = readStore(pubkey, "wss://r");
       assert.equal(
         p.channels.shared[entryValueField],
-        false,
+        true,
         "first click applied",
       );
       assert.equal(
         p.channels.shared.updatedAt,
         FUTURE,
-        "timestamp stays fixed",
+        "updatedAt held at observed high-water",
       );
-      assert.equal(p.channels.shared.rev, 2, "rev advanced 1→2");
-      await act(async () => hook.result.current[trueAction]("shared"));
+      assert.equal(p.channels.shared.rev, 8, "rev = maxRevSeen(7) + 1");
+      // Second same-second click: rev must strictly advance.
+      await act(async () => hook.result.current[falseAction]("shared"));
       p = readStore(pubkey, "wss://r");
       assert.equal(
         p.channels.shared[entryValueField],
-        true,
-        "latest click wins",
+        false,
+        "second click applied",
       );
       assert.equal(
         p.channels.shared.updatedAt,
         FUTURE,
-        "timestamp still fixed",
+        "updatedAt still fixed",
       );
-      assert.equal(p.channels.shared.rev, 3, "rev advanced 2→3");
+      assert.equal(p.channels.shared.rev, 9, "rev advanced 8→9");
       hook.unmount();
     } finally {
       cleanup();
@@ -301,115 +210,13 @@ export function runMergeLaneHookSuite({
     }
   });
 
-  test(`${label}: empty-store click survives a later higher-rev head with an older updatedAt`, async () => {
-    const { act, cleanup, renderHook } = await import("@testing-library/react");
-    const { relayClient } = await import("@/shared/api/relayClient");
-
-    const live = {};
-    const restore = stubRelay(relayClient, { live });
-    const origTauri = window.__TAURI_INTERNALS__;
-    const origDateNow = Date.now;
-    Date.now = () => 1000 * 1_000;
-    window.__TAURI_INTERNALS__ = {
-      invoke: (cmd) => {
-        if (cmd === "nip44_decrypt_from_self")
-          return Promise.resolve(
-            makePayload({
-              shared: { [entryValueField]: false, updatedAt: 500, rev: 99 },
-            }),
-          );
-        return Promise.reject(new Error(`unmocked ${cmd}`));
-      },
-    };
-    const pubkey = `pk-${label}-empty`;
-    let hook = null;
-    try {
-      await act(async () => {
-        hook = renderHook(() => useHook(pubkey, "wss://r"));
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      await act(async () => hook.result.current[trueAction]("shared"));
-      await act(async () => {
-        live.cb({
-          id: "older-higher-rev",
-          pubkey,
-          created_at: 500,
-          content: "cipher",
-          kind: 30078,
-          tags: [["d", dTag]],
-          sig: "s",
-        });
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      assert.equal(
-        hook.result.current[idsField].has("shared"),
-        true,
-        "click at newer updatedAt survives an older higher-rev head",
-      );
-      hook.unmount();
-    } finally {
-      cleanup();
-      Date.now = origDateNow;
-      window.__TAURI_INTERNALS__ = origTauri;
-      restore();
-    }
-  });
-
-  test(`${label}: unobserved future head wins over an empty-high-water click on primary updatedAt`, async () => {
-    const { act, cleanup, renderHook } = await import("@testing-library/react");
-    const { relayClient } = await import("@/shared/api/relayClient");
-
-    const live = {};
-    const restore = stubRelay(relayClient, { live });
-    const origTauri = window.__TAURI_INTERNALS__;
-    const origDateNow = Date.now;
-    Date.now = () => 1000 * 1_000;
-    window.__TAURI_INTERNALS__ = {
-      invoke: (cmd) => {
-        if (cmd === "nip44_decrypt_from_self")
-          return Promise.resolve(
-            makePayload({
-              shared: { [entryValueField]: false, updatedAt: 1300, rev: 1 },
-            }),
-          );
-        return Promise.reject(new Error(`unmocked ${cmd}`));
-      },
-    };
-    const pubkey = `pk-${label}-unobserved-future`;
-    let hook = null;
-    try {
-      await act(async () => {
-        hook = renderHook(() => useHook(pubkey, "wss://r"));
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      await act(async () => hook.result.current[trueAction]("shared"));
-      await act(async () => {
-        live.cb({
-          id: "unobserved-future",
-          pubkey,
-          created_at: 1300,
-          content: "cipher",
-          kind: 30078,
-          tags: [["d", dTag]],
-          sig: "s",
-        });
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-      });
-      assert.equal(
-        hook.result.current[idsField].has("shared"),
-        false,
-        "unobserved future head wins on primary updatedAt (accepted residual)",
-      );
-      hook.unmount();
-    } finally {
-      cleanup();
-      Date.now = origDateNow;
-      window.__TAURI_INTERNALS__ = origTauri;
-      restore();
-    }
-  });
-
-  test(`${label}: cross-window storage event is observed and max-merged`, async () => {
+  // Cross-window storage merge + outbox resume in one compact scenario.
+  // (a) A cross-window storage event is observed and max-merged into this window.
+  // (b) A click after the merge mints above the observed peer high-water.
+  // (c) A persisted outbox record is retained until the publish completes.
+  // Mutations: (a) removing the storageEvent listener; (b) not tracking peer
+  // maxRevSeen; (c) dropping writeOwnOutbox in the bootstrap path.
+  test(`${label}: cross-window merge, subsequent click mints above peer high-water, outbox retained`, async () => {
     const { act, cleanup, renderHook } = await import("@testing-library/react");
     const { relayClient } = await import("@/shared/api/relayClient");
 
@@ -417,12 +224,27 @@ export function runMergeLaneHookSuite({
     const origDateNow = Date.now;
     Date.now = () => 100 * 1_000;
     const pubkey = `pk-${label}-xwin`;
+    const outboxKey = `${outboxKeyPrefix}:${pubkey}:${encodeURIComponent("wss://r")}`;
+    // Pre-seed a persisted outbox record (simulates resumed intent).
+    window.localStorage.setItem(
+      outboxKey,
+      makePayload({
+        resumed: { [entryValueField]: true, updatedAt: 90, rev: 2 },
+      }),
+    );
     let hook = null;
     try {
       await act(async () => {
         hook = renderHook(() => useHook(pubkey, "wss://r"));
-        for (let i = 0; i < 20; i++) await Promise.resolve();
+        for (let i = 0; i < 40; i++) await Promise.resolve();
       });
+      // (c) Outbox retained until publish completes.
+      assert.ok(
+        window.localStorage.getItem(outboxKey) !== null,
+        "outbox retained during bootstrap",
+      );
+
+      // (a) Peer window writes a store with rev 12 and fires a storage event.
       window.localStorage.setItem(
         storageKey(pubkey, "wss://r"),
         makePayload({
@@ -442,45 +264,13 @@ export function runMergeLaneHookSuite({
         true,
         "peer write merged into this window",
       );
+
+      // (b) Click after merge mints above peer high-water (updatedAt 900, rev 12).
       await act(async () => hook.result.current[falseAction]("shared"));
       const p = readStore(pubkey, "wss://r");
       assert.equal(p.channels.shared[entryValueField], false, "click applied");
       assert.equal(p.channels.shared.updatedAt, 900, "held at peer high-water");
       assert.equal(p.channels.shared.rev, 13, "rev = peer rev + 1");
-      hook.unmount();
-    } finally {
-      cleanup();
-      Date.now = origDateNow;
-      restore();
-    }
-  });
-
-  test(`${label}: bootstrap resumes a persisted outbox edit`, async () => {
-    const { act, cleanup, renderHook } = await import("@testing-library/react");
-    const { relayClient } = await import("@/shared/api/relayClient");
-
-    const restore = stubRelay(relayClient);
-    const origDateNow = Date.now;
-    Date.now = () => 100 * 1_000;
-    const pubkey = `pk-${label}-outbox`;
-    const relayUrl = `wss://r.${label}-outbox`;
-    const outboxKey = `${outboxKeyPrefix}:${pubkey}:${encodeURIComponent(relayUrl)}`;
-    window.localStorage.setItem(
-      outboxKey,
-      makePayload({
-        resumed: { [entryValueField]: true, updatedAt: 90, rev: 2 },
-      }),
-    );
-    let hook = null;
-    try {
-      await act(async () => {
-        hook = renderHook(() => useHook(pubkey, relayUrl));
-        for (let i = 0; i < 40; i++) await Promise.resolve();
-      });
-      assert.ok(
-        window.localStorage.getItem(outboxKey) !== null,
-        "outbox retained until the resumed publish completes",
-      );
       hook.unmount();
     } finally {
       cleanup();

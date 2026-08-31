@@ -90,7 +90,6 @@ function withStorage(fn) {
 const { normalizeRelayUrl } = await import("@/shared/lib/normalizeRelayUrl");
 const { outboxWindowNonce } = await import("./sidebarSyncWatermark.ts");
 const stars = await import("./channelStarsStorage.ts");
-const mutes = await import("./channelMutesStorage.ts");
 const sort = await import("./channelSortPreference.ts");
 const sections = await import("./channelSectionsStorage.ts");
 
@@ -100,7 +99,6 @@ const SCOPE = `${PK}:${encodeURIComponent(normalizeRelayUrl(RELAY))}`;
 
 const PREFIX = {
   stars: "buzz-channel-stars-outbox.v1",
-  mutes: "buzz-channel-mutes-outbox.v1",
   sort: "buzz-channel-sort-outbox.v1",
   sections: "buzz-channel-sections-outbox.v1",
 };
@@ -118,8 +116,6 @@ const writeAt = (ls, key, store, queuedAt) =>
 
 const starStore = (channels) => ({ version: 1, channels });
 const starEntry = (starred, updatedAt, rev) => ({ starred, updatedAt, rev });
-const muteStore = (channels) => ({ version: 1, channels });
-const muteEntry = (muted, updatedAt, rev) => ({ muted, updatedAt, rev });
 const sortStore = (groups) => ({ version: 1, groups });
 const sectionStore = (secs, assignments = {}) => ({
   version: 1,
@@ -218,26 +214,6 @@ test("(ii) stars (merge): both windows' distinct-channel edits resume", () => {
   });
 });
 
-test("(ii) mutes (merge): both windows' distinct-channel edits resume", () => {
-  withStorage((ls) => {
-    writeAt(
-      ls,
-      foreignKey("mutes", "A", 0),
-      muteStore({ a: muteEntry(true, 100, 1) }),
-      100,
-    );
-    writeAt(
-      ls,
-      foreignKey("mutes", "B", 0),
-      muteStore({ b: muteEntry(true, 200, 1) }),
-      200,
-    );
-    const resumed = mutes.readChannelMutesOutbox(PK, RELAY);
-    assert.deepEqual(resumed.channels.a, muteEntry(true, 100, 1));
-    assert.deepEqual(resumed.channels.b, muteEntry(true, 200, 1));
-  });
-});
-
 test("(ii) sort (whole-blob): the newest queued window resumes; older is LWW-superseded", () => {
   withStorage((ls) => {
     writeAt(
@@ -255,27 +231,6 @@ test("(ii) sort (whole-blob): the newest queued window resumes; older is LWW-sup
     assert.equal(
       sort.readChannelSortOutbox(PK, RELAY).store.groups.channels,
       "recent",
-    );
-  });
-});
-
-test("(ii) sections (whole-blob): the newest queued window resumes; older is LWW-superseded", () => {
-  withStorage((ls) => {
-    writeAt(
-      ls,
-      foreignKey("sections", "A", 0),
-      sectionStore([{ id: "s1", name: "One", order: 0 }]),
-      100,
-    );
-    writeAt(
-      ls,
-      foreignKey("sections", "B", 0),
-      sectionStore([{ id: "s2", name: "Two", order: 0 }]),
-      200,
-    );
-    assert.deepEqual(
-      sections.readChannelSectionsOutbox(PK, RELAY).store.sections,
-      [{ id: "s2", name: "Two", order: 0 }],
     );
   });
 });

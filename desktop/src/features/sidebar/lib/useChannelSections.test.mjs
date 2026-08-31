@@ -18,6 +18,69 @@ before(() => {
 
 after(() => dom.window.close());
 
+// ── Shared test helpers ───────────────────────────────────────────────────────
+
+/** Install relay no-ops and return a restore function. */
+function stubRelay(relayClient, { live, reconnect, publishCalls } = {}) {
+  const orig = {
+    fetchEvents: relayClient.fetchEvents,
+    subscribeLive: relayClient.subscribeLive,
+    subscribeToReconnects: relayClient.subscribeToReconnects,
+    publishEvent: relayClient.publishEvent,
+  };
+  relayClient.fetchEvents = async () => [];
+  relayClient.subscribeLive = async (_f, cb) => {
+    if (live) live.cb = cb;
+    return async () => {};
+  };
+  relayClient.subscribeToReconnects = (cb) => {
+    if (reconnect) reconnect.cb = cb;
+    return () => {};
+  };
+  relayClient.publishEvent = async (...args) => {
+    if (publishCalls) publishCalls.push(args);
+  };
+  return () => Object.assign(relayClient, orig);
+}
+
+/**
+ * Install a Tauri mock that:
+ *  - encrypt returns "ct"
+ *  - sign returns a minimal event with the given pubkey
+ *  - decrypt returns `decryptPayload` (a JSON string or callback)
+ */
+function stubTauri(pubkey, decryptPayload) {
+  const orig = window.__TAURI_INTERNALS__;
+  window.__TAURI_INTERNALS__ = {
+    invoke: (cmd, args) => {
+      if (cmd === "nip44_decrypt_from_self") {
+        const payload =
+          typeof decryptPayload === "function"
+            ? decryptPayload(args)
+            : decryptPayload;
+        return Promise.resolve(payload);
+      }
+      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
+      if (cmd === "sign_event")
+        return Promise.resolve(
+          JSON.stringify({
+            id: "signed",
+            pubkey,
+            content: "ct",
+            created_at: 0,
+            kind: 30078,
+            tags: [],
+            sig: "s",
+          }),
+        );
+      return Promise.reject(new Error(`unmocked ${cmd}`));
+    },
+  };
+  return () => {
+    window.__TAURI_INTERNALS__ = orig;
+  };
+}
+
 test("assignChannel refreshes an existing assignment before the next eviction", async () => {
   const { act, cleanup, renderHook } = await import("@testing-library/react");
   const { relayClient } = await import("@/shared/api/relayClient");
@@ -26,12 +89,7 @@ test("assignChannel refreshes an existing assignment before the next eviction", 
   );
   const { useChannelSections } = await import("./useChannelSections.ts");
 
-  const originalFetchEvents = relayClient.fetchEvents;
-  const originalSubscribeLive = relayClient.subscribeLive;
-  const originalSubscribeToReconnects = relayClient.subscribeToReconnects;
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async () => async () => {};
-  relayClient.subscribeToReconnects = () => () => {};
+  const restoreRelay = stubRelay(relayClient);
 
   const pubkey = "pk-at-capacity";
   const relayUrl = "wss://relay.example";
@@ -71,9 +129,7 @@ test("assignChannel refreshes an existing assignment before the next eviction", 
     unmount();
   } finally {
     cleanup();
-    relayClient.fetchEvents = originalFetchEvents;
-    relayClient.subscribeLive = originalSubscribeLive;
-    relayClient.subscribeToReconnects = originalSubscribeToReconnects;
+    restoreRelay();
   }
 });
 
@@ -100,35 +156,8 @@ test("storage event while a local edit is pending is deferred, not applied", asy
   const { useChannelSections } = await import("./useChannelSections.ts");
   const { storageKey } = await import("./channelSectionsStorage.ts");
 
-  const origFetch = relayClient.fetchEvents;
-  const origLive = relayClient.subscribeLive;
-  const origReconnect = relayClient.subscribeToReconnects;
-  const origPublish = relayClient.publishEvent;
-  const origTauri = window.__TAURI_INTERNALS__;
-
-  // Block all publishes so the debounce never fires during the test.
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async () => async () => {};
-  relayClient.subscribeToReconnects = () => () => {};
-  relayClient.publishEvent = async () => {};
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd) => {
-      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
-      if (cmd === "sign_event")
-        return Promise.resolve(
-          JSON.stringify({
-            id: "signed",
-            pubkey: "pk-storage-guard",
-            content: "ct",
-            created_at: 0,
-            kind: 30078,
-            tags: [],
-            sig: "s",
-          }),
-        );
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
+  const restoreRelay = stubRelay(relayClient);
+  const restoreTauri = stubTauri("pk-storage-guard", null);
 
   const pubkey = "pk-storage-guard";
   const relayUrl = "wss://r.storage-guard";
@@ -150,8 +179,7 @@ test("storage event while a local edit is pending is deferred, not applied", asy
       "A1 section created",
     );
 
-    // Window B writes B1 to the shared scoped cache key (simulates a peer
-    // window's edit landing in localStorage and firing the storage event).
+    // Window B writes B1 to the shared scoped cache key.
     const b1Store = JSON.stringify({
       version: 1,
       sections: [{ id: "b1-section", name: "B1", order: 0 }],
@@ -184,9 +212,7 @@ test("storage event while a local edit is pending is deferred, not applied", asy
       "optimistic state must be unchanged after the deferred storage event",
     );
 
-    // A2: user makes a second edit inside the debounce window. It is derived
-    // from A1's state (since B1 was deferred), so the result contains A1's
-    // section plus A2's.
+    // A2: derived from A1's state (since B1 was deferred).
     await act(async () => {
       hook.result.current.createSection("A2-Section");
     });
@@ -199,11 +225,8 @@ test("storage event while a local edit is pending is deferred, not applied", asy
     hook.unmount();
   } finally {
     cleanup();
-    relayClient.fetchEvents = origFetch;
-    relayClient.subscribeLive = origLive;
-    relayClient.subscribeToReconnects = origReconnect;
-    relayClient.publishEvent = origPublish;
-    window.__TAURI_INTERNALS__ = origTauri;
+    restoreRelay();
+    restoreTauri();
   }
 });
 
@@ -220,46 +243,15 @@ test("live remote while a local edit is pending defers to the pending edit", asy
     "./channelSectionsStorage.ts"
   );
 
-  const origFetch = relayClient.fetchEvents;
-  const origLive = relayClient.subscribeLive;
-  const origReconnect = relayClient.subscribeToReconnects;
-  const origPublish = relayClient.publishEvent;
-  const origTauri = window.__TAURI_INTERNALS__;
-
-  let live = null;
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async (_f, cb) => {
-    live = cb;
-    return async () => {};
-  };
-  relayClient.subscribeToReconnects = () => () => {};
-  relayClient.publishEvent = async () => {};
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd) => {
-      if (cmd === "nip44_decrypt_from_self")
-        return Promise.resolve(
-          JSON.stringify({
-            version: 1,
-            sections: [{ id: "remote", name: "Remote", order: 0 }],
-            assignments: {},
-          }),
-        );
-      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
-      if (cmd === "sign_event")
-        return Promise.resolve(
-          JSON.stringify({
-            id: "signed",
-            pubkey: "pk-live-pending",
-            content: "ct",
-            created_at: 0,
-            kind: 30078,
-            tags: [],
-            sig: "s",
-          }),
-        );
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
+  const live = {};
+  const restoreRelay = stubRelay(relayClient, { live });
+  const restoreTauri = stubTauri("pk-live-pending", () =>
+    JSON.stringify({
+      version: 1,
+      sections: [{ id: "remote", name: "Remote", order: 0 }],
+      assignments: {},
+    }),
+  );
 
   const pubkey = "pk-live-pending";
   const relayUrl = "wss://r.live";
@@ -272,7 +264,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
       await Promise.resolve();
       await Promise.resolve();
     });
-    assert.ok(live, "live subscription installed");
+    assert.ok(live.cb, "live subscription installed");
 
     // Make a local edit — it becomes the pending store and persists to outbox.
     await act(async () => {
@@ -286,7 +278,7 @@ test("live remote while a local edit is pending defers to the pending edit", asy
 
     // A remote live event arrives while the edit is still pending.
     await act(async () => {
-      live({
+      live.cb({
         id: "remote-event",
         pubkey,
         created_at: 500,
@@ -311,11 +303,8 @@ test("live remote while a local edit is pending defers to the pending edit", asy
     hook.unmount();
   } finally {
     cleanup();
-    relayClient.fetchEvents = origFetch;
-    relayClient.subscribeLive = origLive;
-    relayClient.subscribeToReconnects = origReconnect;
-    relayClient.publishEvent = origPublish;
-    window.__TAURI_INTERNALS__ = origTauri;
+    restoreRelay();
+    restoreTauri();
   }
 });
 
@@ -328,35 +317,17 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
   const { relayClient } = await import("@/shared/api/relayClient");
   const { useChannelSections } = await import("./useChannelSections.ts");
 
-  const origFetch = relayClient.fetchEvents;
-  const origLive = relayClient.subscribeLive;
-  const origReconnect = relayClient.subscribeToReconnects;
-  const origTauri = window.__TAURI_INTERNALS__;
-
-  let live = null;
-  relayClient.fetchEvents = async () => [];
-  relayClient.subscribeLive = async (_f, cb) => {
-    live = cb;
-    return async () => {};
-  };
-  relayClient.subscribeToReconnects = () => () => {};
-  // Decrypt payload keyed off the event id embedded in the ciphertext so each
-  // delivered event yields a distinct store we can assert on.
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd, args) => {
-      if (cmd === "nip44_decrypt_from_self") {
-        const id = args?.ciphertext ?? "";
-        return Promise.resolve(
-          JSON.stringify({
-            version: 1,
-            sections: [{ id, name: id, order: 0 }],
-            assignments: {},
-          }),
-        );
-      }
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
+  const live = {};
+  const restoreRelay = stubRelay(relayClient, { live });
+  // Decrypt payload keyed off the event id so each event yields a distinct store.
+  const restoreTauri = stubTauri("pk-tie", (args) => {
+    const id = args?.ciphertext ?? "";
+    return JSON.stringify({
+      version: 1,
+      sections: [{ id, name: id, order: 0 }],
+      assignments: {},
+    });
+  });
 
   const pubkey = "pk-tie";
   const relayUrl = "wss://r.tie";
@@ -368,11 +339,11 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
       await Promise.resolve();
       await Promise.resolve();
     });
-    assert.ok(live, "live subscription installed");
+    assert.ok(live.cb, "live subscription installed");
 
     const deliver = async (id) => {
       await act(async () => {
-        live({
+        live.cb({
           id,
           pubkey,
           created_at: 1000,
@@ -386,10 +357,8 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
       });
     };
 
-    // Larger id first (would win under the old <= comparator)...
-    await deliver("bbbb");
-    // ...then the lower id at the same timestamp — the relay's canonical winner.
-    await deliver("aaaa");
+    await deliver("bbbb"); // larger id first
+    await deliver("aaaa"); // lower id — relay canonical winner
 
     assert.deepEqual(
       hook.result.current.sections.map((s) => s.id),
@@ -399,10 +368,8 @@ test("equal-timestamp tie-break applies the lower event id (relay canonical winn
     hook.unmount();
   } finally {
     cleanup();
-    relayClient.fetchEvents = origFetch;
-    relayClient.subscribeLive = origLive;
-    relayClient.subscribeToReconnects = origReconnect;
-    window.__TAURI_INTERNALS__ = origTauri;
+    restoreRelay();
+    restoreTauri();
   }
 });
 
@@ -420,58 +387,26 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
   const { relayClient } = await import("@/shared/api/relayClient");
   const { useChannelSections } = await import("./useChannelSections.ts");
 
-  const origFetch = relayClient.fetchEvents;
-  const origLive = relayClient.subscribeLive;
-  const origReconnect = relayClient.subscribeToReconnects;
-  const origPublish = relayClient.publishEvent;
-  const origTauri = window.__TAURI_INTERNALS__;
-
-  let reconnect = null;
-  // A single mutable head; bumped to created_at 200 (a remote that won LWW)
-  // right before the reconnect fires.
+  const reconnect = {};
+  const publishCalls = [];
+  // A mutable head: bumped to 200 right before reconnect fires.
   let head = {
     pubkey: "pk-sec-recon",
     content: "remote-cipher",
     created_at: 100,
     id: "evt-100",
   };
-  const publishCalls = [];
+  const origFetch = relayClient.fetchEvents;
   relayClient.fetchEvents = async () => [head];
-  relayClient.subscribeLive = async () => async () => {};
-  relayClient.subscribeToReconnects = (cb) => {
-    reconnect = cb;
-    return () => {};
-  };
-  relayClient.publishEvent = async (...args) => {
-    publishCalls.push(args);
-  };
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd) => {
-      // The head decrypts to a remote store with a single "remote" section.
-      if (cmd === "nip44_decrypt_from_self")
-        return Promise.resolve(
-          JSON.stringify({
-            version: 1,
-            sections: [{ id: "remote", name: "Remote", order: 0 }],
-            assignments: {},
-          }),
-        );
-      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
-      if (cmd === "sign_event")
-        return Promise.resolve(
-          JSON.stringify({
-            id: "signed",
-            pubkey: "pk-sec-recon",
-            content: "ct",
-            created_at: 0,
-            kind: 30078,
-            tags: [],
-            sig: "s",
-          }),
-        );
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
+  const restoreRelay = stubRelay(relayClient, { reconnect, publishCalls });
+  relayClient.fetchEvents = async () => [head]; // override stubRelay's fetchEvents
+  const restoreTauri = stubTauri("pk-sec-recon", () =>
+    JSON.stringify({
+      version: 1,
+      sections: [{ id: "remote", name: "Remote", order: 0 }],
+      assignments: {},
+    }),
+  );
 
   const pubkey = "pk-sec-recon";
   const relayUrl = "wss://r.recon";
@@ -483,10 +418,8 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
       await Promise.resolve();
       await Promise.resolve();
     });
-    assert.ok(reconnect, "reconnect handler installed");
+    assert.ok(reconnect.cb, "reconnect handler installed");
 
-    // Local edit while the head stands at created_at 100 — the baseline the
-    // edit is frozen against.
     await act(async () => {
       hook.result.current.createSection("Local");
     });
@@ -495,8 +428,7 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
       "optimistic local section applied",
     );
 
-    // The remote advances to created_at 200 (a peer won LWW), then reconnect
-    // fires: the hook re-fetches and wakes the existing generation.
+    // Remote advances to 200 (peer won LWW), then reconnect fires.
     head = {
       pubkey: "pk-sec-recon",
       content: "remote-cipher",
@@ -504,7 +436,7 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
       id: "evt-200",
     };
     await act(async () => {
-      reconnect();
+      reconnect.cb();
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -514,11 +446,8 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
     assert.equal(
       publishCalls.length,
       0,
-      "must adopt the advanced remote on reconnect, never publish the stale edit over it",
+      "must adopt the advanced remote on reconnect, never publish",
     );
-    // On adopt the whole-blob store is replaced by the remote (only a "remote"
-    // section), so the losing local edit is dropped. Under the mutation
-    // (re-queue) the pending edit is never adopted away and "Local" survives.
     assert.deepEqual(
       hook.result.current.sections.map((s) => s.id),
       ["remote"],
@@ -528,10 +457,8 @@ test("reconnect adopts a remote that advanced while the edit was pending, never 
   } finally {
     cleanup();
     relayClient.fetchEvents = origFetch;
-    relayClient.subscribeLive = origLive;
-    relayClient.subscribeToReconnects = origReconnect;
-    relayClient.publishEvent = origPublish;
-    window.__TAURI_INTERNALS__ = origTauri;
+    restoreRelay();
+    restoreTauri();
   }
 });
 
@@ -551,18 +478,13 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
   );
   const { normalizeRelayUrl } = await import("@/shared/lib/normalizeRelayUrl");
 
-  const origFetch = relayClient.fetchEvents;
-  const origLive = relayClient.subscribeLive;
-  const origReconnect = relayClient.subscribeToReconnects;
-  const origPublish = relayClient.publishEvent;
-  const origTauri = window.__TAURI_INTERNALS__;
   const origLocalStorage = window.localStorage;
 
   const pubkey = "pk-sec-quota";
   const relayUrl = "wss://r.sec-quota";
   const scope = `${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`;
   const legacyKey = `buzz-channel-sections-outbox.v1:${scope}`;
-  const v2Prefix = `buzz-channel-sections-outbox.v1:${scope}:`; // nonce/seq suffix
+  const v2Prefix = `buzz-channel-sections-outbox.v1:${scope}:`;
   const legacyRaw = JSON.stringify({
     store: {
       version: 1,
@@ -572,9 +494,7 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
     queuedAt: 0,
   });
 
-  // A backing localStorage that throws on any v2 outbox write (the quota
-  // failure), while allowing the legacy read, the marker write, and applied
-  // state through — so the ONLY failure is the durability transfer.
+  // localStorage that throws on any v2 outbox write, allowing everything else.
   const map = new Map([[legacyKey, legacyRaw]]);
   const throwingStorage = {
     getItem: (k) => (map.has(k) ? map.get(k) : null),
@@ -590,54 +510,26 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
     key: (i) => [...map.keys()][i] ?? null,
   };
 
-  const head = null;
-  relayClient.fetchEvents = async () => (head ? [head] : []);
-  relayClient.subscribeLive = async () => async () => {};
-  relayClient.subscribeToReconnects = () => () => {};
-  relayClient.publishEvent = async () => {};
-  window.__TAURI_INTERNALS__ = {
-    invoke: (cmd) => {
-      if (cmd === "nip44_encrypt_to_self") return Promise.resolve("ct");
-      if (cmd === "sign_event")
-        return Promise.resolve(
-          JSON.stringify({
-            id: "signed",
-            pubkey,
-            content: "ct",
-            created_at: 0,
-            kind: 30078,
-            tags: [],
-            sig: "s",
-          }),
-        );
-      return Promise.reject(new Error(`unmocked ${cmd}`));
-    },
-  };
+  const restoreRelay = stubRelay(relayClient);
+  const restoreTauri = stubTauri(pubkey, null);
 
   let hook = null;
   try {
-    // Seed a prior watermark so bootstrap holds (no first-sync seed) and the
-    // legacy blob is the sole outbox record resumed.
     Object.defineProperty(window, "localStorage", {
       value: throwingStorage,
       configurable: true,
     });
+    // Seed watermark so bootstrap holds (no first-sync seed).
     window.localStorage.setItem(
-      `buzz-sync-watermark.v1:channel-sections:${pubkey}:${encodeURIComponent(
-        normalizeRelayUrl(relayUrl),
-      )}`,
+      `buzz-sync-watermark.v1:channel-sections:${pubkey}:${encodeURIComponent(normalizeRelayUrl(relayUrl))}`,
       "1700000000",
     );
 
     await act(async () => {
       hook = renderHook(() => useChannelSections(pubkey, relayUrl));
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 4; i++) await Promise.resolve();
     });
 
-    // The marker must NOT have been written: the v2 transfer threw.
     const markerWritten = [...map.keys()].some((k) =>
       k.includes("-legacy-consumed:"),
     );
@@ -646,17 +538,17 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
       false,
       "consumed marker must not be written after a failed v2 transfer",
     );
-    // The legacy blob is still enumerated as replayable — not silently lost.
+
     const resumed = readChannelSectionsOutbox(pubkey, relayUrl);
     assert.ok(resumed !== null, "legacy blob must remain replayable");
     assert.equal(
       resumed.store.sections[0]?.id,
       "legacy",
-      "the exact legacy intent survives for a later boot",
+      "exact legacy intent survives",
     );
     assert.ok(
       resumed.legacyRawToConsume !== null,
-      "legacy record still reports itself for consumption on a later boot",
+      "legacy record still reports itself for consumption",
     );
     hook.unmount();
   } finally {
@@ -665,10 +557,7 @@ test("legacy replay whose v2 transfer fails (quota) does not write the consumed 
       value: origLocalStorage,
       configurable: true,
     });
-    relayClient.fetchEvents = origFetch;
-    relayClient.subscribeLive = origLive;
-    relayClient.subscribeToReconnects = origReconnect;
-    relayClient.publishEvent = origPublish;
-    window.__TAURI_INTERNALS__ = origTauri;
+    restoreRelay();
+    restoreTauri();
   }
 });
