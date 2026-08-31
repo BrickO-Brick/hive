@@ -35,6 +35,18 @@ fn buzz_auto_migrate_enabled(value: Option<&str>) -> bool {
     })
 }
 
+async fn connect_audit_pool(config: &DbConfig) -> anyhow::Result<sqlx::PgPool> {
+    let audit_config = DbConfig {
+        read_database_url: None,
+        max_connections: 5,
+        min_connections: 1,
+        ..config.clone()
+    };
+    Db::connect_writer_pool(&audit_config)
+        .await
+        .map_err(Into::into)
+}
+
 fn relay_keypair_from_config(relay_private_key: Option<&str>) -> anyhow::Result<nostr::Keys> {
     let hex = relay_private_key.ok_or_else(|| {
         anyhow::anyhow!(
@@ -161,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         metrics_port = config.metrics_port,
         max_frame_bytes = config.max_frame_bytes,
         audit_enabled = config.audit_enabled,
+        push_enabled = config.push_enabled,
         "Config loaded"
     );
 
@@ -168,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
     let usage_idle_timeout_secs = usage_metrics_idle_timeout_secs(usage_interval_secs);
     relay_metrics::install(config.metrics_port, usage_idle_timeout_secs);
     metrics::gauge!("buzz_audit_enabled").set(if config.audit_enabled { 1.0 } else { 0.0 });
+    metrics::gauge!("buzz_push_enabled").set(if config.push_enabled { 1.0 } else { 0.0 });
     info!(
         port = config.metrics_port,
         idle_timeout_secs = usage_idle_timeout_secs,
@@ -181,7 +195,8 @@ async fn main() -> anyhow::Result<()> {
         max_connections: config.db_pool_size,
         read_max_connections: config.db_read_pool_size,
         ..DbConfig::default()
-    };
+    }
+    .with_session_timeouts_from_env();
     let db = Db::new(&db_config).await.map_err(|e| {
         error!("Failed to connect to Postgres: {e}");
         anyhow::anyhow!("DB connection failed: {e}")
@@ -364,10 +379,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let audit = if config.audit_enabled {
-        let audit_pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(5)
-            .min_connections(1)
-            .connect(&config.database_url)
+        let audit_pool = connect_audit_pool(&db_config)
             .await
             .map_err(|e| anyhow::anyhow!("Audit DB connection failed: {e}"))?;
         info!("Audit service ready");
@@ -695,6 +707,7 @@ async fn main() -> anyhow::Result<()> {
                         &reaper_state,
                         channel_id,
                         serde_json::json!({ "type": "channel_auto_archived" }),
+                        chrono::Utc::now(),
                     )
                     .await
                     {
@@ -727,15 +740,40 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // NIP-PL matcher and worker are enabled as one unit. Lease acceptance is
-    // already disabled without the exact gateway URL, so discovery and runtime
-    // cannot advertise or accumulate work for an undeliverable configuration.
-    if state.config.push_gateway_delivery_url.is_some() {
+    // NIP-PL matcher and worker are enabled as one unit behind the explicit
+    // deployment opt-in. The gateway URL alone never enables push.
+    if state.config.push_enabled {
         tokio::spawn(buzz_relay::push_runtime::run_matcher(Arc::clone(&state)));
         tokio::spawn(buzz_relay::push_runtime::run_delivery_worker(Arc::clone(
             &state,
         )));
         info!("NIP-PL push matcher and delivery worker started");
+    } else {
+        info!("NIP-PL push disabled by BUZZ_PUSH_ENABLED");
+    }
+
+    // Admin outbox delivery worker — drives `relay_admin_outbox` rows.
+    // Uses DB-level leases (held_by / lease_expires_at) so multiple pods can
+    // run the worker concurrently without double-delivery.
+    {
+        let outbox_state = Arc::clone(&state);
+        tokio::spawn(
+            async move { buzz_relay::handlers::admin_outbox_worker::run(outbox_state).await },
+        );
+        info!("Admin outbox delivery worker started");
+    }
+
+    // Action recovery worker: re-drives stranded relay_admin_actions rows whose
+    // action lease expired before the enforcement state machine completed.
+    // Crash safety: a process that died between claim and finalization leaves
+    // an action in pending/enforcing; this worker resumes from the persisted
+    // step_marker state without re-running the mutation.
+    {
+        let action_state = Arc::clone(&state);
+        tokio::spawn(
+            async move { buzz_relay::handlers::admin_action_worker::run(action_state).await },
+        );
+        info!("Admin action recovery worker started");
     }
 
     // NIP-ER reminder scheduler — polls for due reminders and publishes them
@@ -2024,10 +2062,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        buzz_auto_migrate_enabled, dropped_in_memory_keys, idle_timeout_secs,
+        buzz_auto_migrate_enabled, connect_audit_pool, dropped_in_memory_keys, idle_timeout_secs,
         refresh_legacy_active_gauge_recency, relay_keypair_from_config,
         run_periodic_until_cancelled, EmissionScope, InMemoryMetricKey,
     };
+    use buzz_db::DbConfig;
     use metrics::GaugeFn;
     use metrics_util::{
         debugging::DebugValue,
@@ -2057,6 +2096,67 @@ mod tests {
             .expect("loop must not wait for the next interval")
             .expect("loop task");
         assert!(tick_count.load(std::sync::atomic::Ordering::Relaxed) <= 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn audit_writer_pool_installs_timeouts_and_bounds_advisory_lock_waits() {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = connect_audit_pool(&DbConfig {
+            database_url,
+            max_connections: 2,
+            min_connections: 0,
+            lock_timeout_ms: 500,
+            idle_txn_timeout_ms: 60_000,
+            statement_timeout_ms: 0,
+            ..DbConfig::default()
+        })
+        .await
+        .expect("connect audit writer pool");
+
+        let (lock, idle, statement): (String, String, String) = sqlx::query_as(
+            "SELECT current_setting('lock_timeout'), \
+                    current_setting('idle_in_transaction_session_timeout'), \
+                    current_setting('statement_timeout')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read effective audit writer GUCs");
+        assert_eq!(lock, "500ms");
+        assert_eq!(idle, "1min");
+        assert_eq!(statement, "0");
+
+        let lock_key = i64::from_be_bytes(
+            Uuid::new_v4().as_bytes()[..8]
+                .try_into()
+                .expect("eight UUID bytes"),
+        );
+        let mut holder = pool.acquire().await.expect("audit lock holder");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *holder)
+            .await
+            .expect("hold audit advisory lock");
+
+        let started = std::time::Instant::now();
+        let mut waiter = pool.acquire().await.expect("audit lock waiter");
+        let error = sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(lock_key)
+            .execute(&mut *waiter)
+            .await
+            .expect_err("audit advisory-lock waiter must time out");
+        let code = match &error {
+            sqlx::Error::Database(db_error) => db_error.code().map(|code| code.to_string()),
+            other => panic!("expected database error, got {other:?}"),
+        };
+        assert_eq!(code.as_deref(), Some("55P03"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(lock_key)
+            .execute(&mut *holder)
+            .await
+            .expect("release audit advisory lock");
     }
 
     #[test]
