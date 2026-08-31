@@ -560,6 +560,11 @@ impl IssuerRegistry {
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
     }
+
+    /// Iterate over all registered policies.
+    pub fn all_policies(&self) -> impl Iterator<Item = &IssuerPolicy> {
+        self.policies.values()
+    }
 }
 
 /// Sort and deduplicate a set-valued list of strings into its canonical form.
