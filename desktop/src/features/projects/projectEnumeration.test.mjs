@@ -82,7 +82,7 @@ test("buildProjectHomeFromFetcher scopes startup lookup to the active channel", 
     extraFilter: { "#buzz-channel": [channelId] },
   });
   assert.deepEqual(calls[1], {
-    kinds: [1622],
+    kinds: [47001],
     extraFilter: undefined,
   });
   assert.deepEqual(calls[2], {

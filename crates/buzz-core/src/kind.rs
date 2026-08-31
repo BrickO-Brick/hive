@@ -619,7 +619,7 @@ pub const KIND_GIT_ISSUE: u32 = 1621;
 /// `kind:30621` Project coordinate and the exact effective revision they were
 /// based on, allowing the relay to authorize collaborative writes without
 /// forging a replacement under the Project owner's key.
-pub const KIND_PROJECT_REVISION: u32 = 1622;
+pub const KIND_PROJECT_REVISION: u32 = 47001;
 /// NIP-34: Status — Open.
 pub const KIND_GIT_STATUS_OPEN: u32 = 1630;
 /// NIP-34: Status — Applied / Merged.

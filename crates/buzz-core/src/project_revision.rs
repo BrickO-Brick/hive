@@ -119,16 +119,14 @@ fn singleton_tag<'a>(
     event: &'a Event,
     name: &'static str,
 ) -> Result<&'a str, ProjectRevisionError> {
-    let values: Vec<&str> = event
+    let matching: Vec<&[String]> = event
         .tags
         .iter()
-        .filter_map(|tag| match tag.as_slice() {
-            [tag_name, value] if tag_name == name => Some(value.as_str()),
-            _ => None,
-        })
+        .map(|tag| tag.as_slice())
+        .filter(|parts| parts.first().map(String::as_str) == Some(name))
         .collect();
-    match values.as_slice() {
-        [value] => Ok(value),
+    match matching.as_slice() {
+        [[_, value]] => Ok(value),
         _ => Err(ProjectRevisionError::TagCardinality(name)),
     }
 }
@@ -253,6 +251,15 @@ mod tests {
         assert_eq!(
             ProjectRevision::parse(&revision_event("replace-all")),
             Err(ProjectRevisionError::InvalidOperation)
+        );
+
+        let mut malformed_duplicate = revision_event("add-related-channel");
+        malformed_duplicate
+            .tags
+            .push(Tag::parse(["op", "remove-related-channel", "extra"]).unwrap());
+        assert_eq!(
+            ProjectRevision::parse(&malformed_duplicate),
+            Err(ProjectRevisionError::TagCardinality("op"))
         );
     }
 

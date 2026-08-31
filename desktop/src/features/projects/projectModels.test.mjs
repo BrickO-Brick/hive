@@ -51,7 +51,7 @@ function projectEvent(repositoryTags, overrides = {}) {
 function projectRevision(id, expected, operation, channelId, overrides = {}) {
   return {
     id,
-    kind: 1622,
+    kind: 47001,
     pubkey: "d".repeat(64),
     created_at: 201,
     content: "",

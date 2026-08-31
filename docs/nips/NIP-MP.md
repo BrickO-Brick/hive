@@ -52,7 +52,7 @@ This document uses MUST, MUST NOT, SHOULD, SHOULD NOT, MAY, and RECOMMENDED as d
 | Kind | Name | Signer | Class | Purpose |
 |------|------|--------|-------|---------|
 | `30621` | Project | user | addressable | A named grouping of `kind:30617` repository announcements |
-| `1622` | Project revision | project owner or current home-channel owner/admin | regular | A CAS-protected related-channel add/remove operation |
+| `47001` | Project revision | project owner or current home-channel owner/admin | regular | A CAS-protected related-channel add/remove operation |
 
 `kind:30621` is an addressable event per NIP-01 (`30000 <= n < 40000`), addressed by `(pubkey, 30621, d)`. Two signers may use the same `d` value; those are two distinct projects. Addressable events were formerly specified as "parameterized replaceable events" in NIP-33, which upstream has since folded into NIP-01; this document cites NIP-01 throughout.
 
@@ -147,7 +147,7 @@ The project signer may still edit by publishing a replacement `kind:30621`
 with the same `d` and a newer `created_at`. Changing repositories, metadata,
 visibility, or the home channel remains owner-only.
 
-Related channels additionally support actor-signed `kind:1622` revisions. A
+Related channels additionally support actor-signed `kind:47001` revisions. A
 revision has empty content and exactly one of each of these tags:
 
 - `a`: the stable `30621:<owner>:<d>` Project coordinate

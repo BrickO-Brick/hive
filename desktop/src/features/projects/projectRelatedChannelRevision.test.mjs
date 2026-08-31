@@ -29,7 +29,7 @@ test("buildProjectRelatedChannelRevisionTemplate builds add and remove CAS opera
       "add-related-channel",
     ),
     {
-      kind: 1622,
+      kind: 47001,
       content: "",
       tags: [
         ["a", `30621:${OWNER}:buzz`],

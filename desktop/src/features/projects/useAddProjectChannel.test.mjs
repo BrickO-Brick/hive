@@ -148,7 +148,7 @@ test("addProjectChannel publishes an actor-signed revision and advances the loca
   const liveHead = makeLiveHead(100);
   const revision = {
     id: "e".repeat(64),
-    kind: 1622,
+    kind: 47001,
     pubkey: "b".repeat(64),
     created_at: 110,
     content: "",
