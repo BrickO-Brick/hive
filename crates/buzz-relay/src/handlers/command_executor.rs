@@ -70,7 +70,7 @@ pub async fn handle_command(
         KIND_WORKFLOW_TRIGGER => handle_workflow_trigger(tenant, state, &event, &auth).await,
         KIND_APPROVAL_GRANT => handle_approval_grant(tenant, state, &event, &auth).await,
         KIND_APPROVAL_DENY => handle_approval_deny(tenant, state, &event, &auth).await,
-        KIND_PROJECT_REVISION => handle_project_revision(tenant, state, &event).await,
+        KIND_PROJECT_REVISION => handle_project_revision(tenant, state, &event, &auth).await,
         _ => Err(IngestError::Rejected(format!(
             "unknown command kind: {kind}"
         ))),
@@ -81,6 +81,7 @@ async fn handle_project_revision(
     tenant: &TenantContext,
     state: &Arc<AppState>,
     event: &Event,
+    auth: &IngestAuth,
 ) -> Result<IngestResult, IngestError> {
     use buzz_core::project_revision::ProjectRevision;
     use buzz_db::project_revision::ProjectRevisionApplyStatus;
@@ -95,13 +96,41 @@ async fn handle_project_revision(
             IngestError::Internal(format!("error: applying Project revision: {error}"))
         })?;
     match result.status {
-        ProjectRevisionApplyStatus::Applied | ProjectRevisionApplyStatus::Duplicate => {
+        ProjectRevisionApplyStatus::Applied => {
+            let stored = state
+                .db
+                .get_event_by_id(tenant.community(), event.id.as_bytes())
+                .await
+                .map_err(|error| {
+                    IngestError::Internal(format!(
+                        "error: loading applied Project revision: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    IngestError::Internal(
+                        "error: applied Project revision was not persisted".into(),
+                    )
+                })?;
+            super::event::dispatch_persistent_event(
+                tenant,
+                state,
+                &stored,
+                KIND_PROJECT_REVISION,
+                &auth.pubkey().to_hex(),
+                None,
+            )
+            .await;
             Ok(IngestResult {
                 event_id: event.id.to_hex(),
                 accepted: true,
                 message: String::new(),
             })
         }
+        ProjectRevisionApplyStatus::Duplicate => Ok(IngestResult {
+            event_id: event.id.to_hex(),
+            accepted: true,
+            message: String::new(),
+        }),
         ProjectRevisionApplyStatus::ProjectNotFound => Err(IngestError::Rejected(
             "invalid: Project does not exist".into(),
         )),

@@ -2276,7 +2276,7 @@ async fn ingest_event_inner(
 
     // Command kinds are routed AFTER signature verification, timestamp check,
     // pubkey/auth match, and scope validation — never before.
-    if buzz_core::kind::is_command_kind(kind_u32) {
+    if buzz_core::kind::is_command_kind(kind_u32) && kind_u32 != KIND_PROJECT_REVISION {
         return super::command_executor::handle_command(tenant, state, event, auth).await;
     }
 
@@ -2474,6 +2474,13 @@ async fn ingest_event_inner(
         return Err(IngestError::AuthFailed(
             "restricted: channel-scoped tokens cannot publish global events".into(),
         ));
+    }
+
+    // Project revisions are global commands, but unlike relay-admin commands
+    // they remain subject to the ordinary ban, timeout, and global-token gates
+    // above. Their handler performs the Project-specific role check atomically.
+    if kind_u32 == KIND_PROJECT_REVISION {
+        return super::command_executor::handle_command(tenant, state, event, auth).await;
     }
 
     let pubkey_bytes = auth.pubkey().to_bytes().to_vec();
@@ -3153,7 +3160,12 @@ async fn ingest_event_inner(
             .db
             .replace_parameterized_event(tenant.community(), &event, &d_tag, channel_id)
             .await
-            .map_err(|e| IngestError::Internal(format!("error: {e}")))?
+            .map_err(|error| match error {
+                buzz_db::DbError::RevisionConflict(message) => {
+                    IngestError::Rejected(format!("conflict: {message}"))
+                }
+                error => IngestError::Internal(format!("error: {error}")),
+            })?
     } else {
         let thread_params = thread_meta.as_ref().map(|m| m.as_params());
         match state

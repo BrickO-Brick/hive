@@ -1911,5 +1911,4 @@ CREATE TABLE project_revision_heads (
     PRIMARY KEY (community_id, project_owner, project_d_tag)
 );
 
-CREATE INDEX idx_project_revision_heads_revision
-    ON project_revision_heads (community_id, revision_event_id);
+SELECT attach_community_write_fence('project_revision_heads');

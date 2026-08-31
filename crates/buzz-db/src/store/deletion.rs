@@ -69,6 +69,7 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
     "moderation_actions",
     "moderation_reports",
     "parameterized_event_watermarks",
+    "project_revision_heads",
     "pubkey_allowlist",
     "push_leases",
     "push_match_queue",

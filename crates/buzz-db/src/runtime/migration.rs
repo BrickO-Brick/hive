@@ -1248,6 +1248,10 @@ mod tests {
             project_revisions.contains("CREATE TABLE project_revision_heads"),
             "migration 41 must create project_revision_heads"
         );
+        assert!(
+            project_revisions.contains("attach_community_write_fence('project_revision_heads')"),
+            "migration 41 must fence project_revision_heads during community deletion"
+        );
     }
 
     #[test]
@@ -1781,6 +1785,9 @@ mod tests {
             );
         }
         let mut expected_fences = migration.fence_attachments.clone();
+        for later in MIGRATOR.iter().filter(|candidate| candidate.version > 29) {
+            expected_fences.extend(surface(later.sql.as_ref()).fence_attachments);
+        }
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
         assert_eq!(
@@ -2214,9 +2221,9 @@ mod tests {
             .await
             .expect("connect migrated probe database");
         MIGRATOR
-            .run_to(40, &migrated)
+            .run_to(41, &migrated)
             .await
-            .expect("apply migrations 1-40");
+            .expect("apply migrations 1-41");
 
         for table in [
             "relay_admin_actions",

@@ -66,7 +66,7 @@ fn tag_values(tags: &serde_json::Value, name: &str) -> Vec<String> {
         .collect()
 }
 
-fn home_channel(tags: &serde_json::Value) -> Option<Uuid> {
+pub(crate) fn home_channel(tags: &serde_json::Value) -> Option<Uuid> {
     let values = tag_values(tags, "buzz-channel");
     match values.as_slice() {
         [value] => value.parse().ok(),
@@ -74,7 +74,7 @@ fn home_channel(tags: &serde_json::Value) -> Option<Uuid> {
     }
 }
 
-fn base_related_channels(tags: &serde_json::Value, home: Option<Uuid>) -> Vec<Uuid> {
+pub(crate) fn base_related_channels(tags: &serde_json::Value, home: Option<Uuid>) -> Vec<Uuid> {
     let mut channels = Vec::new();
     for value in tag_values(tags, "buzz-related-channel") {
         if let Ok(channel) = value.parse() {
@@ -244,7 +244,7 @@ mod tests {
     use buzz_core::channel::{ChannelType, ChannelVisibility};
     use buzz_core::kind::KIND_PROJECT_REVISION;
     use buzz_core::project_revision::{ProjectCoordinate, ProjectRevisionOperation};
-    use nostr::{EventBuilder, Keys, Kind, Tag};
+    use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
@@ -258,6 +258,29 @@ mod tests {
         }
         EventBuilder::new(Kind::Custom(KIND_PROJECT as u16), "")
             .tags(tags)
+            .sign_with_keys(owner)
+            .unwrap()
+    }
+
+    fn project_event_with_related(
+        owner: &Keys,
+        slug: &str,
+        home: Uuid,
+        related: &[Uuid],
+        created_at: u64,
+    ) -> Event {
+        let mut tags = vec![
+            Tag::parse(["d", slug]).unwrap(),
+            Tag::parse(["buzz-channel", &home.to_string()]).unwrap(),
+        ];
+        tags.extend(
+            related
+                .iter()
+                .map(|channel| Tag::parse(["buzz-related-channel", &channel.to_string()]).unwrap()),
+        );
+        EventBuilder::new(Kind::Custom(KIND_PROJECT as u16), "")
+            .tags(tags)
+            .custom_created_at(Timestamp::from(created_at))
             .sign_with_keys(owner)
             .unwrap()
     }
@@ -438,10 +461,28 @@ mod tests {
             ProjectRevisionApplyStatus::Conflict
         );
 
+        let replacement_timestamp = base.created_at.as_secs() + 1;
+        let stale_base =
+            project_event_with_related(&owner, "shared", home, &[], replacement_timestamp);
+        let replacement_error = db
+            .replace_parameterized_event(community, &stale_base, "shared", None)
+            .await
+            .expect_err("a stale base must not erase collaborative channel state");
+        assert!(matches!(replacement_error, DbError::RevisionConflict(_)));
+
+        let aligned_base =
+            project_event_with_related(&owner, "shared", home, &[related_a], replacement_timestamp);
+        assert!(
+            db.replace_parameterized_event(community, &aligned_base, "shared", None)
+                .await
+                .expect("replace Project base with folded channel state")
+                .1
+        );
+
         let remove = revision_event(
             &owner,
             &coordinate,
-            &add.id.to_hex(),
+            &aligned_base.id.to_hex(),
             ProjectRevisionOperation::RemoveRelatedChannel,
             related_a,
         );

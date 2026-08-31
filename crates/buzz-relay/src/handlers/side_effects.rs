@@ -10,8 +10,8 @@ use buzz_core::kind::{
     event_kind_u32, is_parameterized_replaceable, KIND_AGENT_PROFILE, KIND_DM_VISIBILITY,
     KIND_GIT_REPO_ANNOUNCEMENT, KIND_IA_ARCHIVED, KIND_IA_ARCHIVED_LIST, KIND_IA_UNARCHIVED,
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_NIP29_GROUP_ADMINS,
-    KIND_NIP29_GROUP_MEMBERS, KIND_NIP29_GROUP_METADATA, KIND_NIP43_MEMBERSHIP_LIST, KIND_REACTION,
-    KIND_THREAD_SUMMARY,
+    KIND_NIP29_GROUP_MEMBERS, KIND_NIP29_GROUP_METADATA, KIND_NIP43_MEMBERSHIP_LIST,
+    KIND_PROJECT_REVISION, KIND_REACTION, KIND_THREAD_SUMMARY,
 };
 use buzz_core::StoredEvent;
 use buzz_db::channel::{MemberRecord, MemberRole};
@@ -265,6 +265,10 @@ pub async fn validate_standard_deletion_event(
             .get_event_by_id_including_deleted(tenant.community(), &target_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("target event not found"))?;
+
+        if event_kind_u32(&target_event.event) == KIND_PROJECT_REVISION {
+            return Err(anyhow::anyhow!("Project revision events are immutable"));
+        }
 
         let target_author =
             effective_message_author(&target_event.event, &state.relay_keypair.public_key());

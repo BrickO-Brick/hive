@@ -165,6 +165,7 @@ async fn replace_parameterized_event_in_transaction_impl(
             parts.len() == 2 && parts[0] == "k" && parts[1] == "buzz-mesh-status"
         });
     let hard_delete_superseded = is_nip_rs || is_buzz_mesh_status;
+    let is_project = kind_i32 == buzz_core::kind::KIND_PROJECT as i32;
 
     let existing: Option<(DateTime<Utc>, Vec<u8>)> = sqlx::query_as(
         "SELECT created_at, id FROM events \
@@ -250,6 +251,35 @@ async fn replace_parameterized_event_in_transaction_impl(
             ParameterizedReplaceStatus::Superseded,
         ));
     }
+
+    let project_channels = if is_project {
+        let tags = serde_json::to_value(&event.tags)?;
+        let home = crate::project_revision::home_channel(&tags);
+        let incoming = crate::project_revision::base_related_channels(&tags, home);
+        let head = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<Uuid>)>(
+            "SELECT base_event_id, revision_event_id, related_channel_ids \
+             FROM project_revision_heads \
+             WHERE community_id=$1 AND project_owner=$2 AND project_d_tag=$3",
+        )
+        .bind(community_id.as_uuid())
+        .bind(pubkey_bytes.as_slice())
+        .bind(d_tag)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((base_id, revision_id, effective)) = head {
+            if base_id != revision_id && incoming != effective {
+                return Ok(ParameterizedReplaceResult::new(
+                    event,
+                    received_at,
+                    channel_id,
+                    ParameterizedReplaceStatus::RevisionMismatch,
+                ));
+            }
+        }
+        Some(incoming)
+    } else {
+        None
+    };
 
     let mut savepoint = tx.begin().await?;
     if existing.is_some() {
@@ -352,6 +382,24 @@ async fn replace_parameterized_event_in_transaction_impl(
     }
 
     crate::insert_mentions_in_transaction(&mut savepoint, community_id, event, channel_id).await?;
+    if let Some(channels) = project_channels {
+        sqlx::query(
+            "INSERT INTO project_revision_heads \
+               (community_id, project_owner, project_d_tag, base_event_id, revision_event_id, related_channel_ids, updated_at) \
+             VALUES ($1,$2,$3,$4,$4,$5,$6) \
+             ON CONFLICT (community_id, project_owner, project_d_tag) DO UPDATE SET \
+               base_event_id=EXCLUDED.base_event_id, revision_event_id=EXCLUDED.revision_event_id, \
+               related_channel_ids=EXCLUDED.related_channel_ids, updated_at=EXCLUDED.updated_at",
+        )
+        .bind(community_id.as_uuid())
+        .bind(pubkey_bytes.as_slice())
+        .bind(d_tag)
+        .bind(incoming_id)
+        .bind(channels)
+        .bind(received_at)
+        .execute(&mut *savepoint)
+        .await?;
+    }
     savepoint.commit().await?;
 
     Ok(ParameterizedReplaceResult::new(
@@ -556,6 +604,7 @@ impl Db {
         d_tag: &str,
         channel_id: Option<Uuid>,
     ) -> Result<(StoredEvent, bool)> {
+        let is_project = buzz_core::kind::event_kind_u32(event) == buzz_core::kind::KIND_PROJECT;
         let (mut tx, transaction_timer) = observability::begin_transaction(
             &self.pool,
             TransactionOperation::ReplaceParameterizedEvent,
@@ -573,6 +622,12 @@ impl Db {
                         ParameterizedReplacePrecondition::Unconditional,
                     )
                     .await?;
+                if result.status == ParameterizedReplaceStatus::RevisionMismatch && is_project {
+                    tx.rollback().await?;
+                    return Err(DbError::RevisionConflict(
+                        "Project related channels changed since the base event was loaded".into(),
+                    ));
+                }
                 let was_inserted = result.status == ParameterizedReplaceStatus::Inserted;
                 if was_inserted {
                     tx.commit().await?;
