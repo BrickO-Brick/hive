@@ -64,7 +64,7 @@ pub(crate) mod sealed {
 /// construction seam: [`verify`] takes no snapshot argument, and this type has
 /// no public constructor, so an external consumer cannot build a snapshot that
 /// labels issuer B's JWKS as issuer A. Building a snapshot (and the source that
-/// serves it) is the trusted configuration act PR 3's JWKS runtime performs at
+/// serves it) is the trusted configuration act the `jwks` runtime performs at
 /// startup, not a per-request or external input.
 ///
 /// The crate-private constructor is a live regression: an external crate that
@@ -90,7 +90,7 @@ impl AssertionKeySet {
     /// generation and a required key-snapshot hard deadline. Rejects a zero
     /// generation, an empty issuer, an empty or oversized key set
     /// ([`MAX_JWKS_KEYS`]), or a non-positive deadline. Crate-private: only the
-    /// trusted in-crate configuration path (PR 3's JWKS runtime) may bind key
+    /// trusted in-crate configuration path (the `jwks` runtime) may bind key
     /// material to an issuer.
     ///
     /// Bounding the key count here is the pre-lookup control (NIP-FI.md:166-171):
@@ -146,7 +146,7 @@ impl fmt::Debug for AssertionKeySet {
 /// instead asks this source for the snapshot bound to the token's
 /// signature-authenticated `iss`. A request-path caller therefore cannot
 /// relabel one issuer's JWKS as another's — the cross-issuer bypass at the old
-/// `verify(token, key_set)` seam. Configuring the source (PR 3's JWKS runtime)
+/// `verify(token, key_set)` seam. Configuring the source (the `jwks` runtime)
 /// is a trusted startup act, not per-request input.
 ///
 /// This trait is sealed via a private supertrait, so it cannot be implemented
@@ -174,7 +174,7 @@ pub trait IssuerKeySource: sealed::Sealed {
 }
 
 /// A fixed issuer→snapshot key source for the in-crate verifier tests,
-/// standing in for PR 3's JWKS runtime. It is `cfg(test)`-only — not behind a
+/// standing in for the `jwks` runtime. It is `cfg(test)`-only — not behind a
 /// downstream-selectable Cargo feature — so no dependent crate can enable it to
 /// reconstruct the authority. An honest source returns only the snapshot bound
 /// to the exact issuer requested, the invariant the real runtime source
@@ -345,7 +345,7 @@ impl<S: IssuerKeySource> FederatedAssertionVerifier<S> {
         // is `evidence_rejected` (403), and this defers a valid one as
         // `authorization_unavailable` (503) so a missing witness never
         // masquerades as rejected evidence, nor invalid input as unavailable
-        // (NIP-FI.md:459-476). PR 3 adds the witness path additively.
+        // (NIP-FI.md:459-476).
         if policy.freshness() == FreshnessClass::CurrentStatus {
             return Err(VerifierError::StatusWitnessUnavailable);
         }
@@ -719,8 +719,8 @@ fn parse_nostr_pubkey_claim(
     }
 }
 
-/// Capture only the claim names the policy reads into a canonical set. For PR 1
-/// the closed set is the `scope` claim, split on ASCII space; unchecked claims
+/// Capture only the claim names the policy reads into a canonical set. The
+/// closed set is the `scope` claim, split on ASCII space; unchecked claims
 /// never enter the result.
 fn capture_capabilities(
     _policy: &IssuerPolicy,
