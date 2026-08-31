@@ -99,6 +99,7 @@ check: fmt-check clippy desktop-check desktop-tauri-fmt-check desktop-tauri-clip
 security-review-check:
     node --check .github/scripts/codex-security-review.js
     node --test .github/scripts/codex-security-review.test.js
+    actionlint .github/workflows/codex-security-review.yml
 
 # Run the repository-wide differential file-size ratchet and its policy tests.
 # The ratchet inspects only files changed from the merge base, so this stays
@@ -326,9 +327,10 @@ test-unit:
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).
-        # They guard the embedded-migrator invariant (exactly the consolidated
-        # 0001; cutover/backfill stays an operator script, not startup state)
-        # and the tenant-scoping lints. The Postgres-backed buzz-db tests are
+        # They guard the embedded-migrator invariant (the complete checked-in
+        # additive migration set; legacy cutover/backfill remains an operator
+        # script, not startup state) and the tenant-scoping lints. The
+        # Postgres-backed buzz-db tests are
         # #[ignore]d, so --lib runs only the infra-free set. Without this gate a
         # stray file in migrations/ or a broken lint ships green.
         cargo nextest run -p buzz-db --lib
@@ -379,6 +381,10 @@ test-unit:
         # disabled_mode_still_requires_the_correct_host / _a_matching_origin.
         cargo nextest run -p buzz-relay --lib \
             -E 'test(/^api::admin::/) - test(=api::admin::tests::disabled_mode_allows_unauthenticated_requests_on_the_admin_host) - test(=api::admin::tests::nip98_mode_unrostered_signer_does_not_consume_a_replay_slot)'
+        # ACP author-gate and queue tests protect the trust boundary between
+        # relay events and agent prompts. They are infra-free; ignored lifecycle
+        # tests remain excluded and run in their dedicated integration lanes.
+        cargo nextest run -p buzz-acp --lib
     else
         ./scripts/run-tests.sh unit
     fi
