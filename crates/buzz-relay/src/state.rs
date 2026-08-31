@@ -770,6 +770,15 @@ pub struct AppState {
     /// byte-identically to a relay without the mesh. Access via
     /// [`AppState::mesh`].
     pub mesh: Arc<std::sync::OnceLock<crate::mesh_boot::MeshHandle>>,
+
+    /// NIP-FI PostgreSQL-final authority verifier.
+    ///
+    /// `Some` when NIP-FI is configured in enforce mode; `None` when disabled
+    /// (the default in environments without federated identity configuration).
+    /// Kind-9 ingest calls this after all NIP-29 membership and channel checks
+    /// have passed — a `None` verifier skips the NIP-FI gate and relies on
+    /// NIP-29 membership alone.
+    pub(crate) nip_fi: Option<Arc<dyn crate::nip_fi::NipFiVerify>>,
 }
 
 impl AppState {
@@ -945,6 +954,7 @@ impl AppState {
             // `crates/buzz-test-client` once those land).
             tracer: Arc::new(crate::conformance::NoopTracer),
             mesh: Arc::new(std::sync::OnceLock::new()),
+            nip_fi: None,
         };
         (
             state,
@@ -1659,6 +1669,8 @@ mod tests {
             cancel: cancel.clone(),
             backpressure_count: Arc::clone(&bp),
             grace_limit: 3,
+            nip_fi_assertion: None,
+            nip_fi_proof_meta: std::sync::OnceLock::new(),
         };
 
         let mgr = ConnectionManager::new();
