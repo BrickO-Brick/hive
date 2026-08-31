@@ -1,3 +1,4 @@
+import { useNavigate } from "@tanstack/react-router";
 import {
   Bot,
   Check,
@@ -16,7 +17,6 @@ import {
   WalletCards,
 } from "lucide-react";
 import * as React from "react";
-import { useNavigate } from "@tanstack/react-router";
 
 import {
   MARKET_SCENARIOS,
@@ -25,9 +25,16 @@ import {
   type MarketScenarioId,
   type MarketTerm,
 } from "@/features/market/lib/marketPrototypeData";
+import { ProjectContextRail } from "@/features/projects/ui/ProjectContextRail";
+import { ProjectHomeColumn } from "@/features/projects/ui/ProjectHomeColumn";
+import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
+import { SIDEBAR_WIDTH_MIN } from "@/shared/layout/sidebarLayout";
 import { cn } from "@/shared/lib/cn";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import { useOptionalSidebar } from "@/shared/ui/sidebar";
+
+const MARKET_CONTEXT_WIDTH_KEY = "buzz.desktop.market-context-width";
 
 const SCENARIO_LABELS: Record<MarketScenarioId, string> = {
   finite: "Fixed · finite",
@@ -120,6 +127,11 @@ const ACTIVITY_STYLE: Record<
 export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
   const scenario = MARKET_SCENARIOS[scenarioId];
   const navigate = useNavigate();
+  const sidebar = useOptionalSidebar();
+  const contextWidth = useThreadPanelWidth(undefined, {
+    minWidthPx: SIDEBAR_WIDTH_MIN,
+    sessionKey: MARKET_CONTEXT_WIDTH_KEY,
+  });
   const isTerminal = scenario.status !== "Open";
   const contractTerms = scenario.terms.filter(
     (term) => !COMMERCIAL_TERM_LABELS.has(term.label),
@@ -137,127 +149,146 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
 
   return (
     <main
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background"
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-sidebar",
+        sidebar?.open === false && "pl-2",
+      )}
+      data-market-context-detached="true"
       data-testid="market-screen"
     >
-      <header className="flex min-h-16 shrink-0 items-center justify-between gap-5 border-b border-border/80 bg-background/95 px-6 py-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 dark:text-amber-300">
-            <Store className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-lg font-semibold tracking-tight">
-                Market
-              </h1>
-              <Badge
-                className="border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-200"
-                variant="outline"
-              >
-                Prototype
-              </Badge>
+      <section className="mb-2 ml-px mt-px flex min-h-0 min-w-60 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
+        <header className="flex min-h-16 shrink-0 items-center justify-between gap-5 border-b border-border/80 bg-background/95 px-6 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 dark:text-amber-300">
+              <Store className="h-5 w-5" />
             </div>
-            <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-              <Eye className="h-3.5 w-3.5" />
-              Agents participate · Humans observe
-            </p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-lg font-semibold tracking-tight">
+                  Market
+                </h1>
+                <Badge
+                  className="border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-200"
+                  variant="outline"
+                >
+                  Prototype
+                </Badge>
+              </div>
+              <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Eye className="h-3.5 w-3.5" />
+                Agents participate · Humans observe
+              </p>
+            </div>
+          </div>
+          <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:flex">
+            <Scale className="h-3.5 w-3.5" /> One channel = one contract · Pulse
+            indexes markets
+          </span>
+        </header>
+
+        <nav
+          className="flex shrink-0 items-center gap-1 border-b bg-muted/20 px-6 py-2"
+          aria-label="Market prototype scenarios"
+        >
+          {MARKET_SCENARIO_IDS.map((id) => (
+            <Button
+              className="h-8 rounded-lg"
+              key={id}
+              onClick={() => selectScenario(id)}
+              size="sm"
+              type="button"
+              variant={id === scenarioId ? "secondary" : "ghost"}
+            >
+              {SCENARIO_LABELS[id]}
+            </Button>
+          ))}
+        </nav>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-6 py-5">
+            <ContractCard
+              closeAt={scenario.closeAt}
+              contractId={scenario.contractId}
+              eyebrow={scenario.eyebrow}
+              mode={scenario.mode}
+              status={scenario.status}
+              summary={scenario.summary}
+              terms={contractTerms}
+              title={scenario.title}
+            />
+
+            <section data-testid="market-agent-timeline">
+              <div className="mb-2 flex items-end justify-between gap-3 px-1">
+                <div>
+                  <h3 className="font-semibold">Agent market channel</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Participants bid, negotiate, clarify, accept, and deliver in
+                    public.
+                  </p>
+                </div>
+                <Badge variant="secondary">
+                  {scenario.activity.length} messages
+                </Badge>
+              </div>
+              <div className="overflow-hidden rounded-2xl border bg-card">
+                {scenario.activity.map((activity) => (
+                  <AgentMessage
+                    activity={activity}
+                    key={`${activity.at}-${activity.title}`}
+                  />
+                ))}
+              </div>
+            </section>
           </div>
         </div>
-        <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:flex">
-          <Scale className="h-3.5 w-3.5" /> One channel = one contract · Pulse
-          indexes markets
-        </span>
-      </header>
 
-      <nav
-        className="flex shrink-0 items-center gap-1 border-b bg-muted/20 px-6 py-2"
-        aria-label="Market prototype scenarios"
-      >
-        {MARKET_SCENARIO_IDS.map((id) => (
-          <Button
-            className="h-8 rounded-lg"
-            key={id}
-            onClick={() => selectScenario(id)}
-            size="sm"
-            type="button"
-            variant={id === scenarioId ? "secondary" : "ghost"}
-          >
-            {SCENARIO_LABELS[id]}
-          </Button>
-        ))}
-      </nav>
-
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-sidebar">
-        <section className="mb-2 ml-px mt-px flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-6 py-5">
-              <ContractCard
-                closeAt={scenario.closeAt}
-                contractId={scenario.contractId}
-                eyebrow={scenario.eyebrow}
-                mode={scenario.mode}
-                status={scenario.status}
-                summary={scenario.summary}
-                terms={contractTerms}
-                title={scenario.title}
-              />
-
-              <section data-testid="market-agent-timeline">
-                <div className="mb-2 flex items-end justify-between gap-3 px-1">
-                  <div>
-                    <h3 className="font-semibold">Agent market channel</h3>
-                    <p className="text-xs text-muted-foreground">
-                      Participants bid, negotiate, clarify, accept, and deliver
-                      in public.
-                    </p>
-                  </div>
-                  <Badge variant="secondary">
-                    {scenario.activity.length} messages
-                  </Badge>
-                </div>
-                <div className="overflow-hidden rounded-2xl border bg-card">
-                  {scenario.activity.map((activity) => (
-                    <AgentMessage
-                      activity={activity}
-                      key={`${activity.at}-${activity.title}`}
-                    />
-                  ))}
-                </div>
-              </section>
+        <footer className="shrink-0 border-t bg-background px-5 py-3">
+          <div className="mx-auto flex w-full max-w-4xl items-center gap-3 rounded-xl border border-dashed bg-muted/35 px-4 py-3">
+            <MessageSquareOff className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">
+                Human participation is disabled in Market channels
+              </p>
+              <p className="text-xs text-muted-foreground">
+                You can observe and follow. Only agents can post or respond.
+              </p>
             </div>
+            <Button
+              disabled
+              type="button"
+              variant={isTerminal ? "outline" : "default"}
+            >
+              Observe only
+            </Button>
           </div>
+        </footer>
+      </section>
 
-          <footer className="shrink-0 border-t bg-background px-5 py-3">
-            <div className="mx-auto flex w-full max-w-4xl items-center gap-3 rounded-xl border border-dashed bg-muted/35 px-4 py-3">
-              <MessageSquareOff className="h-5 w-5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">
-                  Human participation is disabled in Market channels
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  You can observe and follow. Only agents can post or respond.
-                </p>
-              </div>
-              <Button
-                disabled
-                type="button"
-                variant={isTerminal ? "outline" : "default"}
-              >
-                Observe only
-              </Button>
-            </div>
-          </footer>
-        </section>
-
-        <MarketContextPanel
-          commercialTerms={commercialTerms}
-          direction={scenario.direction}
-          liveMetrics={scenario.liveMetrics}
-          scenarioId={scenarioId}
-          status={scenario.status}
-          statusDetail={scenario.statusDetail}
-        />
-      </div>
+      <ProjectContextRail
+        open
+        panelWidthPx={contextWidth.widthPx}
+        resizing={contextWidth.isResizing}
+        rounded={false}
+        testId="market-context-rail"
+      >
+        <ProjectHomeColumn
+          bodyClassName="overflow-hidden"
+          canResetWidth={contextWidth.canReset}
+          onResetWidth={contextWidth.onResetWidth}
+          onResizeStart={contextWidth.onResizeStart}
+          testId="market-context-column"
+          widthPx={contextWidth.widthPx}
+        >
+          <MarketContextPanel
+            commercialTerms={commercialTerms}
+            direction={scenario.direction}
+            liveMetrics={scenario.liveMetrics}
+            scenarioId={scenarioId}
+            status={scenario.status}
+            statusDetail={scenario.statusDetail}
+          />
+        </ProjectHomeColumn>
+      </ProjectContextRail>
     </main>
   );
 }
@@ -341,8 +372,8 @@ function MarketContextPanel({
 }) {
   const wallet = WALLET_DETAILS[scenarioId];
   return (
-    <aside
-      className="flex w-80 shrink-0 flex-col overflow-hidden bg-sidebar pl-2 text-sidebar-foreground xl:w-96"
+    <div
+      className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-sidebar text-sidebar-foreground"
       data-testid="market-context-panel"
     >
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 pb-8 pt-5">
@@ -398,7 +429,7 @@ function MarketContextPanel({
           </dl>
         </ContextSection>
       </div>
-    </aside>
+    </div>
   );
 }
 
