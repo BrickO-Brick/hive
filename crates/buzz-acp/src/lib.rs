@@ -10438,11 +10438,13 @@ mod error_outcome_emission_tests {
     #[tokio::test]
     async fn indeterminate_project_context_requeues_without_poisoning_agent_or_circuit() {
         let channel_id = Uuid::new_v4();
+        let session_scope = scope::SessionScope::Conversation { channel_id };
         let event = EventBuilder::new(Kind::Custom(9), "project work")
             .sign_with_keys(&Keys::generate())
             .unwrap();
         let batch = FlushBatch {
             channel_id,
+            scope: session_scope.clone(),
             events: vec![BatchEvent {
                 event,
                 prompt_tag: "test".into(),
@@ -10456,7 +10458,7 @@ mod error_outcome_emission_tests {
         agent
             .state
             .sessions
-            .insert(channel_id, "healthy-session".into());
+            .insert(session_scope.clone(), "healthy-session".into());
         let mut pool = AgentPool::from_slots(vec![None]);
         let task_id = pool.join_set.spawn(async {}).id();
         pool.task_map_mut().insert(
@@ -10464,6 +10466,7 @@ mod error_outcome_emission_tests {
             crate::pool::TaskMeta {
                 agent_index: 0,
                 channel_id: Some(channel_id),
+                scope: Some(session_scope.clone()),
                 turn_id: "indeterminate-project".into(),
                 recoverable_batch: None,
                 control_tx: None,
@@ -10484,7 +10487,7 @@ mod error_outcome_emission_tests {
         let mut respawn_tasks = tokio::task::JoinSet::new();
         let result = PromptResult {
             agent,
-            source: PromptSource::Channel(channel_id),
+            source: PromptSource::Channel(session_scope.clone()),
             turn_id: "indeterminate-project".into(),
             outcome: PromptOutcome::ProjectContextIndeterminate(
                 "project context is indeterminate".into(),
@@ -10513,7 +10516,11 @@ mod error_outcome_emission_tests {
             .as_ref()
             .expect("healthy agent returns to its slot");
         assert_eq!(
-            returned.state.sessions.get(&channel_id).map(String::as_str),
+            returned
+                .state
+                .sessions
+                .get(&session_scope)
+                .map(String::as_str),
             Some("healthy-session")
         );
         assert_eq!(queue.queued_event_count(channel_id), 1);

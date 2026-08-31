@@ -4223,6 +4223,7 @@ mod tests {
 
         let mixed_batch = FlushBatch {
             channel_id: ch,
+            scope: conv(ch),
             events: vec![
                 reply("older reply in thread A", &root_a),
                 reply("newer reply in thread B", &root_b),
@@ -4247,6 +4248,7 @@ mod tests {
 
         let same_thread_batch = FlushBatch {
             channel_id: ch,
+            scope: conv(ch),
             events: vec![
                 reply("older reply in thread B", &root_b),
                 reply("newer reply in thread B", &root_b),
