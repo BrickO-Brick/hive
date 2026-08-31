@@ -50,6 +50,7 @@ export const MessageComposerToolbar = React.memo(
     voiceNoteRecorder,
     onCaptureSelection,
     onAutoPinConfirmationDismiss,
+    onAutoPinConfirmationHoverChange,
     onAutoPinConfirmationTurnOff,
     onEmojiPickerOpenChange,
     onEmojiSelect,
@@ -81,6 +82,7 @@ export const MessageComposerToolbar = React.memo(
     voiceNoteRecorder?: React.ReactNode;
     onCaptureSelection: () => void;
     onAutoPinConfirmationDismiss?: () => void;
+    onAutoPinConfirmationHoverChange?: (hovered: boolean) => void;
     onAutoPinConfirmationTurnOff?: () => void;
     onEmojiPickerOpenChange: (open: boolean) => void;
     onEmojiSelect: (emoji: string) => void;
@@ -228,6 +230,7 @@ export const MessageComposerToolbar = React.memo(
                   confirmationTitle={autoPinConfirmationTitle}
                   disabled={composerDisabled}
                   onConfirmationDismiss={onAutoPinConfirmationDismiss}
+                  onConfirmationHoverChange={onAutoPinConfirmationHoverChange}
                   onConfirmationTurnOff={onAutoPinConfirmationTurnOff}
                   onCaptureSelection={onCaptureSelection}
                   onOpen={onOpenMentionPicker}
