@@ -3,7 +3,7 @@ use std::{
     fs,
     os::unix::{
         fs::{FileTypeExt, PermissionsExt},
-        net::UnixStream as StdUnixStream,
+        net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream},
     },
     path::PathBuf,
     time::Duration,
@@ -48,17 +48,43 @@ pub(super) fn start(app: AppHandle) -> Result<(), String> {
             .map_err(|error| format!("remove stale project canvas update socket: {error}"))?;
     }
 
-    let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)
+    let std_listener = StdUnixListener::bind(&socket_path)
         .map_err(|error| format!("bind project canvas update socket: {error}"))?;
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("secure project canvas update socket: {error}"))?;
     std_listener
         .set_nonblocking(true)
         .map_err(|error| format!("configure project canvas update socket: {error}"))?;
-    let listener = tokio::net::UnixListener::from_std(std_listener)
-        .map_err(|error| format!("start project canvas update socket: {error}"))?;
-    tauri::async_runtime::spawn(run(listener, app, socket_path));
+    let serve_path = socket_path.clone();
+    spawn_serving(std_listener, socket_path, move |listener| {
+        run(listener, app, serve_path)
+    });
     Ok(())
+}
+
+/// Hand a bound socket to the async runtime and serve it there.
+///
+/// `tokio::net::UnixListener::from_std` registers the socket with the Tokio
+/// reactor, so it only works from inside the runtime. `start` runs on the main
+/// thread from Tauri's `setup` hook, which is not in runtime context — doing
+/// the conversion there panics, and the panic crosses the non-unwinding
+/// `did_finish_launching` boundary, aborting the app before it opens a window.
+/// So the conversion has to happen in the spawned task, not at the call site.
+#[cfg(unix)]
+pub(super) fn spawn_serving<F, Fut>(std_listener: StdUnixListener, socket_path: PathBuf, serve: F)
+where
+    F: FnOnce(tokio::net::UnixListener) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tauri::async_runtime::spawn(async move {
+        match tokio::net::UnixListener::from_std(std_listener) {
+            Ok(listener) => serve(listener).await,
+            Err(error) => {
+                eprintln!("buzz-desktop: project Canvas update socket stopped: {error}");
+                let _ = fs::remove_file(&socket_path);
+            }
+        }
+    });
 }
 
 #[cfg(not(unix))]

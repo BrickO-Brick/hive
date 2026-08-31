@@ -655,3 +655,32 @@ fn native_navigation_policy_blocks_external_document_navigation() {
         &"file:///tmp/secret".parse().unwrap()
     ));
 }
+
+// `start` runs on the main thread from Tauri's `setup` hook, with no Tokio
+// runtime in context. Registering the socket with the reactor there aborts the
+// whole app on launch, so the handoff has to survive a plain sync caller.
+#[cfg(unix)]
+#[test]
+fn agent_update_socket_serves_when_started_outside_the_async_runtime() {
+    use std::{
+        os::unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream},
+        sync::mpsc,
+        time::Duration,
+    };
+
+    let temp = TempDir::new().unwrap();
+    let socket_path = temp.path().join("agent-updates.sock");
+    let listener = StdUnixListener::bind(&socket_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let (accepted, wait) = mpsc::channel();
+    super::ipc::spawn_serving(listener, socket_path.clone(), move |listener| async move {
+        if listener.accept().await.is_ok() {
+            let _ = accepted.send(());
+        }
+    });
+
+    let _client = StdUnixStream::connect(&socket_path).unwrap();
+    wait.recv_timeout(Duration::from_secs(5))
+        .expect("socket bound before the runtime handoff should still accept connections");
+}
