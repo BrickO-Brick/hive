@@ -310,17 +310,21 @@ test("keeps the composer and global automatic mention settings synchronized", as
 
   const composer = threadComposer(page);
   await composer.getByTestId("message-insert-mention").click();
-  const optionsTrigger = composer.getByTestId("mention-options-trigger");
-  await expect(optionsTrigger).toHaveAttribute("aria-expanded", "false");
-  await composer
-    .getByTestId("mention-autocomplete")
-    .getByRole("button", { name: "Automatically mention Morgarita" })
-    .click();
-  await expect(optionsTrigger).toHaveAttribute("aria-expanded", "true");
   const composerToggle = composer.getByTestId(
     "mention-keep-agents-pinned-toggle",
   );
   await expect(composerToggle).toHaveAttribute("data-state", "unchecked");
+  const settings = composer.getByTestId("mention-options-settings");
+  await expect(settings).toBeVisible();
+  const settingsBox = await settings.boundingBox();
+  const heading = settings.getByText("Automatically mention agents");
+  const headingBox = await heading.boundingBox();
+  expect(settingsBox?.width).toBeGreaterThanOrEqual(300);
+  expect(headingBox?.height).toBeLessThanOrEqual(20);
+  await composer
+    .getByTestId("mention-autocomplete")
+    .getByRole("button", { name: "Automatically mention Morgarita" })
+    .click();
   await expect(composerToggle).toHaveAttribute("data-state", "checked", {
     timeout: 1_500,
   });
@@ -330,8 +334,7 @@ test("keeps the composer and global automatic mention settings synchronized", as
     .getByRole("button", { name: "Turn off" })
     .click();
   await expect(composer.getByTestId("mention-autocomplete")).toBeVisible();
-  await expect(optionsTrigger).toHaveAttribute("aria-expanded", "true");
-  await expect(composerToggle).toHaveAttribute("data-state", "checked");
+  await expect(composer.getByTestId("mention-options-settings")).toBeVisible();
   await expect(composerToggle).toHaveAttribute("data-state", "unchecked", {
     timeout: 1_500,
   });
@@ -342,7 +345,7 @@ test("keeps the composer and global automatic mention settings synchronized", as
   await page.getByTestId("settings-nav-agents").click();
   const settingsToggle = page
     .getByTestId("settings-automatic-agent-mentions")
-    .getByRole("switch", { name: "Automatically mention agents in threads" });
+    .getByRole("switch", { name: "Automatically mention agents" });
   await expect(settingsToggle).toHaveAttribute("data-state", "unchecked");
 
   await page.getByTestId("settings-back-to-app").click();
@@ -350,7 +353,6 @@ test("keeps the composer and global automatic mention settings synchronized", as
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
   ).toHaveCount(0);
   await composer.getByTestId("message-insert-mention").click();
-  await composer.getByTestId("mention-options-trigger").click();
   await expect(
     composer.getByTestId("mention-keep-agents-pinned-toggle"),
   ).toHaveAttribute("data-state", "unchecked");
@@ -420,7 +422,6 @@ test("disabling automatic mentions leaves the composer empty after send", async 
   const composer = threadComposer(page);
   const input = composer.getByTestId("message-input");
   await composer.getByTestId("message-insert-mention").click();
-  await composer.getByTestId("mention-options-trigger").click();
   const preference = composer.getByTestId("mention-keep-agents-pinned-toggle");
   await expect(preference).toHaveAttribute("data-state", "checked");
   await preference.click();
@@ -533,31 +534,34 @@ test("the mention button opens settings and can undo an address", async ({
   const menu = composer.getByTestId("mention-autocomplete");
   await expect(menu).toBeVisible();
   await expect(input).toHaveText("@Morgarita draft text");
-  await page.getByTestId("mention-options-trigger").click();
   await expect(
     page.getByTestId("mention-keep-agents-pinned-toggle"),
   ).toBeVisible();
   const layerBox = await composer
     .getByTestId("mention-autocomplete-layer")
     .boundingBox();
-  const optionsBox = await page
-    .getByTestId("mention-options-trigger")
+  const settingsBox = await page
+    .getByTestId("mention-options-settings")
     .boundingBox();
+  const menuBox = await menu.boundingBox();
   expect(layerBox).not.toBeNull();
-  expect(optionsBox).not.toBeNull();
-  if (!layerBox || !optionsBox) throw new Error("Mention tray is not laid out");
-  await page.mouse.click(layerBox.x + 4, optionsBox.y + optionsBox.height / 2);
+  expect(settingsBox).not.toBeNull();
+  expect(menuBox).not.toBeNull();
+  if (!layerBox || !settingsBox || !menuBox) {
+    throw new Error("Mention tray is not laid out");
+  }
+  await page.mouse.click(
+    layerBox.x + layerBox.width / 2,
+    (settingsBox.y + settingsBox.height + menuBox.y) / 2,
+  );
   await expect(menu).toHaveCount(0);
   await expect(input).toHaveText("@Morgarita draft text");
   await ingress.click();
   await expect(menu).toBeVisible();
-  await expect(page.getByTestId("mention-options-trigger")).toHaveAttribute(
-    "aria-expanded",
-    "false",
-  );
+  await expect(page.getByTestId("mention-options-settings")).toBeVisible();
   await expect(
     page.getByTestId("mention-keep-agents-pinned-toggle"),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await ingress.click();
   await expect(menu).toHaveCount(0);
   await expect(input).toHaveText("@Morgarita draft text");
@@ -566,13 +570,13 @@ test("the mention button opens settings and can undo an address", async ({
   await expect(page.getByTestId("user-profile-panel")).toHaveCount(0);
   await expect(
     menu.getByRole("button", {
-      name: "Don't automatically mention Morgarita in this conversation",
+      name: "Don't automatically mention Morgarita in this thread",
     }),
   ).toHaveAttribute("aria-pressed", "true");
 
   await menu
     .getByRole("button", {
-      name: "Don't automatically mention Morgarita in this conversation",
+      name: "Don't automatically mention Morgarita in this thread",
     })
     .click();
   await expect(input).toHaveText("draft text");
@@ -828,10 +832,7 @@ test("the auto-pin popover can turn off automatic agent mentions", async ({
   await autoPinConfirmation.getByRole("button", { name: "Turn off" }).click();
 
   await expect(composer.getByTestId("mention-autocomplete")).toBeVisible();
-  await expect(composer.getByTestId("mention-options-trigger")).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
+  await expect(composer.getByTestId("mention-options-settings")).toBeVisible();
   await expect(
     composer.getByTestId("mention-keep-agents-pinned-toggle"),
   ).toHaveAttribute("data-state", "unchecked");
@@ -902,9 +903,9 @@ test("automatic mentions exist only in thread composers and stay thread-scoped",
 
   const rootComposer = channelComposer(page);
   await rootComposer.getByTestId("message-insert-mention").click();
-  await expect(rootComposer.getByTestId("mention-options-trigger")).toHaveCount(
-    0,
-  );
+  await expect(
+    rootComposer.getByTestId("mention-options-settings"),
+  ).toHaveCount(0);
   await expect(
     rootComposer.getByRole("button", { name: /^Automatically mention / }),
   ).toHaveCount(0);

@@ -93,7 +93,7 @@ test("agent rows offer automatic mention controls", async () => {
     }),
   );
   const selectedAction = view.getByRole("button", {
-    name: "Don't automatically mention Agent Ada in this conversation",
+    name: "Don't automatically mention Agent Ada in this thread",
   });
   assert.equal(selectedAction.getAttribute("aria-pressed"), "true");
   assert.equal(selectedAction.getAttribute("data-state"), "on");
@@ -105,7 +105,7 @@ test("agent rows offer automatic mention controls", async () => {
   assert.deepEqual(toggled, [suggestion, suggestion]);
 });
 
-test("options expand in place without replacing the people list", async () => {
+test("automatic mention setting is visible by default without an options ingress", async () => {
   const React = await import("react");
   const { fireEvent, render } = await import("@testing-library/react");
   const { MentionAutocomplete } = await import("./MentionAutocomplete.tsx");
@@ -125,63 +125,20 @@ test("options expand in place without replacing the people list", async () => {
     }),
   );
 
-  const options = view.getByRole("button", { name: "Options" });
-  assert.equal(options.getAttribute("aria-expanded"), "false");
-  assert.match(options.parentElement?.className ?? "", /(?:^|\s)w-24(?:\s|$)/);
-  assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
-  assert.equal(
-    view.queryByRole("switch", {
-      name: "Automatically mention agents in threads",
-    }),
-    null,
-  );
-
-  fireEvent.click(options);
-  assert.equal(options.getAttribute("aria-expanded"), "true");
+  assert.equal(view.queryByRole("button", { name: "Options" }), null);
+  assert.ok(view.getByTestId("mention-options-settings"));
   const toggle = view.getByRole("switch", {
-    name: "Automatically mention agents in threads",
+    name: "Automatically mention agents",
   });
   assert.equal(toggle.getAttribute("data-state"), "checked");
-  assert.ok(view.getByText("After you mention them once in a thread"));
+  assert.ok(view.getByText("Address selected agents in thread replies"));
   assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
 
   fireEvent.click(toggle);
   assert.deepEqual(changes, [false]);
-
-  view.rerender(
-    React.createElement(MentionAutocomplete, {
-      suggestions: [],
-      selectedIndex: 0,
-      onSelect: () => {},
-      keepMentionedAgentsPinned: false,
-      onKeepMentionedAgentsPinnedChange: (value) => changes.push(value),
-    }),
-  );
-  assert.equal(view.queryByRole("button", { name: "Options" }), null);
-
-  view.rerender(
-    React.createElement(MentionAutocomplete, {
-      suggestions: [suggestion],
-      selectedIndex: 0,
-      onSelect: () => {},
-      keepMentionedAgentsPinned: false,
-      onKeepMentionedAgentsPinnedChange: (value) => changes.push(value),
-    }),
-  );
-  assert.equal(
-    view.getByRole("button", { name: "Options" }).getAttribute("aria-expanded"),
-    "false",
-  );
-  assert.equal(
-    view.queryByRole("switch", {
-      name: "Automatically mention agents in threads",
-    }),
-    null,
-  );
-  assert.ok(view.getByRole("button", { name: "Mention Agent Ada" }));
 });
 
-test("automatic selection loads the setting once, then updates it in place", async () => {
+test("automatic selection updates the visible setting in place", async () => {
   const React = await import("react");
   const { render } = await import("@testing-library/react");
   const { MentionAutocomplete } = await import("./MentionAutocomplete.tsx");
@@ -197,34 +154,18 @@ test("automatic selection loads the setting once, then updates it in place", asy
     keepMentionedAgentsPinned: false,
     onKeepMentionedAgentsPinnedChange: () => {},
   };
-  const view = render(
-    React.createElement(MentionAutocomplete, {
-      ...props,
-      openOptionsRequest: 0,
-    }),
-  );
-
-  view.rerender(
-    React.createElement(MentionAutocomplete, {
-      ...props,
-      openOptionsRequest: 1,
-    }),
-  );
-  assert.equal(
-    view.getByRole("button", { name: "Options" }).getAttribute("aria-expanded"),
-    "true",
-  );
-  const toggle = view.getByRole("switch", {
-    name: "Automatically mention agents in threads",
-  });
+  const view = render(React.createElement(MentionAutocomplete, props));
   const settings = view.getByTestId("mention-options-settings");
+  const toggle = view.getByRole("switch", {
+    name: "Automatically mention agents",
+  });
   assert.equal(toggle.getAttribute("data-state"), "unchecked");
 
   view.rerender(
     React.createElement(MentionAutocomplete, {
       ...props,
       keepMentionedAgentsPinned: true,
-      openOptionsRequest: 2,
+      openOptionsRequest: 1,
     }),
   );
   assert.equal(view.getByTestId("mention-options-settings"), settings);
