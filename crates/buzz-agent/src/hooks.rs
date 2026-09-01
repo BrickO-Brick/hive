@@ -89,7 +89,7 @@ pub async fn post_compact_state(mcp: &Arc<McpRegistry>, extension: &str) -> Opti
 async fn call_hook(mcp: &Arc<McpRegistry>, extension: &str, tool: &str) -> Option<String> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let out = match mcp
-        .call_rmcp(
+        .call_hook_rmcp(
             &qualified(extension, tool),
             &format!("buzz_hook_{tool}"),
             &serde_json::Value::Object(serde_json::Map::new()),

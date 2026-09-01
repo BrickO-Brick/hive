@@ -153,26 +153,28 @@ Everything is environment variables. No flags, no config files. (We are a subpro
 | `DATABRICKS_TOKEN` | — | Optional static bearer escape hatch. If unset, Databricks uses browser OAuth + refresh cache. |
 | `BUZZ_AGENT_SYSTEM_PROMPT` | built-in | Inline system prompt. |
 | `BUZZ_AGENT_SYSTEM_PROMPT_FILE` | — | File path. Mutually exclusive with the above. |
-| `BUZZ_AGENT_MAX_ROUNDS` | `0` | Tool-loop iteration cap. 0 = unlimited. |
+| `BUZZ_AGENT_MAX_ROUNDS` | `1000` | Tool-loop iteration cap. `0` is treated as unset and uses the safe 1000-round default. |
 | `BUZZ_AGENT_MAX_OUTPUT_TOKENS` | `65536` | Desired per-call ceiling. Set this at or below the served model's output limit for each agent deployment. Proactive handoff is independently based on 90% of `BUZZ_AGENT_MAX_CONTEXT_TOKENS`. |
 | `BUZZ_AGENT_MAX_TOKEN_RECOVERIES` | — | **No longer read.** buzz's own truncation-recovery loop went with its request transport; goose owns retries. |
 | `BUZZ_AGENT_MAX_CONTEXT_TOKENS` | `200000` | Provider context window used by the handoff gate. |
 | `BUZZ_AGENT_MAX_HANDOFFS` | — | **No longer read.** goose's compaction replaced the handoff mechanism it bounded. |
 | `BUZZ_AGENT_LLM_TIMEOUT_SECS` | goose's own (600 s) | Per-request timeout. goose owns provider transport and reads this **per provider**, so buzz projects the value onto the variable belonging to the configured provider — `OPENAI_TIMEOUT` (which covers `relay-mesh` and the other OpenAI-wire providers), `ANTHROPIC_TIMEOUT`, `OLLAMA_TIMEOUT`, `LITELLM_TIMEOUT`. Providers goose gives no timeout knob (databricks) cannot honour it. |
-| `BUZZ_AGENT_TOOL_TIMEOUT_SECS` | `660` | Per-tool call timeout in seconds. Projected onto goose's `GOOSE_DEFAULT_EXTENSION_TIMEOUT`. |
+| `BUZZ_AGENT_TOOL_TIMEOUT_SECS` | `660` | Per-tool call timeout in seconds, enforced by Buzz's direct RMCP registry. |
 | `BUZZ_AGENT_MAX_PARALLEL_TOOLS` | — | **No longer read.** All of a round's tool calls are dispatched concurrently; there is no cap to configure. |
 | `BUZZ_AGENT_MAX_SESSIONS` | unlimited | Max concurrent ACP sessions. Sessions are cheap; default has no cap. |
 | `BUZZ_AGENT_MAX_LINE_BYTES` | — | **No longer read.** The frame cap is a fixed 16 MiB protocol limit (`config.rs::MAX_LINE_BYTES`). |
 | `BUZZ_AGENT_MAX_HISTORY_BYTES` | — | **No longer read.** Byte-based eviction is replaced by goose's token-aware compaction; size the window with `BUZZ_AGENT_MAX_CONTEXT_TOKENS`. |
-| `BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES` | `51200` | 50 KiB. Per-result cap on tool-output text. Projected onto goose's `GOOSE_MAX_TOOL_RESPONSE_SIZE` (whose own default is 200 KiB). |
+| `BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES` | `51200` | 50 KiB per-result cap on tool-output text, enforced by Buzz's direct RMCP registry. |
 | `BUZZ_AGENT_REQUIRE_REPLY` | `0` (`1` on mesh) | `1` enables the [reply guard](#reply-guard) — remind the model to publish when a turn is about to end with nothing posted to Buzz. Desktop defaults it to `1` for Buzz shared-compute agents. |
 | `BUZZ_AGENT_STOP_MAX_REJECTIONS` | `3` | Max consecutive `_Stop` vetoes per turn. `0` disables the `_Stop` veto entirely. |
 | `BUZZ_AGENT_NO_HINTS` | `0` | `1` suppresses `AGENTS.md` / `.goosehints` loading (sets goose's `CONTEXT_FILE_NAMES` empty). |
 | `BUZZ_AGENT_APPROVAL` | `auto` | Tool-call approval policy passed to goose: `auto` \| `approve` \| `smart_approve` \| `chat`. `auto` matches previous behaviour. |
-| `BUZZ_AGENT_HOOK_TIMEOUT_MS` | — | **No longer read.** Hook tools are dispatched through goose's normal tool path and share its extension timeout. |
+| `BUZZ_AGENT_HOOK_TIMEOUT_MS` | `2500` | Short fail-open timeout for `_Stop` and `_PostCompact` lifecycle hooks. |
 | `BUZZ_AGENT_PROMPT_CACHING` | — | **No longer read.** goose's providers manage prompt caching. |
 | `BUZZ_AGENT_THINKING_SUMMARY` | — | **No longer read.** goose's providers own reasoning-summary handling; `BUZZ_AGENT_THINKING_EFFORT` still applies. |
-| `BUZZ_AGENT_MCP_INIT_TIMEOUT_SECS`, `BUZZ_AGENT_MCP_RESTART_*` | — | **No longer read.** goose's `ExtensionManager` owns MCP startup and restart. |
+| `BUZZ_AGENT_MCP_INIT_TIMEOUT_SECS` | `30` | Timeout for MCP initialization and initial tool discovery. |
+| `BUZZ_AGENT_MCP_RESTART_MAX_ATTEMPTS` | `3` | Maximum lazy restart attempts after a transport failure or timeout. |
+| `BUZZ_AGENT_MCP_RESTART_BASE_MS`, `BUZZ_AGENT_MCP_RESTART_MAX_MS` | `500`, `30000` | Exponential restart-backoff bounds. |
 
 
 > Variables marked **No longer read** were live in the pre-goose agent. They are
@@ -314,7 +316,7 @@ The trust boundary is **the operator who launched the agent**. The harness, MCP 
 | MCP child lifetime | Process group via `setpgid(0,0)` in `pre_exec`. On transport break or shutdown: `killpg(SIGKILL)`. Grandchildren die too. |
 | Server poisoning | After a timeout or transport break, the offending server is marked dead. Future calls trigger a lazy restart with exponential backoff. Other servers keep working. |
 | Frame size | Fixed 16 MiB (`config.rs::MAX_LINE_BYTES`). Oversize → connection killed. |
-| LLM response size | 16 MiB hard cap. Both `Content-Length` precheck and streaming-buffer cap. |
+| LLM response sizing | Goose's provider transports own response streaming and parsing; Buzz does not impose a second body-size cap. |
 | Cancellation | `tokio::select! { biased; _ = cancel.changed() => ... }` at every loop boundary. Cancel always wins the race. |
 | Session isolation | Unlimited concurrent sessions by default (configurable via `BUZZ_AGENT_MAX_SESSIONS`). One prompt per session at a time. Each session gets its own MCP servers. |
 | `tool_use ↔ tool_result` pairing | Encoded in the type system. Every `ToolCall` and `ToolResult` carries a `provider_id: String` (not `Option`). |
@@ -325,16 +327,16 @@ The trust boundary is **the operator who launched the agent**. The harness, MCP 
 |---|---|---|
 | Inbound JSON-RPC frame | 16 MiB | `MAX_LINE_BYTES` (fixed) |
 | Single prompt | 1 MiB | `MAX_PROMPT_BYTES` |
-| LLM response body | 16 MiB | `MAX_LLM_RESPONSE_BYTES` |
-| LLM error body | 4 KiB | `MAX_LLM_ERROR_BODY_BYTES` |
+| LLM response body | Provider-owned | Goose provider transport; no additional Buzz cap |
+| LLM error body | Provider-owned | Goose provider transport |
 | Tool result body (total, incl. images) | 8 MiB | `MAX_TOOL_RESULT_BYTES` |
-| Tool result text | 50 KiB | `BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES` (projected onto goose's `GOOSE_MAX_TOOL_RESPONSE_SIZE`) |
+| Tool result text | 50 KiB | `BUZZ_AGENT_MAX_TOOL_RESULT_TEXT_BYTES` (Buzz direct RMCP registry) |
 | MCP servers / session | 16 | `MAX_MCP_SERVERS` |
 | Tools / session | 128 | `MAX_TOOLS_PER_SESSION` |
 | Tool description bytes | 1 KiB | `MAX_DESCRIPTION_BYTES` |
 | Tool schema bytes | 4 KiB | `MAX_SCHEMA_BYTES` (oversize → replaced with `{}`) |
 | Tool calls per turn | 64 | `MAX_TOOL_CALLS_PER_TURN` |
-| Loop rounds | 0 (unlimited) | `BUZZ_AGENT_MAX_ROUNDS` |
+| Loop rounds | 1000 | `BUZZ_AGENT_MAX_ROUNDS` (`0`/unset → 1000) |
 | LLM request timeout | goose's own (600 s) | `BUZZ_AGENT_LLM_TIMEOUT_SECS` (projected per provider) |
 | Tool call timeout | 660 s | `BUZZ_AGENT_TOOL_TIMEOUT_SECS` |
 

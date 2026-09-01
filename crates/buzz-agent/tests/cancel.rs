@@ -16,6 +16,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -26,6 +28,7 @@ mod approve;
 fn spawn_hanging_tool_provider() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let requests = Arc::new(AtomicUsize::new(0));
 
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -78,29 +81,48 @@ fn spawn_hanging_tool_provider() -> String {
                 continue;
             }
 
-            let call = json!({
-                "id": "c", "object": "chat.completion.chunk", "created": 1,
-                "model": "fake-model",
-                "choices": [{
-                    "index": 0,
-                    "delta": {
-                        "role": "assistant",
-                        "tool_calls": [{
+            let request_number = requests.fetch_add(1, Ordering::SeqCst);
+            let (call, done) = if request_number == 0 {
+                (
+                    json!({
+                        "id": "c", "object": "chat.completion.chunk", "created": 1,
+                        "model": "fake-model",
+                        "choices": [{
                             "index": 0,
-                            "id": "call_1",
-                            "type": "function",
-                            "function": { "name": "devtools__tool_0", "arguments": "{}" },
+                            "delta": {
+                                "role": "assistant",
+                                "tool_calls": [{
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": { "name": "devtools__tool_0", "arguments": "{}" },
+                                }],
+                            },
+                            "finish_reason": null,
                         }],
-                    },
-                    "finish_reason": null,
-                }],
-            });
-            let done = json!({
-                "id": "c", "object": "chat.completion.chunk", "created": 1,
-                "model": "fake-model",
-                "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }],
-                "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 },
-            });
+                    }),
+                    json!({
+                        "id": "c", "object": "chat.completion.chunk", "created": 1,
+                        "model": "fake-model",
+                        "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }],
+                        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 },
+                    }),
+                )
+            } else {
+                (
+                    json!({
+                        "id": "c", "object": "chat.completion.chunk", "created": 1,
+                        "model": "fake-model",
+                        "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "done" }, "finish_reason": null }],
+                    }),
+                    json!({
+                        "id": "c", "object": "chat.completion.chunk", "created": 1,
+                        "model": "fake-model",
+                        "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }],
+                        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 },
+                    }),
+                )
+            };
             respond(
                 &mut stream,
                 "text/event-stream",
@@ -121,7 +143,12 @@ struct Harness {
 
 impl Harness {
     fn start(base_url: &str, home: &std::path::Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_buzz-agent"))
+        Self::start_with_env(base_url, home, &[])
+    }
+
+    fn start_with_env(base_url: &str, home: &std::path::Path, env: &[(&str, &str)]) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_buzz-agent"));
+        command
             .env("BUZZ_AGENT_PROVIDER", "openai-compat")
             .env("BUZZ_AGENT_MODEL", "fake-model")
             .env("OPENAI_COMPAT_API_KEY", "k")
@@ -133,9 +160,11 @@ impl Harness {
             .env("RUST_LOG", "warn")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn");
+            .stderr(Stdio::inherit());
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let mut child = command.spawn().expect("spawn");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         Self {
@@ -276,6 +305,46 @@ fn new_session(
         .as_str()
         .unwrap_or_else(|| panic!("session/new failed: {resp}"))
         .to_string()
+}
+
+#[test]
+fn hung_tool_respects_the_configured_timeout() {
+    let base_url = spawn_hanging_tool_provider();
+    let home = tempfile::tempdir().expect("home");
+    let cwd = tempfile::tempdir().expect("cwd");
+    let logs = tempfile::tempdir().expect("logs");
+    let cancel_log = logs.path().join("cancelled.jsonl");
+    let call_received = logs.path().join("call-received");
+
+    let mut h = Harness::start_with_env(
+        &base_url,
+        home.path(),
+        &[("BUZZ_AGENT_TOOL_TIMEOUT_SECS", "1")],
+    );
+    let session_id = new_session(&mut h, cwd.path(), &cancel_log, &call_received);
+
+    let started = Instant::now();
+    let id = h.request(
+        "session/prompt",
+        json!({
+            "sessionId": session_id,
+            "prompt": [{ "type": "text", "text": "run the slow tool" }],
+        }),
+    );
+    let (resp, notifications) = h.await_response(id);
+
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "configured one-second tool timeout did not bound the turn"
+    );
+    assert_eq!(resp["result"]["stopReason"], "end_turn", "{resp}");
+    assert!(
+        notifications.iter().any(|notification| {
+            notification["params"]["update"]["sessionUpdate"] == "tool_call_update"
+                && notification["params"]["update"]["status"] == "failed"
+        }),
+        "timed-out tool never reached a failed terminal state: {notifications:?}"
+    );
 }
 
 #[test]

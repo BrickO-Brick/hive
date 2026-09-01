@@ -164,6 +164,8 @@ pub struct McpRegistry {
     backoff_base: Duration,
     backoff_max: Duration,
     init_timeout: Duration,
+    tool_timeout: Duration,
+    hook_timeout: Duration,
     skills: Vec<goose::custom_requests::SourceEntry>,
 }
 
@@ -178,6 +180,8 @@ impl McpRegistry {
             backoff_base: Duration::from_millis(1),
             backoff_max: Duration::from_millis(1),
             init_timeout: Duration::from_secs(1),
+            tool_timeout: Duration::from_secs(1),
+            hook_timeout: Duration::from_secs(1),
             skills: Vec::new(),
         }
     }
@@ -207,6 +211,10 @@ impl McpRegistry {
             ),
             init_timeout: Duration::from_secs(
                 env_u64("BUZZ_AGENT_MCP_INIT_TIMEOUT_SECS", 30).max(1),
+            ),
+            tool_timeout: Duration::from_secs(env_u64("BUZZ_AGENT_TOOL_TIMEOUT_SECS", 660).max(1)),
+            hook_timeout: Duration::from_millis(
+                env_u64("BUZZ_AGENT_HOOK_TIMEOUT_MS", 2_500).max(1),
             ),
             skills: goose::skills::discover_skills(Some(std::path::Path::new(cwd)))
                 .into_iter()
@@ -374,6 +382,30 @@ impl McpRegistry {
         arguments: &Value,
         cancel: &CancellationToken,
     ) -> Result<rmcp::model::CallToolResult, rmcp::model::ErrorData> {
+        self.call_rmcp_with_timeout(qname, provider_id, arguments, cancel, self.tool_timeout)
+            .await
+    }
+
+    /// Call a lifecycle hook using its shorter fail-open timeout budget.
+    pub async fn call_hook_rmcp(
+        &self,
+        qname: &str,
+        provider_id: &str,
+        arguments: &Value,
+        cancel: &CancellationToken,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::model::ErrorData> {
+        self.call_rmcp_with_timeout(qname, provider_id, arguments, cancel, self.hook_timeout)
+            .await
+    }
+
+    async fn call_rmcp_with_timeout(
+        &self,
+        qname: &str,
+        provider_id: &str,
+        arguments: &Value,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::model::ErrorData> {
         if qname == "load_skill" {
             return Ok(crate::skills::load_skill(&self.skills, arguments));
         }
@@ -388,6 +420,7 @@ impl McpRegistry {
                     text,
                 },
                 cancel,
+                timeout,
             )
             .await
             .map_err(|error| rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
@@ -484,6 +517,7 @@ impl McpRegistry {
         arguments: &Value,
         budget: ResultBudget,
         cancel: &CancellationToken,
+        timeout: Duration,
     ) -> Result<ToolResult, AgentError> {
         let entry = self
             .by_qname
@@ -510,6 +544,7 @@ impl McpRegistry {
                     arguments,
                     budget,
                     cancel,
+                    timeout,
                 )
                 .await;
         }
@@ -543,6 +578,7 @@ impl McpRegistry {
             arguments,
             budget,
             cancel,
+            timeout,
         )
         .await
     }
@@ -558,6 +594,7 @@ impl McpRegistry {
         arguments: &Value,
         budget: ResultBudget,
         cancel: &CancellationToken,
+        timeout: Duration,
     ) -> Result<ToolResult, AgentError> {
         let arg_obj = match arguments {
             Value::Object(m) => Some(m.clone()),
@@ -595,6 +632,18 @@ impl McpRegistry {
             _ = cancel.cancelled() => {
                 fire_and_forget_cancel(handle, qname);
                 return Err(AgentError::Cancelled);
+            }
+            _ = tokio::time::sleep(timeout) => {
+                fire_and_forget_cancel(handle, qname);
+                self.kill_and_mark_dead_if_current(
+                    server,
+                    client,
+                    &format!("call timed out after {}ms", timeout.as_millis()),
+                );
+                return Err(AgentError::Mcp(format!(
+                    "call {qname}: timed out after {}ms",
+                    timeout.as_millis()
+                )));
             }
             r = &mut handle.rx => match r {
                 Ok(inner) => inner,
