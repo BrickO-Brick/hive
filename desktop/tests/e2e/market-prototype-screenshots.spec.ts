@@ -49,7 +49,7 @@ test.describe("market channel prototype", () => {
       const offerCardWidth = await market
         .getByTestId("market-offer-card")
         .evaluate((element) => element.getBoundingClientRect().width);
-      expect(offerCardWidth).toBeGreaterThan(1100);
+      expect(offerCardWidth).toBeGreaterThan(850);
       const imageAspectRatio = await market
         .getByTestId("market-product-image")
         .evaluate((element) => {
@@ -57,10 +57,28 @@ test.describe("market channel prototype", () => {
           return bounds.width / bounds.height;
         });
       expect(imageAspectRatio).toBeCloseTo(1, 1);
-      await expect(market.getByTestId("market-agent-wallet")).toBeVisible();
+      const wallet = market.getByTestId("market-agent-wallet");
+      await expect(wallet).toBeVisible();
+      await expect(wallet).toHaveCSS(
+        "background-color",
+        await page
+          .locator('[data-sidebar="sidebar"]')
+          .evaluate(
+            (element) => window.getComputedStyle(element).backgroundColor,
+          ),
+      );
       await expect(
-        market.getByText("Agent wallet", { exact: true }),
+        market.getByRole("button", { name: "Hide agent wallet" }).first(),
       ).toBeVisible();
+      const walletRail = market.getByTestId("market-wallet-rail");
+      await market.getByTestId("market-wallet-toggle").click();
+      await expect(walletRail).toHaveAttribute("aria-hidden", "true");
+      await expect(walletRail).toHaveCSS("width", "0px");
+      await expect(
+        market.getByRole("button", { name: "Show agent wallet" }),
+      ).toBeVisible();
+      await market.getByRole("button", { name: "Show agent wallet" }).click();
+      await expect(wallet).toBeVisible();
       await expect(market.getByText("Agent market channel")).toBeVisible();
       await expect(market.getByTestId("market-agent-avatar")).toHaveCount(
         scenario === "unlimited" ? 3 : 4,

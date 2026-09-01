@@ -5,11 +5,11 @@ import {
   Radio,
   Store,
   TriangleAlert,
-  WalletCards,
 } from "lucide-react";
 import * as React from "react";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
+import { AgentWalletPanel } from "@/features/market/ui/AgentWalletPanel";
 import {
   MARKET_SCENARIOS,
   type MarketActivity,
@@ -28,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { DrawerPanelIcon } from "@/shared/ui/DrawerPanelIcon";
 import { Input } from "@/shared/ui/input";
 import { useOptionalSidebar } from "@/shared/ui/sidebar";
 import { Textarea } from "@/shared/ui/textarea";
@@ -37,37 +38,6 @@ const REPRESENTING_AGENTS = [
   { name: "Cartograph", role: "Repository mapping" },
   { name: "Sentinel", role: "Operations & safety" },
 ] as const;
-
-const WALLET_DETAILS: Record<
-  MarketScenarioId,
-  { account: string; balance: string; settlement: string }
-> = {
-  finite: {
-    account: "escrow1report…13c8",
-    balance: "150 sats funded",
-    settlement: "1 paid · 2 reserved",
-  },
-  unlimited: {
-    account: "wallet1mapper…c241",
-    balance: "80 sats escrowed",
-    settlement: "760 sats paid",
-  },
-  auction: {
-    account: "escrow1strings…9f10",
-    balance: "600 sats funded",
-    settlement: "Held until award",
-  },
-  tender: {
-    account: "escrow1tender…1b73",
-    balance: "2,000 sats funded",
-    settlement: "Held during selection",
-  },
-  awarded: {
-    account: "escrow1tender…1b73",
-    balance: "1,750 sats escrowed",
-    settlement: "Release on signed receipt",
-  },
-};
 
 const COMMERCIAL_TERM_LABELS = new Set([
   "Price",
@@ -108,6 +78,7 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
   const scenario = MARKET_SCENARIOS[scenarioId];
   const sidebar = useOptionalSidebar();
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [walletOpen, setWalletOpen] = React.useState(true);
   const isTerminal = scenario.status !== "Open";
 
   return (
@@ -121,6 +92,27 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
     >
       <section className="mb-2 ml-px mt-px flex min-h-0 min-w-60 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
         <ChatHeader
+          actions={
+            <Button
+              aria-label={
+                walletOpen ? "Hide agent wallet" : "Show agent wallet"
+              }
+              aria-pressed={walletOpen}
+              className="h-7 w-7 text-sidebar-foreground hover:bg-sidebar-accent"
+              data-testid="market-wallet-toggle"
+              onClick={() => setWalletOpen((open) => !open)}
+              size="icon"
+              title={walletOpen ? "Hide agent wallet" : "Show agent wallet"}
+              type="button"
+              variant="ghost"
+            >
+              <DrawerPanelIcon
+                className="-scale-x-100"
+                side={walletOpen ? "left" : "right"}
+                testId="market-wallet-toggle-icon"
+              />
+            </Button>
+          }
           channelType="stream"
           description={scenario.summary}
           leadingContent={<Store className="h-4 w-4 text-muted-foreground" />}
@@ -132,7 +124,6 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
             <OfferCard
               onCreate={() => setCreateOpen(true)}
               scenario={scenario}
-              scenarioId={scenarioId}
             />
 
             <section className="pt-5" data-testid="market-agent-timeline">
@@ -187,6 +178,8 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
           </div>
         </footer>
       </section>
+
+      <AgentWalletPanel open={walletOpen} scenarioId={scenarioId} />
     </main>
   );
 }
@@ -194,11 +187,9 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
 function OfferCard({
   onCreate,
   scenario,
-  scenarioId,
 }: {
   onCreate: () => void;
   scenario: MarketScenario;
-  scenarioId: MarketScenarioId;
 }) {
   const author =
     scenario.terms.find(
@@ -216,7 +207,7 @@ function OfferCard({
       className="overflow-hidden rounded-2xl border bg-card"
       data-testid="market-offer-card"
     >
-      <div className="grid sm:grid-cols-[minmax(12rem,22rem)_minmax(0,1fr)_17rem]">
+      <div className="grid sm:grid-cols-[minmax(12rem,22rem)_minmax(0,1fr)]">
         <div
           className="flex aspect-square items-center justify-center border-b bg-muted/60 text-muted-foreground sm:border-b-0 sm:border-r"
           data-testid="market-product-image"
@@ -266,44 +257,8 @@ function OfferCard({
             </Button>
           </div>
         </div>
-        <AgentWallet scenarioId={scenarioId} />
       </div>
     </section>
-  );
-}
-
-function AgentWallet({ scenarioId }: { scenarioId: MarketScenarioId }) {
-  const wallet = WALLET_DETAILS[scenarioId];
-  return (
-    <aside
-      className="flex flex-col border-t bg-muted/25 p-5 sm:border-l sm:border-t-0"
-      data-testid="market-agent-wallet"
-    >
-      <div className="flex items-center gap-2">
-        <WalletCards className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">Agent wallet</h3>
-      </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Settlement for this listing
-      </p>
-      <dl className="mt-5 space-y-4">
-        <WalletValue label="Balance" value={wallet.balance} />
-        <WalletValue label="Settlement" value={wallet.settlement} />
-        <WalletValue label="Network" value="Sandbox Lightning" />
-      </dl>
-      <p className="mt-auto pt-5 font-mono text-xs text-muted-foreground">
-        {wallet.account}
-      </p>
-    </aside>
-  );
-}
-
-function WalletValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-sm font-medium">{value}</dd>
-    </div>
   );
 }
 
