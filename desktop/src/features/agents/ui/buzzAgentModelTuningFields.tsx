@@ -22,6 +22,16 @@ import {
 } from "./buzzAgentConfig";
 
 /**
+ * Capitalize the first character of an effort value for human display.
+ * Raw canonical values ("off", "low", "medium", "high", "max") become
+ * title-cased ("Off", "Low", "Medium", "High", "Max") while the raw
+ * string is preserved as the option value for round-trip fidelity.
+ */
+function humanizeEffortLabel(v: string): string {
+  return v.length === 0 ? v : v[0].toUpperCase() + v.slice(1);
+}
+
+/**
  * Shared effort-select dropdown for the `BUZZ_AGENT_THINKING_EFFORT` env var.
  *
  * Used by both `BuzzAgentModelTuningFields` (per-agent/persona dialogs) and
@@ -124,10 +134,11 @@ export function EffortSelectField({
       const isValid = effortValidSet.has(v);
       if (!showUnavailableOptions && !isValid) return [];
       const isDefault = v === effortDefault;
+      const humanLabel = humanizeEffortLabel(v);
       return [
         {
           disabled: !isValid,
-          label: isDefault ? `${v} (default)` : v,
+          label: isDefault ? `${humanLabel} (default)` : humanLabel,
           value: v,
         },
       ];

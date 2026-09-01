@@ -16,7 +16,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{effort_launch_projection, effort_suppress_keys, EffortLaunch};
+use super::{
+    apply_effort_sequence_to_command, effort_launch_projection, effort_suppress_keys, EffortLaunch,
+};
 use crate::managed_agents::agent_env::build_buzz_agent_provider_defaults;
 use crate::managed_agents::custom_harnesses::HarnessDefinition;
 use crate::managed_agents::discovery::{known_acp_runtime_exact, KnownAcpRuntime};
@@ -835,110 +837,96 @@ fn strip_does_not_remove_unrelated_env_key() {
     );
 }
 
-// --------------------------------------------------------------------------
-// Production command sequence: baked-write → strip → projected overlay
-// --------------------------------------------------------------------------
+// Production-sequence seam tests: call `apply_effort_sequence_to_command`
+// (the same fn `runtime.rs` calls) and spawn `/usr/bin/env` so the child's
+// actual env is the ground truth — not `Command::get_envs()` tombstones.
 //
-// These tests exercise the production sequence `runtime.rs` calls. They spawn
-// `/usr/bin/env` so the child's actual env is the ground truth — not
-// `Command::get_envs()` tombstones. Deleting either step from
-// `apply_effort_launch_to_command` fails the single-authority assertions.
+// Mutation proof: deleting `effort_launch_projection` from inside the wrapper
+// empties the suppress list and lets effort keys leak; deleting
+// `apply_effort_launch_to_command` leaves stale keys and breaks the
+// single-authority assertion. Inherited state is seeded via `std::env::set_var`
+// (not `cmd.env()` after `env_clear()`) under INHERITED_ENV_LOCK so parallel
+// tests see a consistent parent environment.
+use std::sync::Mutex;
+static INHERITED_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// Execute a Command and return its stdout as a string.
 fn run_env_cmd(cmd: &mut std::process::Command) -> String {
     let output = cmd
         .output()
         .expect("/usr/bin/env must be executable on this host");
     assert!(
         output.status.success(),
-        "env command exited with failure: {:?}",
+        "env command failed: {:?}",
         output.status
     );
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
-/// After baked-write → strip → emit, the child sees exactly the projected Goose key
-/// with no collision key (inherited or baked). Worst-case: both collision variants seeded.
+/// Seam test: after projection + strip + emit, the child sees exactly the
+/// projected Goose key with no collision. Inherited lowercase key is seeded
+/// through the real parent environment (std::env::set_var), not cmd.env().
+/// Deleting `apply_effort_sequence_to_command` from runtime.rs fails this test.
 #[test]
-fn production_sequence_goose_baked_collision_resolved_in_child() {
-    let mut cmd = std::process::Command::new("/usr/bin/env");
-    cmd.env_clear();
+#[cfg(not(target_os = "windows"))]
+fn production_sequence_goose_inherited_collision_resolved_in_child() {
+    let lower = GOOSE_KEY.to_ascii_lowercase();
+    let _guard = INHERITED_ENV_LOCK.lock().unwrap();
+    // Seed the lowercase key in the parent env so the child inherits it.
+    std::env::set_var(&lower, "inherited-low");
 
+    let mut cmd = std::process::Command::new("/usr/bin/env");
     build_buzz_agent_provider_defaults(&mut cmd);
     cmd.env(GOOSE_KEY, "baked-high");
-    cmd.env(GOOSE_KEY.to_ascii_lowercase(), "inherited-low");
     cmd.env(BUZZ_AGENT_KEY, "legacy-medium");
     cmd.env("MY_AGENT_CONFIG", "keep-me");
 
     let mut r = record();
     r.effort_level = Some("high".into());
-    let launch = project_record_only(&r, Some(goose()));
-
-    super::apply_effort_launch_to_command(&mut cmd, &launch);
-
+    apply_effort_sequence_to_command(
+        &mut cmd,
+        &r,
+        Some(goose()),
+        &[],
+        None,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    );
     let child_env = run_env_cmd(&mut cmd);
+
+    std::env::remove_var(&lower);
 
     assert!(
         child_env.contains(&format!("{GOOSE_KEY}=high")),
-        "child must receive the projected Goose effort key with the correct value; env:\n{child_env}"
+        "child must receive the projected Goose key; env:\n{child_env}"
     );
     assert!(
         !child_env.contains(BUZZ_AGENT_KEY),
-        "legacy buzz-agent effort key must not reach the child; env:\n{child_env}"
+        "legacy buzz-agent key must not reach child; env:\n{child_env}"
     );
     assert!(
         !child_env.contains(ACP_KEY),
-        "ACP sentinel must not reach the child when Goose is the runtime; env:\n{child_env}"
+        "ACP sentinel must not reach child for Goose; env:\n{child_env}"
     );
     assert!(
-        !child_env
-            .to_ascii_uppercase()
-            .contains(&format!("{}=INHERITED", GOOSE_KEY.to_ascii_uppercase())),
-        "inherited lowercase Goose key must not shadow the projected value"
+        !child_env.contains(&format!("{lower}=inherited-low")),
+        "inherited lowercase key must be stripped; env:\n{child_env}"
     );
     assert!(
         child_env.contains("MY_AGENT_CONFIG=keep-me"),
-        "unrelated env key must pass through the production sequence unchanged; env:\n{child_env}"
+        "unrelated key must survive; env:\n{child_env}"
     );
-    // Exactly one effort key must be present (count all known effort key prefixes).
     let effort_key_count = [GOOSE_KEY, BUZZ_AGENT_KEY, ACP_KEY]
         .iter()
         .filter(|k| child_env.contains(&format!("{k}=")))
         .count();
     assert_eq!(
         effort_key_count, 1,
-        "exactly one effort key must reach the child; keys found in env:\n{child_env}"
+        "exactly one effort key must reach child; env:\n{child_env}"
     );
 }
 
-/// Unix: `env_remove(lower)` strips the lowercase Goose variant from the child env.
-/// Deleting that branch leaves the collision key alive and fails this assertion.
-#[test]
-#[cfg(not(target_os = "windows"))]
-fn production_sequence_lowercase_collision_absent_from_child() {
-    let lower = GOOSE_KEY.to_ascii_lowercase();
-    let mut cmd = std::process::Command::new("/usr/bin/env");
-    cmd.env_clear();
-    cmd.env(&lower, "stale-lowercase");
-
-    let mut r = record();
-    r.effort_level = Some("high".into());
-    let launch = project_record_only(&r, Some(goose()));
-    super::apply_effort_launch_to_command(&mut cmd, &launch);
-
-    let child_env = run_env_cmd(&mut cmd);
-
-    assert!(
-        child_env.contains(&format!("{GOOSE_KEY}=high")),
-        "canonical effort key must be in child env; env:\n{child_env}"
-    );
-    assert!(
-        !child_env.contains(&format!("{lower}=stale-lowercase")),
-        "lowercase Goose key must be stripped from child env; env:\n{child_env}"
-    );
-}
-
-/// Windows: OS case-folds env keys, so `env_remove("GOOSE_THINKING_EFFORT")` strips ALL
+/// Windows: OS case-folds env keys, so stripping "GOOSE_THINKING_EFFORT" removes ALL
 /// case variants. Deleting the production strip call leaves the mixed-case key in child output.
 #[test]
 #[cfg(target_os = "windows")]
@@ -948,14 +936,19 @@ fn production_sequence_arbitrary_mixedcase_collision_absent_from_child_windows()
     cmd.args(["/c", "set"]);
     cmd.env_clear();
     cmd.env(mixed, "stale-mixed");
-
     let mut r = record();
     r.effort_level = Some("high".into());
-    let launch = project_record_only(&r, Some(goose()));
-    super::apply_effort_launch_to_command(&mut cmd, &launch);
-
+    apply_effort_sequence_to_command(
+        &mut cmd,
+        &r,
+        Some(goose()),
+        &[],
+        None,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    );
     let child_env = run_env_cmd(&mut cmd);
-
     assert!(
         child_env
             .to_ascii_uppercase()
@@ -970,29 +963,30 @@ fn production_sequence_arbitrary_mixedcase_collision_absent_from_child_windows()
     );
 }
 
-/// Custom passthrough: non-suppress-set effort keys must survive the production sequence
-/// unchanged (unknown runtime with no column; `launch.value == None`).
+/// Custom passthrough: non-suppress-set effort keys survive the production sequence.
 #[test]
 fn production_sequence_custom_passthrough_survives() {
     let mut cmd = std::process::Command::new("/usr/bin/env");
     cmd.env_clear();
     cmd.env("MY_HARNESS_EFFORT", "high");
     cmd.env("MY_UNRELATED_CONFIG", "keep");
-
-    let launch = project_record_only(&record(), None);
-    assert_eq!(launch.value, None);
-
-    super::apply_effort_launch_to_command(&mut cmd, &launch);
-
+    apply_effort_sequence_to_command(
+        &mut cmd,
+        &record(),
+        None,
+        &[],
+        None,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    );
     let child_env = run_env_cmd(&mut cmd);
-
-    // The custom key is NOT in the suppress set and must pass through.
     assert!(
         child_env.contains("MY_HARNESS_EFFORT=high"),
-        "custom effort-looking env key must survive the production sequence; env:\n{child_env}"
+        "custom key must survive; env:\n{child_env}"
     );
     assert!(
         child_env.contains("MY_UNRELATED_CONFIG=keep"),
-        "unrelated env key must survive; env:\n{child_env}"
+        "unrelated key must survive; env:\n{child_env}"
     );
 }

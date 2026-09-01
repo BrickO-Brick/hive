@@ -45,7 +45,7 @@ fn local_record() -> ManagedAgentRecord {
 // ── Mutation-effective seam tests (apply_effort_update) ──────────────────────
 //
 // These tests call `apply_effort_update`, the SAME function production calls
-// inside `update_managed_agent`. They verify:
+// inside `update_managed_agent` at line ~273. They verify:
 //   - non-local records are rejected AND the column is NOT mutated;
 //   - local set writes to the column;
 //   - local clear zeroes the column.

@@ -745,18 +745,18 @@ pub fn spawn_agent_child(
     build_buzz_agent_provider_defaults(&mut command);
     // Strip all known effort keys and emit exactly one projected key. `Command`
     // inherits the parent env — an ambient effort key would leave two authorities.
-    // `apply_effort_launch_to_command` is the seam the process-boundary tests
-    // exercise; deleting or misordering it fails those child-env assertions.
-    let effort_launch = super::config_bridge::effort::effort_launch_projection(
+    // `apply_effort_sequence_to_command` (combines projection + strip + emit) is
+    // the seam the production-sequence tests enter; deleting it fails those tests.
+    super::config_bridge::effort::apply_effort_sequence_to_command(
+        &mut command,
         record,
         runtime_meta,
         &personas,
         record.persona_id.as_deref(),
         &global.env_vars,
-        None, // harness_def: strip/emit is the goal; descriptor.env covers the full tier
+        None,
         &super::agent_env::baked_build_env(),
     );
-    super::config_bridge::effort::apply_effort_launch_to_command(&mut command, &effort_launch);
     if let Some(meta) = runtime_meta {
         for (key, value) in runtime_metadata_env_vars(
             meta.model_env_var,

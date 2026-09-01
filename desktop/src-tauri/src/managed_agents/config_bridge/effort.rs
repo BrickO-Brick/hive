@@ -464,6 +464,35 @@ fn resolve_effective_effort(
     None
 }
 
+/// Combined projection + strip + emit seam for a spawn.
+///
+/// Called by `runtime.rs` immediately before launching an agent child and by
+/// the production-sequence tests so that deleting this call from either
+/// location fails the child-env assertions. Tests that call this function
+/// enter the SAME seam production uses — removing the `effort_launch_projection`
+/// call or the `apply_effort_launch_to_command` call inside fails them.
+pub(crate) fn apply_effort_sequence_to_command(
+    cmd: &mut std::process::Command,
+    record: &ManagedAgentRecord,
+    runtime: Option<&KnownAcpRuntime>,
+    personas: &[AgentDefinition],
+    persona_id: Option<&str>,
+    global_env: &BTreeMap<String, String>,
+    harness_def: Option<&HarnessDefinition>,
+    baked_env: &BTreeMap<String, String>,
+) {
+    let launch = effort_launch_projection(
+        record,
+        runtime,
+        personas,
+        persona_id,
+        global_env,
+        harness_def,
+        baked_env,
+    );
+    apply_effort_launch_to_command(cmd, &launch);
+}
+
 #[cfg(test)]
 #[path = "effort_tests.rs"]
 mod tests;

@@ -52,17 +52,16 @@ fn ensure_effort_change_supported(
     Ok(())
 }
 
-/// Guard + apply in one call: the production update seam for effort.
+/// Guard/apply seam for the effort step of `update_managed_agent`.
 ///
-/// Rejects non-local records (same contract as the old standalone command),
-/// then delegates to `apply_picker_effort_level` for local records when a
-/// value is present. Absent `effort_level` (`None` outer) is a no-op.
+/// Called at line ~273 of `update_managed_agent` so tests enter the same
+/// function as production. Guards non-local records, then delegates to
+/// `apply_picker_effort_level` for local records when a value is present.
+/// Absent `effort_level` (`None` outer) is a no-op.
 ///
-/// Split from the Tauri command so tests can verify that deletion of the
-/// guard call makes a non-local set/clear pass through and mutate the record,
-/// and that deletion of the apply call leaves the column unchanged on a local
-/// set. Deleting either half in production leaves the other half untested by
-/// the predicate-only tests in `agent_models_update_tests.rs`.
+/// Mutation proofs (see `agent_models_update_tests.rs`):
+///   - Deleting `ensure_effort_change_supported` makes reject tests pass `Ok(())`.
+///   - Deleting `apply_picker_effort_level` leaves `effort_level == None` on set.
 pub(crate) fn apply_effort_update(
     record: &mut ManagedAgentRecord,
     effort_level: Option<Option<String>>,
