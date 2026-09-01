@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::event::insert_event_in_transaction;
 use crate::replaceable::event_replacement_lock_key;
+use crate::store::channel_members::acquire_channel_membership_lock;
 use crate::{Db, DbError, Result};
 
 /// Outcome of applying a Project revision command.
@@ -166,6 +167,10 @@ impl Db {
         let role = if actor.as_slice() == owner.as_slice() {
             None
         } else if let Some(home_channel_id) = home {
+            // Serialize the authorization read with roster mutations. Without
+            // the shared membership lock, an admin removal or demotion could
+            // commit while this transaction still acts on the stale role.
+            acquire_channel_membership_lock(&mut tx, community_id, home_channel_id).await?;
             sqlx::query_scalar::<_, String>(
                 "SELECT cm.role::text FROM channel_members cm \
                  JOIN channels c ON c.community_id=cm.community_id AND c.id=cm.channel_id \
