@@ -25,7 +25,9 @@ echo "=== HOST ==="
 hostname
 uname -a
 uname -m
-[[ -f /etc/os-release ]] && cat /etc/os-release || true
+if [[ -f /etc/os-release ]]; then
+  cat /etc/os-release
+fi
 echo "=== CPU ==="
 getconf _NPROCESSORS_ONLN 2>/dev/null || nproc
 uptime
