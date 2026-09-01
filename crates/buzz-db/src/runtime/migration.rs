@@ -699,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 42);
+        assert_eq!(migrations.len(), 43);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1813,6 +1813,9 @@ mod tests {
             );
         }
         let mut expected_fences = migration.fence_attachments.clone();
+        for later in MIGRATOR.iter().filter(|migration| migration.version > 29) {
+            expected_fences.extend(surface(later.sql.as_ref()).fence_attachments);
+        }
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
         assert_eq!(
