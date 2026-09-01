@@ -170,7 +170,8 @@ impl Db {
                 "SELECT cm.role::text FROM channel_members cm \
                  JOIN channels c ON c.community_id=cm.community_id AND c.id=cm.channel_id \
                  WHERE cm.community_id=$1 AND cm.channel_id=$2 AND cm.pubkey=$3 \
-                   AND cm.removed_at IS NULL AND c.deleted_at IS NULL",
+                   AND cm.removed_at IS NULL AND c.deleted_at IS NULL \
+                   AND c.archived_at IS NULL",
             )
             .bind(community_id.as_uuid())
             .bind(home_channel_id)
@@ -575,12 +576,37 @@ mod tests {
                 .1
         );
 
-        sqlx::query("UPDATE channels SET deleted_at=NOW() WHERE community_id=$1 AND id=$2")
+        sqlx::query("UPDATE channels SET archived_at=NOW() WHERE community_id=$1 AND id=$2")
             .bind(community.as_uuid())
             .bind(home)
             .execute(&pool)
             .await
             .unwrap();
+        let after_archive = revision_event(
+            &admin,
+            &coordinate,
+            &recreated.id.to_hex(),
+            ProjectRevisionOperation::AddRelatedChannel,
+            related_b,
+        );
+        let parsed = ProjectRevision::parse(&after_archive).unwrap();
+        assert_eq!(
+            db.apply_project_revision(community, &after_archive, &parsed)
+                .await
+                .unwrap()
+                .status,
+            ProjectRevisionApplyStatus::Forbidden
+        );
+
+        sqlx::query(
+            "UPDATE channels SET archived_at=NULL, deleted_at=NOW() \
+             WHERE community_id=$1 AND id=$2",
+        )
+        .bind(community.as_uuid())
+        .bind(home)
+        .execute(&pool)
+        .await
+        .unwrap();
         let after_delete = revision_event(
             &admin,
             &coordinate,
