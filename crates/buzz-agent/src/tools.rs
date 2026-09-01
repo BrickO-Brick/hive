@@ -23,8 +23,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use rmcp::model::{CallToolResult, ContentBlock, ErrorData};
 use tokio_util::sync::CancellationToken;
 
-use goose::agents::Agent;
-use goose::session::session_manager::Session;
+use crate::mcp::McpRegistry;
 use goose_provider_types::conversation::message::{ToolRequest, ToolResult};
 
 use crate::permission::{AskSubject, PermissionBroker, PermissionDecision};
@@ -41,8 +40,8 @@ pub type Outcome = (String, ToolResult<CallToolResult>);
 /// produced them.
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
-    agent: &Arc<Agent>,
-    session: &Session,
+    mcp: &Arc<McpRegistry>,
+    session_id: &str,
     wire_tx: &WireSender,
     cancel: &CancellationToken,
     permissions: &Arc<PermissionBroker>,
@@ -53,8 +52,8 @@ pub async fn execute(
     let mut pending = FuturesUnordered::new();
     for (index, request) in requests.iter().enumerate() {
         pending.push(run_one(
-            agent,
-            session,
+            mcp,
+            session_id,
             wire_tx,
             cancel,
             permissions,
@@ -73,7 +72,7 @@ pub async fn execute(
     for outcome in collected.into_iter().flatten() {
         let (id, result) = outcome;
         let result = reflect_on_failure(result, reflections);
-        emit_terminal(wire_tx, session, &id, &result).await;
+        emit_terminal(wire_tx, session_id, &id, &result).await;
         results.push((id, result));
     }
     results
@@ -100,8 +99,8 @@ pub fn cancelled_results(requests: &[ToolRequest]) -> Vec<Outcome> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_one(
-    agent: &Arc<Agent>,
-    session: &Session,
+    mcp: &Arc<McpRegistry>,
+    session_id: &str,
     wire_tx: &WireSender,
     cancel: &CancellationToken,
     permissions: &Arc<PermissionBroker>,
@@ -117,7 +116,7 @@ async fn run_one(
         Err(e) => return (index, (id, Err(e.clone()))),
     };
 
-    crate::agent::emit_tool_call(wire_tx, &session.id, &id, &call).await;
+    crate::agent::emit_tool_call(wire_tx, session_id, &id, &call).await;
 
     // Ask the client to authorize this call. Every non-authorizing outcome
     // fails closed: the model sees an ordinary tool failure and the turn
@@ -131,7 +130,7 @@ async fn run_one(
         .request_permission(
             wire_tx,
             protocol_version,
-            &session.id,
+            session_id,
             AskSubject {
                 tool_call_id: &id,
                 tool_name: &call.name,
@@ -174,14 +173,14 @@ async fn run_one(
         );
     }
 
-    let (_request_id, dispatched) = agent
-        .dispatch_tool_call(call, id.clone(), Some(cancel.clone()), session)
+    let arguments = call
+        .arguments
+        .clone()
+        .map(serde_json::Value::Object)
+        .unwrap_or(serde_json::Value::Null);
+    let result = mcp
+        .call_rmcp(call.name.as_ref(), &id, &arguments, cancel)
         .await;
-
-    let result = match dispatched {
-        Ok(call_result) => call_result.result.await,
-        Err(e) => Err(e),
-    };
 
     (index, (id, result))
 }
@@ -232,7 +231,7 @@ fn reflect_on_failure(
 
 async fn emit_terminal(
     wire_tx: &WireSender,
-    session: &Session,
+    session_id: &str,
     id: &str,
     result: &ToolResult<CallToolResult>,
 ) {
@@ -240,7 +239,7 @@ async fn emit_terminal(
         Ok(out) => out.is_error.unwrap_or(false),
         Err(_) => true,
     };
-    crate::agent::emit_tool_call_update(wire_tx, &session.id, id, failed).await;
+    crate::agent::emit_tool_call_update(wire_tx, session_id, id, failed).await;
 }
 
 #[cfg(test)]

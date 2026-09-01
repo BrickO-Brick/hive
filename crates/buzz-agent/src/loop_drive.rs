@@ -46,8 +46,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use goose::agents::Agent;
-use goose::session::session_manager::Session;
+use crate::mcp::McpRegistry;
+use crate::turn_state::TurnSession;
 use goose_provider_types::conversation::message::{Message, MessageContent, ToolRequest};
 use goose_provider_types::conversation::Conversation;
 
@@ -63,7 +63,7 @@ use goose_agent::operation::{ConversationEffect, Emitter};
 /// goose's own `GooseEffect`: the extra variants there (recipes, extension
 /// data, recorded usage) exist for operations buzz does not run, so naming the
 /// narrower type keeps unreachable cases out of `apply_effects` entirely.
-type BuzzMachine<'a> = StateMachine<'a, Session, ConversationEffect>;
+type BuzzMachine<'a> = StateMachine<'a, TurnSession, ConversationEffect>;
 
 use crate::wire::WireSender;
 
@@ -103,7 +103,7 @@ enum Round {
 
 /// Everything a round needs that does not change between rounds.
 pub struct TurnContext<'a> {
-    pub agent: &'a Arc<Agent>,
+    pub mcp: &'a Arc<McpRegistry>,
     pub session_id: &'a str,
     pub wire_tx: &'a WireSender,
     pub cancel: &'a CancellationToken,
@@ -158,11 +158,8 @@ pub async fn run_turn(
 
     // The turn's conversation lives here, not in a database. See
     // `crate::turn_state` for why goose never needed one.
-    let model_config = ctx
-        .agent
-        .model_config_for_session(ctx.session_id)
-        .await
-        .ok();
+    let (_provider, model_config, _model_id) = ctx.model.snapshot().await;
+    let model_config = Some(model_config);
     let mut state = crate::turn_state::TurnState::new(
         ctx.session_id.to_string(),
         ctx.working_dir.clone(),
@@ -183,9 +180,8 @@ pub async fn run_turn(
     let outcome = crate::ops::Outcome::new();
     let reply_guard_tools = if ctx.require_reply {
         Some(
-            ctx.agent
-                .list_tools(ctx.session_id, None)
-                .await
+            ctx.mcp
+                .rmcp_tools()
                 .into_iter()
                 .map(|tool| tool.name.to_string())
                 .collect(),
@@ -198,14 +194,14 @@ pub async fn run_turn(
         outcome.clone(),
         ctx.cancel.clone(),
         ctx.hook_extension
-            .map(|extension| (Arc::clone(ctx.agent), extension.to_string())),
+            .map(|extension| (Arc::clone(ctx.mcp), extension.to_string())),
         reply_guard_tools,
     );
     let start_machine = crate::ops::round_start(
         ctx.steers.clone(),
         crate::ops::BuzzCompactionOperation::new(
             ctx.model.clone(),
-            Arc::clone(ctx.agent),
+            Arc::clone(ctx.mcp),
             ctx.hook_extension.map(str::to_string),
             ctx.session_id.to_string(),
         ),
@@ -321,7 +317,7 @@ enum Gate {
 /// Called at the top of every round, and again when a round wants to end --
 /// that second call is what gives `_Stop` its veto, since its operation only
 /// applies to a conversation whose last message ends the turn.
-async fn gate(machine: &BuzzMachine<'_>, session: &Session, emitter: &Emitter) -> Gate {
+async fn gate(machine: &BuzzMachine<'_>, session: &TurnSession, emitter: &Emitter) -> Gate {
     match machine.step(session, emitter).await {
         Ok(Some(result)) if result.yield_to_client => Gate::Ended,
         Ok(Some(result)) => Gate::Applied(result.effects),
@@ -462,8 +458,8 @@ async fn round(
     }
 
     let results = crate::tools::execute(
-        ctx.agent,
-        state.session(),
+        ctx.mcp,
+        &state.session().id,
         ctx.wire_tx,
         ctx.cancel,
         ctx.permissions,
@@ -487,14 +483,14 @@ struct Inference {
 /// arrive and accumulating usage.
 async fn infer(
     ctx: &TurnContext<'_>,
-    session: &Session,
+    session: &TurnSession,
     conversation: &Conversation,
     tokens: &mut super::agent::TurnTokens,
 ) -> Result<Option<Inference>, AgentError> {
     let (provider, model_config, _model_id) = ctx.model.snapshot().await;
 
     let system_prompt = ctx.prompt.build(&session.working_dir).await;
-    let tools = ctx.agent.list_tools(ctx.session_id, None).await;
+    let tools = ctx.mcp.rmcp_tools();
 
     let mut stream = provider
         .stream(
@@ -825,7 +821,7 @@ mod tests {
             "summary"
         );
         assert_eq!(
-            state.session().usage.total_tokens,
+            state.session().total_tokens,
             None,
             "a stale total would re-trigger compaction immediately"
         );
@@ -834,7 +830,7 @@ mod tests {
         // current occupancy, not a delta to add to the discarded conversation.
         state.set_total_tokens(Some(12_000));
         assert_eq!(
-            state.session().usage.total_tokens,
+            state.session().total_tokens,
             Some(12_000),
             "the post-compaction round must not accumulate the old 190k total"
         );

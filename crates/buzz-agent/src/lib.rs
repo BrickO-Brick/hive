@@ -24,12 +24,12 @@ pub mod agent;
 pub mod config;
 pub mod hooks;
 pub mod loop_drive;
+pub mod mcp;
 pub mod model;
 pub mod ops;
 pub mod permission;
 pub mod prompt;
 pub mod provider;
-pub mod session_store;
 pub mod skills;
 pub mod steer;
 pub mod tools;
@@ -50,10 +50,6 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use goose::agents::{Agent, AgentConfig, ExtensionConfig, GoosePlatform};
-use goose::config::PermissionManager;
-use goose::session::session_manager::SessionType;
-
 use config::{Config, MAX_PROMPT_BYTES, MAX_SYSTEM_PROMPT_BYTES, PROTOCOL_VERSION};
 use types::McpServerStdio;
 use wire::{
@@ -64,7 +60,7 @@ use wire::{
 
 /// One live ACP session, wrapping a Goose `Agent`.
 struct Session {
-    agent: Arc<Agent>,
+    mcp: Arc<crate::mcp::McpRegistry>,
     /// Session id, shared with goose so tool dispatch and provider request
     /// attribution agree on a name. No database sits behind it: the
     /// conversation lives in `history` and in the turn's own
@@ -142,7 +138,7 @@ async fn build_agent(
     mcp_servers: &[McpServerStdio],
 ) -> Result<
     (
-        Arc<Agent>,
+        Arc<crate::mcp::McpRegistry>,
         String,
         crate::model::SessionModel,
         Option<String>,
@@ -150,226 +146,38 @@ async fn build_agent(
     ),
     AgentError,
 > {
-    let session_manager = crate::session_store::session_manager();
-    let permission_manager = PermissionManager::instance();
-
-    let agent = Agent::with_config(AgentConfig::new(
-        session_manager.clone(),
-        permission_manager,
-        None,
-        cfg.goose_mode,
-        // Session naming is a Goose UX affordance; the harness names sessions.
-        true,
-        GoosePlatform::GooseCli,
-    ));
-
-    // One session row, and it is genuinely required -- I tried removing it.
-    //
-    // `Agent::add_extension_inner` (goose agent.rs:1465) resolves the
-    // extension's working directory by loading the session from the store, and
-    // fails setup outright if the row is absent: "Failed to get session ...
-    // Session not found". Every MCP server buzz mounts goes through that path,
-    // so without the row an agent has no tools at all.
-    //
-    // Nothing else needs it. The conversation stays in memory
-    // (`crate::turn_state`) and the provider config stays on buzz's own handle
-    // (`crate::model`), so a conversation of any length adds zero further
-    // rows. Removing this last one means an upstream change: goose would have
-    // to take the working directory as an argument rather than reading it back
-    // out of the session.
-    let session = session_manager
-        .create_session(
-            std::path::PathBuf::from(cwd),
-            "buzz-agent".to_string(),
-            SessionType::Acp,
-            cfg.goose_mode,
-        )
-        .await
-        .map_err(|e| AgentError::Llm(format!("session create: {e}")))?;
-    let session_id = session.id.clone();
-
-    // Provider/model names come from the `GOOSE_*` variables `Config::from_env`
-    // projected out of the `BUZZ_AGENT_*` ones; goose's registry owns base-url
-    // and credential resolution from there.
     let provider_name = std::env::var("GOOSE_PROVIDER").unwrap_or_else(|_| "openai".to_string());
     let model_name = cfg
         .model
         .clone()
         .or_else(|| std::env::var("GOOSE_MODEL").ok())
         .ok_or_else(|| AgentError::Llm("no model configured".into()))?;
-
     let provider = build_provider(&provider_name).await?;
     let model_config =
         goose::model_config::model_config_from_user_config(&provider_name, &model_name)
-            .map_err(|e| AgentError::LlmModelNotFound(e.to_string()))?;
-
-    // Held here rather than pushed into the `Agent` with `update_provider`:
-    // that call writes the provider config to goose's sqlite session row, and
-    // buzz reads the provider and config back through `SessionModel` anyway.
+            .map_err(|error| AgentError::LlmModelNotFound(error.to_string()))?;
     let model = crate::model::SessionModel::new(provider, model_config, model_name);
 
-    // Persona. This is the seam that does NOT work over plain ACP: goose's own
-    // ACP server never reads `systemPrompt` (rg finds zero hits in
-    // goose/crates/goose/src), and both PRs that would have wired it —
-    // buzz#1290 and goose#9971 — are closed unmerged. Driving the library
-    // directly is what makes Fizz (and `[Base]`) actually arrive.
-    // buzz-agent owns the loop, so it owns the prompt: goose's own
-    // `PromptManager` is only reachable from `Agent::reply`, which we no longer
-    // call. See `crate::prompt`.
     let prompt = crate::prompt::SessionPrompt::new(cfg.goose_mode);
-    if let Some(sp) = system_prompt.or(cfg.system_prompt.as_deref()) {
-        if !sp.trim().is_empty() {
-            prompt.set_override(sp.to_string()).await;
+    if let Some(system_prompt) = system_prompt.or(cfg.system_prompt.as_deref()) {
+        if !system_prompt.trim().is_empty() {
+            prompt.set_override(system_prompt.to_string()).await;
         }
     }
 
-    for server in mcp_servers {
-        let envs: HashMap<String, String> = server
-            .env
-            .iter()
-            .map(|e| (e.name.clone(), e.value.clone()))
-            .collect();
-
-        let ext = ExtensionConfig::Stdio {
-            name: server.name.clone(),
-            description: String::new(),
-            cmd: server.command.clone(),
-            args: server.args.clone(),
-            envs: goose::agents::extension::Envs::new(envs),
-            env_keys: Vec::new(),
-            timeout: Some(300),
-            cwd: Some(cwd.to_string()),
-            bundled: None,
-            available_tools: Vec::new(),
-        };
-
-        if let Err(e) = agent.add_extension(ext, &session_id).await {
-            // Match buzz-agent: a failed MCP server is a hard session error,
-            // not a silently tool-less agent.
-            return Err(AgentError::Mcp(format!("{}: {e}", server.name)));
-        }
+    let mcp = Arc::new(crate::mcp::McpRegistry::spawn_all(cfg, mcp_servers, cwd).await?);
+    let skill_index = crate::skills::skill_index(mcp.skills());
+    if !skill_index.is_empty() {
+        prompt.add_extra("skills", skill_index).await;
     }
-
-    // AGENTS.md hints are goose's job, not ours.
-    //
-    // `PromptManager::build_system_prompt` already calls `.with_hints()`
-    // (`prompt_manager.rs:255`), which runs the same git-root-anchored walk
-    // buzz-agent used to run itself. Adding our own copy as a prompt extra put
-    // every AGENTS.md into the system prompt *twice* -- verified against a
-    // scratch repo before this change, once under our `## Project Hints` and
-    // again under goose's `### Project Hints`.
-    //
-    // goose's loader is also a superset: `.goosehints` as well as `AGENTS.md`,
-    // the filename list configurable via `CONTEXT_FILE_NAMES`, gitignore-aware
-    // filtering, and `@file` reference expansion bounded at the git root.
-    // Skills are goose's too, for the same reason as hints.
-    //
-    // buzz-agent grew its own discovery, index and `load_skill` tool
-    // (`hints.rs` + `builtin.rs` + `builtin_client.rs`, ~1.2k lines) before
-    // goose had one. goose has since shipped `goose::skills` and registers a
-    // `SkillsClient` as a platform extension, so ours was a strictly smaller
-    // duplicate: same three project directories, but goose also reads the
-    // global ones, plugin-installed skills and its own builtins, and supports
-    // `args` templating we never had.
-    //
-    // Registered by handing over a *client* rather than by name, and that is
-    // the whole point: goose's platform factory
-    // (`platform_extensions/mod.rs:219-221`) calls plain `SkillsClient::new`,
-    // which leaves goose's own bundled skills switched on. Those are
-    // `goose-doc-guide` and `web-search` (`skills/builtins/`) — neither is a
-    // Buzz skill, and `web-search` advertises a capability Buzz does not
-    // provide, so every Buzz agent would offer the model a tool-shaped promise
-    // to shell out to `uvx ddgs`. `with_builtin_skills(false)` is only
-    // reachable off the constructor, so buzz builds the client itself and
-    // registers it with `add_client`.
-    //
-    // What that route costs: `add_client` does not consult
-    // `PLATFORM_EXTENSIONS`, so nothing here inherits the table's
-    // `unprefixed_tools: true`. It does not have to — `is_unprefixed_extension`
-    // (`extension_manager.rs:392-400`) keys off the *config*, and this passes
-    // the same `ExtensionConfig::Platform { name: "skills" }` the factory route
-    // does, so the lookup still hits the table entry and the model still sees a
-    // bare `load_skill`. Verified by driving both routes: same tool name, same
-    // filesystem skills, builtins gone.
-    //
-    // The prompt index is filtered to match. A skill listed in the index but
-    // absent from the client is a dead `load_skill` reference.
-    let skills: Vec<_> = goose::skills::discover_skills(Some(std::path::Path::new(cwd)))
-        .into_iter()
-        .filter(|s| s.source_type != goose::custom_requests::SourceType::BuiltinSkill)
-        .collect();
-    if !skills.is_empty() {
-        let ext = ExtensionConfig::Platform {
-            name: goose::skills::EXTENSION_NAME.to_string(),
-            description: "Skills".to_string(),
-            display_name: Some("Skills".to_string()),
-            bundled: Some(true),
-            available_tools: Vec::new(),
-        };
-        // The factory receives a context carrying the session, because
-        // `SkillsClient::new` reads `session.working_dir` for discovery and
-        // falls back to the *process* cwd without it — which for a
-        // desktop-spawned agent is not the nest.
-        let mut ctx = agent.extension_manager.get_context().clone();
-        ctx.extension_manager = Some(Arc::downgrade(&agent.extension_manager));
-        ctx.session = Some(Arc::new(session.clone()));
-        match goose::skills::SkillsClient::new(ctx) {
-            Ok(client) => {
-                let client = client.with_builtin_skills(false);
-                let info = goose::agents::mcp_client::McpClientTrait::get_info(&client).cloned();
-                agent
-                    .extension_manager
-                    .add_client(
-                        goose::skills::EXTENSION_NAME.to_string(),
-                        ext,
-                        Arc::new(client),
-                        info,
-                    )
-                    .await;
-                prompt
-                    .add_extra("skills", crate::skills::skill_index(&skills))
-                    .await;
-            }
-            Err(e) => {
-                // Unlike an MCP server, a missing skills extension is not
-                // fatal: the agent still has every other tool. Losing it
-                // silently would be worse than losing it loudly.
-                tracing::warn!(error = %e, "skills extension unavailable");
-            }
-        }
-    }
-
-    let agent = Arc::new(agent);
-
-    // Find the extension carrying `_Stop`, by asking rather than assuming the
-    // name — `buzz-acp` derives it from the MCP binary's file stem
-    // (`buzz-acp/src/lib.rs:4145-4149`), so it is not a fixed string.
-    //
-    // KNOWN DEVIATION: buzz-agent hid `_`-prefixed tools from the model
-    // (`agent.rs:328-336`) while still calling them itself. Goose's
-    // `available_tools` allowlist gates advertising *and* dispatch through the
-    // same cache (`extension_manager.rs:1421`, `:1698`), so hiding them would
-    // also make them undispatchable — which would break the veto. They stay
-    // visible; `hook_tool_guidance()` tells the model to leave them alone.
-    let mut hook_extension = None;
-    for tool in agent.list_tools(&session_id, None).await {
-        if tool.name.ends_with("___Stop") {
-            hook_extension = tool
-                .name
-                .strip_suffix("___Stop")
-                .map(|prefix| prefix.to_string());
-            break;
-        }
-    }
-
-    if let Some(ext) = &hook_extension {
+    let hook_extension = mcp.hook_extension("_Stop");
+    if let Some(extension) = &hook_extension {
         prompt
             .add_extra("buzz_hook_tools", hook_tool_guidance())
             .await;
-        tracing::info!(extension = %ext, "lifecycle hooks available");
+        tracing::info!(extension, "lifecycle hooks available");
     }
-
-    Ok((agent, session_id, model, hook_extension, prompt))
+    Ok((mcp, uuid_like(), model, hook_extension, prompt))
 }
 
 /// Keep the model's hands off the lifecycle hooks.
@@ -597,7 +405,7 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
         .await;
     }
 
-    let (agent, goose_session_id, model, hook_extension, prompt) =
+    let (mcp, goose_session_id, model, hook_extension, prompt) =
         match build_agent(&app.cfg, &p.cwd, p.system_prompt.as_deref(), &p.mcp_servers).await {
             Ok(v) => v,
             Err(e) => {
@@ -631,7 +439,7 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
         sessions.insert(
             sid.clone(),
             Session {
-                agent,
+                mcp,
                 goose_session_id,
                 history: Vec::new(),
                 working_dir: std::path::PathBuf::from(&p.cwd),
@@ -758,7 +566,7 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
 
     // Single-flight per session, and capture the agent handle.
     let (
-        agent,
+        mcp,
         goose_session_id,
         pending_model,
         hook_extension,
@@ -793,7 +601,7 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
         // Take the pending override so a `session/set_model` applies exactly
         // once, from the next prompt onward (buzz-agent `lib.rs:494-502`).
         (
-            s.agent.clone(),
+            s.mcp.clone(),
             s.goose_session_id.clone(),
             s.pending_model.take(),
             s.hook_extension.clone(),
@@ -839,7 +647,7 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
 
     let (result, tokens, conversation) = loop_drive::run_turn(
         loop_drive::TurnContext {
-            agent: &agent,
+            mcp: &mcp,
             session_id: &goose_session_id,
             wire_tx,
             cancel: &cancel,

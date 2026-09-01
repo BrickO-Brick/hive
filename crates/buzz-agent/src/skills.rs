@@ -14,6 +14,52 @@
 
 use goose::custom_requests::{SourceEntry, SourceType};
 
+/// Provider-native definition for the in-process skill loader.
+pub fn load_skill_tool() -> rmcp::model::Tool {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+            "name": { "type": "string", "description": "Skill name, or skill-name/path for a supporting file." },
+            "args": { "type": "string", "description": "Optional arguments for a parameterized skill." }
+        }
+    });
+    rmcp::model::Tool::new(
+        "load_skill",
+        "Load a skill's full content into your context so you can follow its instructions.",
+        schema.as_object().cloned().unwrap_or_default(),
+    )
+}
+
+/// Execute the in-process skill loader using Goose's public skill rendering.
+pub fn load_skill(
+    skills: &[SourceEntry],
+    arguments: &serde_json::Value,
+) -> rmcp::model::CallToolResult {
+    let name = arguments
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let args = arguments.get("args").and_then(serde_json::Value::as_str);
+    if let Some(skill) = skills.iter().find(|skill| skill.name == name) {
+        return match goose::skills::loaded_skill_context_with_args(skill, args) {
+            Ok(rendered) => {
+                rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                    rendered,
+                )])
+            }
+            Err(error) => {
+                rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
+                    "Failed to parse skill arguments: {error}"
+                ))])
+            }
+        };
+    }
+    rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(format!(
+        "Skill '{name}' not found."
+    ))])
+}
+
 /// Render the index of available skills for the system prompt.
 ///
 /// Empty for an empty slate, so the caller can skip the prompt extra entirely

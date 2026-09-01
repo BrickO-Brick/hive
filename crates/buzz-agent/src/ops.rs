@@ -20,17 +20,17 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::mcp::McpRegistry;
+use crate::turn_state::TurnSession;
 use anyhow::Result;
 use async_trait::async_trait;
-use goose::agents::Agent;
-use goose::conversation::Conversation;
-use goose::session::Session;
 use goose_agent::machine::{StateMachine, Step};
 use goose_agent::operation::{
     applied, assistant_turn_count, messages_since_kickoff, not_applicable, yielded,
     ConversationEffect, Emitter, Operation, OperationResult,
 };
 use goose_provider_types::conversation::message::{Message, ToolRequest};
+use goose_provider_types::conversation::Conversation;
 
 use crate::types::StopReason;
 
@@ -97,14 +97,14 @@ impl BuzzMaxRoundsOperation {
 }
 
 #[async_trait]
-impl Operation<Session, ConversationEffect> for BuzzMaxRoundsOperation {
+impl Operation<TurnSession, ConversationEffect> for BuzzMaxRoundsOperation {
     fn name(&self) -> &'static str {
         "buzz_max_rounds"
     }
 
     async fn run(
         &self,
-        _session: &Session,
+        _session: &TurnSession,
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
@@ -181,7 +181,7 @@ fn ends_turn(messages: &[Message]) -> bool {
 /// spans exactly that same turn. Three objections still end the turn; a new
 /// prompt still starts from zero.
 pub struct BuzzStopVetoOperation {
-    agent: Arc<Agent>,
+    mcp: Arc<McpRegistry>,
     extension: String,
     block_cap: u32,
 }
@@ -189,9 +189,9 @@ pub struct BuzzStopVetoOperation {
 impl BuzzStopVetoOperation {
     /// `extension` is the MCP extension serving `_Stop`; without one there is
     /// no hook to ask, and the operation never applies.
-    pub fn new(agent: Arc<Agent>, extension: String, block_cap: u32) -> Self {
+    pub fn new(mcp: Arc<McpRegistry>, extension: String, block_cap: u32) -> Self {
         Self {
-            agent,
+            mcp,
             extension,
             block_cap,
         }
@@ -203,14 +203,14 @@ impl BuzzStopVetoOperation {
 const OBJECTED: &str = "objected";
 
 #[async_trait]
-impl Operation<Session, ConversationEffect> for BuzzStopVetoOperation {
+impl Operation<TurnSession, ConversationEffect> for BuzzStopVetoOperation {
     fn name(&self) -> &'static str {
         "buzz_stop_veto"
     }
 
     async fn run(
         &self,
-        session: &Session,
+        _session: &TurnSession,
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
@@ -233,9 +233,7 @@ impl Operation<Session, ConversationEffect> for BuzzStopVetoOperation {
 
         // A broken or absent hook must never trap a turn -- `stop_objection`
         // maps every failure to `None`, which is "no objection".
-        let Some(objection) =
-            crate::hooks::stop_objection(&self.agent, session, &self.extension).await
-        else {
+        let Some(objection) = crate::hooks::stop_objection(&self.mcp, &self.extension).await else {
             return not_applicable();
         };
 
@@ -318,14 +316,14 @@ impl BuzzReplyGuardOperation {
 }
 
 #[async_trait]
-impl Operation<Session, ConversationEffect> for BuzzReplyGuardOperation {
+impl Operation<TurnSession, ConversationEffect> for BuzzReplyGuardOperation {
     fn name(&self) -> &'static str {
         "buzz_reply_guard"
     }
 
     async fn run(
         &self,
-        _session: &Session,
+        _session: &TurnSession,
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
@@ -392,14 +390,14 @@ impl BuzzSteerOperation {
 }
 
 #[async_trait]
-impl Operation<Session, ConversationEffect> for BuzzSteerOperation {
+impl Operation<TurnSession, ConversationEffect> for BuzzSteerOperation {
     fn name(&self) -> &'static str {
         "buzz_steer"
     }
 
     async fn run(
         &self,
-        _session: &Session,
+        _session: &TurnSession,
         _conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
@@ -428,7 +426,7 @@ impl Operation<Session, ConversationEffect> for BuzzSteerOperation {
 /// mid-work and announce its own housekeeping to the humans watching.
 pub struct BuzzCompactionOperation {
     model: crate::model::SessionModel,
-    agent: Arc<Agent>,
+    mcp: Arc<McpRegistry>,
     hook_extension: Option<String>,
     session_id: String,
 }
@@ -436,13 +434,13 @@ pub struct BuzzCompactionOperation {
 impl BuzzCompactionOperation {
     pub fn new(
         model: crate::model::SessionModel,
-        agent: Arc<Agent>,
+        mcp: Arc<McpRegistry>,
         hook_extension: Option<String>,
         session_id: String,
     ) -> Self {
         Self {
             model,
-            agent,
+            mcp,
             hook_extension,
             session_id,
         }
@@ -450,23 +448,37 @@ impl BuzzCompactionOperation {
 }
 
 #[async_trait]
-impl Operation<Session, ConversationEffect> for BuzzCompactionOperation {
+impl Operation<TurnSession, ConversationEffect> for BuzzCompactionOperation {
     fn name(&self) -> &'static str {
         "buzz_compaction"
     }
 
     async fn run(
         &self,
-        session: &Session,
+        session: &TurnSession,
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
         let (provider, model_config, _model_id) = self.model.snapshot().await;
+        // Goose's legacy threshold facade still takes its application Session.
+        // Keep that coupling at this single adapter until the granular context
+        // crate exposes thresholding over model config + token occupancy.
+        let legacy_session = goose::session::Session {
+            id: session.id.clone(),
+            working_dir: session.working_dir.clone(),
+            model_config: session.model_config.clone(),
+            usage: goose_provider_types::conversation::token_usage::Usage {
+                total_tokens: session.total_tokens,
+                ..Default::default()
+            },
+            conversation: Some(conversation.clone()),
+            ..Default::default()
+        };
         if !goose::context_mgmt::check_if_compaction_needed(
             provider.as_ref(),
             conversation,
             None,
-            session,
+            &legacy_session,
         )
         .await?
         {
@@ -491,9 +503,7 @@ impl Operation<Session, ConversationEffect> for BuzzCompactionOperation {
         let mut effects = vec![ConversationEffect::ReplaceConversation(result.conversation)];
 
         if let Some(extension) = &self.hook_extension {
-            if let Some(reported) =
-                crate::hooks::post_compact_state(&self.agent, session, extension).await
-            {
+            if let Some(reported) = crate::hooks::post_compact_state(&self.mcp, extension).await {
                 // `[PostCompact]` prefix preserved from the inline version:
                 // it is how the model tells re-injected state apart from a
                 // user turn, and dropping it would change what it reads.
@@ -518,18 +528,18 @@ pub fn round_gate(
     max_rounds: u32,
     outcome: Outcome,
     cancel: tokio_util::sync::CancellationToken,
-    stop_veto: Option<(Arc<Agent>, String)>,
+    stop_veto: Option<(Arc<McpRegistry>, String)>,
     reply_guard_tools: Option<Vec<String>>,
-) -> StateMachine<'static, Session, ConversationEffect> {
+) -> StateMachine<'static, TurnSession, ConversationEffect> {
     // Order is precedence. The round budget is checked first: once it is
     // spent the turn ends, and asking `_Stop` to veto a turn we are ending
     // anyway would dispatch a tool call whose answer cannot be honoured.
-    let mut steps: Vec<Step<Session, ConversationEffect>> = vec![Step::Operation(Arc::new(
+    let mut steps: Vec<Step<TurnSession, ConversationEffect>> = vec![Step::Operation(Arc::new(
         BuzzMaxRoundsOperation::new(max_rounds, outcome),
     ))];
-    if let Some((agent, extension)) = stop_veto {
+    if let Some((mcp, extension)) = stop_veto {
         steps.push(Step::Operation(Arc::new(BuzzStopVetoOperation::new(
-            agent,
+            mcp,
             extension,
             crate::hooks::stop_block_cap(),
         ))));
@@ -557,7 +567,7 @@ pub fn round_start(
     steers: crate::steer::SteerQueue,
     compaction: BuzzCompactionOperation,
     cancel: tokio_util::sync::CancellationToken,
-) -> StateMachine<'static, Session, ConversationEffect> {
+) -> StateMachine<'static, TurnSession, ConversationEffect> {
     // Steer before compaction: a steer that arrives just as the window fills
     // should be part of what gets summarised, not appended to a conversation
     // that was compacted a moment earlier without it.
@@ -578,8 +588,8 @@ mod tests {
 
     /// A bare agent with no extensions: enough to dispatch a tool call that
     /// will fail to resolve, which is the "hook unavailable" path.
-    async fn agent() -> Arc<Agent> {
-        Arc::new(Agent::new())
+    async fn agent() -> Arc<McpRegistry> {
+        Arc::new(McpRegistry::empty())
     }
 
     fn emitter() -> Emitter {
@@ -621,7 +631,7 @@ mod tests {
         let outcome = Outcome::new();
         let op = BuzzMaxRoundsOperation::new(3, outcome.clone());
         let result = op
-            .run(&Session::default(), &conversation(2), &emitter())
+            .run(&TurnSession::default(), &conversation(2), &emitter())
             .await
             .unwrap();
         assert!(matches!(result, OperationResult::NotApplicable));
@@ -633,7 +643,7 @@ mod tests {
         let outcome = Outcome::new();
         let op = BuzzMaxRoundsOperation::new(3, outcome.clone());
         let result = op
-            .run(&Session::default(), &conversation(3), &emitter())
+            .run(&TurnSession::default(), &conversation(3), &emitter())
             .await
             .unwrap();
         match result {
@@ -662,7 +672,7 @@ mod tests {
         let op = BuzzStopVetoOperation::new(agent().await, "buzz-dev-mcp".to_string(), 3);
         let result = op
             .run(
-                &Session::default(),
+                &TurnSession::default(),
                 &tool_calling_conversation(),
                 &emitter(),
             )
@@ -677,7 +687,7 @@ mod tests {
         // A broken hook must not be able to hold a turn open.
         let op = BuzzStopVetoOperation::new(agent().await, "no-such-extension".to_string(), 3);
         let result = op
-            .run(&Session::default(), &conversation(1), &emitter())
+            .run(&TurnSession::default(), &conversation(1), &emitter())
             .await
             .unwrap();
         assert!(matches!(result, OperationResult::NotApplicable));
@@ -713,7 +723,7 @@ mod tests {
 
         // At the cap the turn is allowed to end.
         let result = op
-            .run(&Session::default(), &conversation, &emitter())
+            .run(&TurnSession::default(), &conversation, &emitter())
             .await
             .unwrap();
         assert!(matches!(result, OperationResult::NotApplicable));
@@ -742,7 +752,7 @@ mod tests {
     async fn the_reply_guard_reminds_when_nothing_was_published() {
         let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         let result = op
-            .run(&Session::default(), &conversation(1), &emitter())
+            .run(&TurnSession::default(), &conversation(1), &emitter())
             .await
             .unwrap();
         match result {
@@ -764,7 +774,7 @@ mod tests {
         ] {
             let result = op
                 .run(
-                    &Session::default(),
+                    &TurnSession::default(),
                     &turn_with(shell_request(command)),
                     &emitter(),
                 )
@@ -782,7 +792,7 @@ mod tests {
         let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["developer__shell".to_string()]);
         let result = op
             .run(
-                &Session::default(),
+                &TurnSession::default(),
                 &turn_with(shell_request("ls -la")),
                 &emitter(),
             )
@@ -796,7 +806,7 @@ mod tests {
         let op = BuzzReplyGuardOperation::new(MAX_REPLY_NAGS, ["real__shell".to_string()]);
         let result = op
             .run(
-                &Session::default(),
+                &TurnSession::default(),
                 &turn_with(shell_request("buzz messages send --channel x --content hi")),
                 &emitter(),
             )
@@ -822,7 +832,7 @@ mod tests {
         }
         let result = op
             .run(
-                &Session::default(),
+                &TurnSession::default(),
                 &Conversation::new_unvalidated(messages),
                 &emitter(),
             )
@@ -840,7 +850,7 @@ mod tests {
         let op = BuzzSteerOperation::new(steers.clone());
 
         match op
-            .run(&Session::default(), &conversation(1), &emitter())
+            .run(&TurnSession::default(), &conversation(1), &emitter())
             .await
             .unwrap()
         {
@@ -854,7 +864,7 @@ mod tests {
         // Drained, not peeked: a steer delivered twice would repeat the
         // instruction to the model on the next round.
         assert!(matches!(
-            op.run(&Session::default(), &conversation(1), &emitter())
+            op.run(&TurnSession::default(), &conversation(1), &emitter())
                 .await
                 .unwrap(),
             OperationResult::NotApplicable
@@ -868,7 +878,7 @@ mod tests {
         // always-applying operation would spin it.
         let op = BuzzSteerOperation::new(crate::steer::SteerQueue::new());
         assert!(matches!(
-            op.run(&Session::default(), &conversation(1), &emitter())
+            op.run(&TurnSession::default(), &conversation(1), &emitter())
                 .await
                 .unwrap(),
             OperationResult::NotApplicable
@@ -881,7 +891,7 @@ mod tests {
         // `_Stop` off. An operator with a misbehaving hook depends on it.
         let op = BuzzStopVetoOperation::new(agent().await, "buzz-dev-mcp".to_string(), 0);
         let result = op
-            .run(&Session::default(), &conversation(1), &emitter())
+            .run(&TurnSession::default(), &conversation(1), &emitter())
             .await
             .unwrap();
         assert!(matches!(result, OperationResult::NotApplicable));
@@ -903,7 +913,7 @@ mod tests {
         // actually saying it.
         let op = BuzzMaxRoundsOperation::new(1, Outcome::new());
         let result = op
-            .run(&Session::default(), &conversation(1), &emitter())
+            .run(&TurnSession::default(), &conversation(1), &emitter())
             .await
             .unwrap();
         match result {
@@ -943,7 +953,7 @@ mod tests {
         let steered = Conversation::new_unvalidated(messages);
 
         let result = op
-            .run(&Session::default(), &steered, &emitter())
+            .run(&TurnSession::default(), &steered, &emitter())
             .await
             .unwrap();
         assert!(

@@ -34,9 +34,7 @@
 
 use std::sync::Arc;
 
-use goose::agents::Agent;
-use goose::session::session_manager::Session;
-use rmcp::model::CallToolRequestParams;
+use crate::mcp::McpRegistry;
 
 /// Default cap on consecutive vetoes, mirroring goose's own
 /// `stop_hook_block_cap` (`agent.rs:108-119`). A tool that always objects must
@@ -69,12 +67,8 @@ fn qualified(extension: &str, tool: &str) -> String {
 /// no such extension, tool error, malformed result — is `None`. A broken hook
 /// must never trap a turn; that is also goose's rule for its own hooks
 /// ("a misbehaving hook MUST NOT block", `hooks/mod.rs:361`).
-pub async fn stop_objection(
-    agent: &Arc<Agent>,
-    session: &Session,
-    extension: &str,
-) -> Option<String> {
-    let text = call_hook(agent, session, extension, "_Stop").await?;
+pub async fn stop_objection(mcp: &Arc<McpRegistry>, extension: &str) -> Option<String> {
+    let text = call_hook(mcp, extension, "_Stop").await?;
     let trimmed = text.trim();
     // Empty response is the documented "no objection" signal
     // (`buzz-dev-mcp/src/todo.rs:100`).
@@ -85,65 +79,40 @@ pub async fn stop_objection(
 ///
 /// buzz-agent called this so the todo list survives truncation; goose emits
 /// `AgentEvent::HistoryReplaced` when it compacts, which is our trigger.
-pub async fn post_compact_state(
-    agent: &Arc<Agent>,
-    session: &Session,
-    extension: &str,
-) -> Option<String> {
-    let text = call_hook(agent, session, extension, "_PostCompact").await?;
+pub async fn post_compact_state(mcp: &Arc<McpRegistry>, extension: &str) -> Option<String> {
+    let text = call_hook(mcp, extension, "_PostCompact").await?;
     let trimmed = text.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Dispatch a zero-argument hook tool and flatten its result to text.
-async fn call_hook(
-    agent: &Arc<Agent>,
-    session: &Session,
-    extension: &str,
-    tool: &str,
-) -> Option<String> {
-    let params = CallToolRequestParams::new(qualified(extension, tool))
-        .with_arguments(serde_json::Map::new());
-
-    let (_id, result) = agent
-        .dispatch_tool_call(
-            params,
-            format!("buzz_hook_{tool}"),
-            // Deliberately not cancellable: this runs at a turn boundary and
-            // must resolve either way.
-            None,
-            session,
+async fn call_hook(mcp: &Arc<McpRegistry>, extension: &str, tool: &str) -> Option<String> {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let out = match mcp
+        .call_rmcp(
+            &qualified(extension, tool),
+            &format!("buzz_hook_{tool}"),
+            &serde_json::Value::Object(serde_json::Map::new()),
+            &cancel,
         )
-        .await;
-
-    let call = match result {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::debug!(tool, error = %e, "hook tool unavailable");
+        .await
+    {
+        Ok(out) => out,
+        Err(error) => {
+            tracing::debug!(tool, error = ?error, "hook tool unavailable");
             return None;
         }
     };
-
-    let out = match call.result.await {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::debug!(tool, error = ?e, "hook tool failed");
-            return None;
-        }
-    };
-
     if out.is_error.unwrap_or(false) {
         tracing::debug!(tool, "hook tool returned is_error");
         return None;
     }
-
-    let mut text = String::new();
-    for content in out.content.iter() {
-        if let Some(raw) = content.as_text() {
-            text.push_str(&raw.text);
-        }
-    }
-    Some(text)
+    Some(
+        out.content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
