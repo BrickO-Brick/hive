@@ -73,10 +73,11 @@ const PASSTHROUGH_ENV_WINDOWS: &[&str] = &["TMP", "TEMP", "USERPROFILE", "APPDAT
 /// Shell resolver keys are shared with Doctor through the public contract.
 #[cfg(windows)]
 fn windows_child_passthrough_env() -> impl Iterator<Item = &'static str> {
-    PASSTHROUGH_ENV_WINDOWS
-        .iter()
-        .copied()
-        .chain(crate::WINDOWS_SHELL_RESOLUTION_ENV.iter().copied())
+    PASSTHROUGH_ENV_WINDOWS.iter().copied().chain(
+        buzz_model_catalog::WINDOWS_SHELL_RESOLUTION_ENV
+            .iter()
+            .copied(),
+    )
 }
 
 type Client = RunningService<RoleClient, ()>;
@@ -1039,7 +1040,7 @@ mod content_tests {
             );
         }
         let child_env: Vec<_> = windows_child_passthrough_env().collect();
-        for var in crate::WINDOWS_SHELL_RESOLUTION_ENV {
+        for var in buzz_model_catalog::WINDOWS_SHELL_RESOLUTION_ENV {
             assert!(
                 child_env.contains(var),
                 "{var} must pass through so the MCP shell resolver matches Doctor"
