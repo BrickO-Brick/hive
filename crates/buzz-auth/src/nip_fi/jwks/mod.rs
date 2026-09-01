@@ -85,6 +85,100 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
     Ok(())
 }
 
+/// The authenticated key-source contract owned by one [`IssuerPolicy`].
+///
+/// Encodes the three deployment-configured fields whose change alters which
+/// keys the runtime trusts and how long it trusts them:
+///
+/// - `jwks_uri` — selects the authenticated key source; a different endpoint
+///   may serve different keys even for the same issuer.
+/// - `refresh_interval_seconds` — defines bounded refresh behavior; a longer
+///   interval allows stale keys to persist longer.
+/// - `key_snapshot_hard_deadline_seconds` — defines the source's accepted
+///   time rule; the per-snapshot absolute deadline that flows into every
+///   sealed [`VerifiedAssertion`][crate::nip_fi::VerifiedAssertion]'s
+///   revalidation dependencies derives from this.
+///
+/// This type is the single source of truth for these fields. `IssuerJwksConfig`
+/// is built from it (pairing it with the bare issuer string) rather than
+/// independently restating the same values. Having both types carry independent
+/// copies of these fields would let them drift silently; startup validation
+/// detects any mismatch that a compatibility path temporarily introduces.
+///
+/// All three fields are validated at construction — an invalid value is caught
+/// at configuration time, not at first token verification.
+///
+/// ## Why these fields are contract, not mutable state
+///
+/// Per the settled NIP-FI spec ("Policy identity and snapshots"):
+/// `assertion_policy_id` covers "authenticated key/status-source contracts"
+/// and "time rules". Key additions/removals (JWKS rotation) and per-snapshot
+/// deadlines remain *revalidation dependencies* — they change per-token state
+/// without changing the contract. These three fields define what the contract
+/// *is*; JWKS content is what the contract currently *says*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JwksSourceContract {
+    /// Validated JWKS endpoint URI (HTTPS, no credentials/fragment, no bare
+    /// private/reserved-IP host). Stored exactly as validated — canonical form
+    /// used verbatim in the hash.
+    jwks_uri: String,
+    /// Positive, ≤ [`MAX_JWKS_TIMING_SECONDS`], strictly less than
+    /// `key_snapshot_hard_deadline_seconds`.
+    refresh_interval_seconds: u64,
+    /// Positive, ≤ [`MAX_JWKS_TIMING_SECONDS`], strictly greater than
+    /// `refresh_interval_seconds`.
+    key_snapshot_hard_deadline_seconds: u64,
+}
+
+impl JwksSourceContract {
+    /// Validate and seal the three JWKS source fields.
+    ///
+    /// Rejects:
+    /// - `jwks_uri` that fails [`validate_jwks_uri`]
+    /// - zero `refresh_interval_seconds` or `key_snapshot_hard_deadline_seconds`
+    /// - `refresh_interval_seconds >= key_snapshot_hard_deadline_seconds` (the
+    ///   hard deadline must be strictly greater so a snapshot is fresh for at
+    ///   least one refresh cycle)
+    /// - either timing field exceeding [`MAX_JWKS_TIMING_SECONDS`]
+    pub fn new(
+        jwks_uri: String,
+        refresh_interval_seconds: u64,
+        key_snapshot_hard_deadline_seconds: u64,
+    ) -> Option<Self> {
+        if refresh_interval_seconds == 0
+            || key_snapshot_hard_deadline_seconds == 0
+            || key_snapshot_hard_deadline_seconds <= refresh_interval_seconds
+            || refresh_interval_seconds > MAX_JWKS_TIMING_SECONDS
+            || key_snapshot_hard_deadline_seconds > MAX_JWKS_TIMING_SECONDS
+        {
+            return None;
+        }
+        if validate_jwks_uri(&jwks_uri).is_err() {
+            return None;
+        }
+        Some(Self {
+            jwks_uri,
+            refresh_interval_seconds,
+            key_snapshot_hard_deadline_seconds,
+        })
+    }
+
+    /// The validated JWKS endpoint URI.
+    pub fn jwks_uri(&self) -> &str {
+        &self.jwks_uri
+    }
+
+    /// Seconds between successive JWKS refreshes.
+    pub const fn refresh_interval_seconds(&self) -> u64 {
+        self.refresh_interval_seconds
+    }
+
+    /// Hard upper bound (from fetch time) on how long a snapshot may be served.
+    pub const fn key_snapshot_hard_deadline_seconds(&self) -> u64 {
+        self.key_snapshot_hard_deadline_seconds
+    }
+}
+
 /// Resolve `host:port` to IP addresses and reject if any are private/reserved.
 ///
 /// Returns the first safe address for DNS pinning. Blocks on the OS resolver
@@ -163,26 +257,24 @@ impl IssuerState {
     }
 }
 
-/// Per-issuer JWKS endpoint configuration. All fields are validated by
-/// [`validate_jwks_uri`] and timing bounds at [`ProductionJwksSource::new`].
+/// Per-issuer JWKS endpoint configuration. Pairs the exact `iss` value with
+/// the policy-owned [`JwksSourceContract`] that was already validated at
+/// [`IssuerPolicy`][super::config::IssuerPolicy] construction.
+///
+/// `IssuerJwksConfig` is the single combination of issuer string and contract
+/// that `ProductionJwksSource` operates on. Because the contract fields are
+/// sealed inside [`JwksSourceContract`] and validated there, this type carries
+/// no independent copies of those values — startup validation enforces that the
+/// contract embedded here matches the one carried by the corresponding policy.
 #[derive(Debug, Clone)]
 pub struct IssuerJwksConfig {
     /// The exact `iss` value this config authenticates. Must match the
     /// corresponding [`IssuerPolicy`][super::config::IssuerPolicy] exactly.
     pub issuer: String,
-    /// Must pass [`validate_jwks_uri`]: HTTPS, no credentials/fragment, no
-    /// bare private-IP host.
-    pub jwks_uri: String,
-    /// Seconds until a cached snapshot is considered stale and re-fetching is
-    /// triggered. Must be positive, strictly less than
-    /// `key_snapshot_hard_deadline_seconds`, and ≤ [`MAX_JWKS_TIMING_SECONDS`].
-    pub refresh_interval_seconds: u64,
-    /// Hard upper bound from fetch time on how long a snapshot may be served.
-    /// Expired snapshots are never returned, even on fetch error — no stale
-    /// fallback. Folds into every `AssertionKeySet` hard deadline and therefore
-    /// into every `VerifiedAssertion.revalidation_dependencies`.
-    /// Must be ≤ [`MAX_JWKS_TIMING_SECONDS`].
-    pub key_snapshot_hard_deadline_seconds: u64,
+    /// The validated key-source contract owned by the matching policy. Carries
+    /// the JWKS URI, refresh interval, and hard deadline — validated at
+    /// [`JwksSourceContract::new`], not re-validated here.
+    pub contract: JwksSourceContract,
 }
 
 /// Reason a JWKS fetch or parse operation failed. No key material, issuer
@@ -379,9 +471,12 @@ pub struct ProductionJwksSource<F = HttpJwksFetcher> {
 }
 
 impl<F: JwksFetcher> ProductionJwksSource<F> {
-    /// Returns `None` when `configs` is empty, any config has invalid timing
-    /// bounds or fails URI validation, or any two configs share the same
-    /// `issuer` (duplicate issuers make trust configuration ambiguous).
+    /// Returns `None` when `configs` is empty or any two configs share the
+    /// same `issuer` (duplicate issuers make trust configuration ambiguous).
+    ///
+    /// Contract fields (`jwks_uri`, `refresh_interval_seconds`,
+    /// `key_snapshot_hard_deadline_seconds`) are pre-validated inside the
+    /// embedded [`JwksSourceContract`] — no re-validation is performed here.
     pub fn new(configs: Vec<IssuerJwksConfig>, fetcher: F) -> Option<Self> {
         if configs.is_empty() {
             return None;
@@ -389,19 +484,6 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
         let mut config_map = HashMap::with_capacity(configs.len());
         let mut state_map = HashMap::with_capacity(configs.len());
         for c in configs {
-            // Hard deadline must be strictly greater than refresh interval so
-            // a snapshot is always fresh for at least one cycle before expiry.
-            if c.refresh_interval_seconds == 0
-                || c.key_snapshot_hard_deadline_seconds == 0
-                || c.key_snapshot_hard_deadline_seconds <= c.refresh_interval_seconds
-                || c.refresh_interval_seconds > MAX_JWKS_TIMING_SECONDS
-                || c.key_snapshot_hard_deadline_seconds > MAX_JWKS_TIMING_SECONDS
-            {
-                return None;
-            }
-            if validate_jwks_uri(&c.jwks_uri).is_err() {
-                return None;
-            }
             if config_map.contains_key(&c.issuer) {
                 return None;
             }
@@ -423,7 +505,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
         prev_generation: u64,
     ) -> Option<(CachedSnapshot, u64)> {
         let config = self.configs.get(issuer)?;
-        let body = match self.fetcher.fetch_jwks(&config.jwks_uri).await {
+        let body = match self.fetcher.fetch_jwks(config.contract.jwks_uri()).await {
             Ok(b) => b,
             Err(err) => {
                 warn!(error = %err, "nip-fi jwks fetch failed; will use cached snapshot if live");
@@ -452,9 +534,9 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
 
         let now = Utc::now();
         // MAX_JWKS_TIMING_SECONDS ≤ ~31.5M < i64::MAX, so this conversion is
-        // always safe for values that passed the bounds check in new().
-        let deadline_secs =
-            i64::try_from(config.key_snapshot_hard_deadline_seconds).unwrap_or(i64::MAX / 2);
+        // always safe for values that passed the bounds check in JwksSourceContract::new().
+        let deadline_secs = i64::try_from(config.contract.key_snapshot_hard_deadline_seconds())
+            .unwrap_or(i64::MAX / 2);
         let hard_deadline = now
             + Duration::try_seconds(deadline_secs)
                 .unwrap_or_else(|| Duration::seconds(i64::MAX / 2));
@@ -498,7 +580,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
             None => true,
             Some(ref cached) => {
                 let age_secs = (now - cached.fetched_at).num_seconds().max(0) as u64;
-                age_secs >= config.refresh_interval_seconds
+                age_secs >= config.contract.refresh_interval_seconds()
             }
         };
 

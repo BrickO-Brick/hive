@@ -30,7 +30,8 @@ pub use discovery::{
     AssertionFreshnessDiscovery, FederatedIdentityDiscovery, FreshnessClassDiscovery,
 };
 pub use jwks::{
-    HttpJwksFetcher, IssuerJwksConfig, JwksFetchError, JwksFetcher, ProductionJwksSource,
+    HttpJwksFetcher, IssuerJwksConfig, JwksFetchError, JwksFetcher, JwksSourceContract,
+    ProductionJwksSource,
 };
 pub use startup::{validate_nip_fi_config, NipFiMode, NipFiStartupError};
 pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, IssuerKeySource, VerifierError};

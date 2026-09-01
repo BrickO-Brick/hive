@@ -50,10 +50,10 @@ pub use nip_fi::{
     ClientSubjectPosture, ConfidentialAssertion, DenialClass, FederatedAssertionVerifier,
     FederatedIdentity, FederatedIdentityDiscovery, FreshnessClass, HttpJwksFetcher,
     IssuerJwksConfig, IssuerKeySource, IssuerPolicy, IssuerPolicyError, IssuerRegistry,
-    JwksFetchError, JwksFetcher, NipFiMode, NipFiStartupError, ProductionJwksSource,
-    RevalidationDependencies, SubjectClass, SubjectClassContract, TokenClass, TransportContractId,
-    VerifiedAssertion, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
-    OAUTH_CLIENT_ID_CLAIM,
+    JwksFetchError, JwksFetcher, JwksSourceContract, NipFiMode, NipFiStartupError,
+    ProductionJwksSource, RevalidationDependencies, SubjectClass, SubjectClassContract, TokenClass,
+    TransportContractId, VerifiedAssertion, VerifierError, CLIENT_ATTACHED_HEADER,
+    NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

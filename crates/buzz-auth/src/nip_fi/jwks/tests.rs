@@ -29,19 +29,20 @@ fn minimal_jwks_json(kid: &str) -> String {
 fn make_config(issuer: &str) -> IssuerJwksConfig {
     IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
+        contract: JwksSourceContract::new(
+            format!("https://{issuer}/.well-known/jwks.json"),
+            300,
+            3600,
+        )
+        .expect("valid test contract"),
     }
 }
 
-fn make_config_with_uri(issuer: &str, jwks_uri: &str) -> IssuerJwksConfig {
-    IssuerJwksConfig {
+fn make_config_with_uri(issuer: &str, jwks_uri: &str) -> Option<IssuerJwksConfig> {
+    JwksSourceContract::new(jwks_uri.to_owned(), 300, 3600).map(|contract| IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: jwks_uri.to_owned(),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
-    }
+        contract,
+    })
 }
 
 #[tokio::test]
@@ -134,49 +135,37 @@ async fn new_rejects_empty_configs() {
     assert!(ProductionJwksSource::new(vec![], fetcher).is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_refresh_ge_hard_deadline() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    let bad_config = IssuerJwksConfig {
-        issuer: "https://id.example".to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 3600,
-        key_snapshot_hard_deadline_seconds: 3600,
-    };
-    assert!(ProductionJwksSource::new(vec![bad_config], fetcher).is_none());
+/// Timing validation is now performed by `JwksSourceContract::new`. These
+/// tests verify the contract constructor rejects bad timing, since an invalid
+/// contract prevents building an `IssuerJwksConfig` entirely.
+#[test]
+fn contract_rejects_refresh_ge_hard_deadline() {
+    assert!(JwksSourceContract::new(
+        "https://id.example/.well-known/jwks.json".to_owned(),
+        3600,
+        3600,
+    )
+    .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_zero_refresh_interval() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    let bad_config = IssuerJwksConfig {
-        issuer: "https://id.example".to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 0,
-        key_snapshot_hard_deadline_seconds: 3600,
-    };
-    assert!(ProductionJwksSource::new(vec![bad_config], fetcher).is_none());
+#[test]
+fn contract_rejects_zero_refresh_interval() {
+    assert!(JwksSourceContract::new(
+        "https://id.example/.well-known/jwks.json".to_owned(),
+        0,
+        3600,
+    )
+    .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_timing_above_maximum() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    let bad_config = IssuerJwksConfig {
-        issuer: "https://id.example".to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: MAX_JWKS_TIMING_SECONDS + 1,
-        key_snapshot_hard_deadline_seconds: MAX_JWKS_TIMING_SECONDS + 2,
-    };
-    assert!(ProductionJwksSource::new(vec![bad_config], fetcher).is_none());
+#[test]
+fn contract_rejects_timing_above_maximum() {
+    assert!(JwksSourceContract::new(
+        "https://id.example/.well-known/jwks.json".to_owned(),
+        MAX_JWKS_TIMING_SECONDS + 1,
+        MAX_JWKS_TIMING_SECONDS + 2,
+    )
+    .is_none());
 }
 
 #[tokio::test]
@@ -186,97 +175,64 @@ async fn new_rejects_duplicate_issuer() {
         call_count: Arc::new(AtomicUsize::new(0)),
     };
     let issuer = "https://id.example";
-    let config_a = IssuerJwksConfig {
-        issuer: issuer.to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
-    };
+    let config_a = make_config(issuer);
     let config_b = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks-alt.json".to_owned(),
-        refresh_interval_seconds: 600,
-        key_snapshot_hard_deadline_seconds: 7200,
+        contract: JwksSourceContract::new(
+            "https://id.example/.well-known/jwks-alt.json".to_owned(),
+            600,
+            7200,
+        )
+        .unwrap(),
     };
     assert!(ProductionJwksSource::new(vec![config_a, config_b], fetcher).is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_non_https_jwks_uri() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    assert!(ProductionJwksSource::new(
-        vec![make_config_with_uri(
-            "https://id.example",
-            "http://id.example/.well-known/jwks.json"
-        )],
-        fetcher
+/// URI validation is now performed by `JwksSourceContract::new`; an invalid
+/// URI makes the contract `None` and prevents an `IssuerJwksConfig` from being
+/// built at all. The tests below verify that `JwksSourceContract::new` rejects
+/// the same invalid URIs that `ProductionJwksSource::new` previously checked.
+#[test]
+fn contract_rejects_non_https_jwks_uri() {
+    assert!(make_config_with_uri(
+        "https://id.example",
+        "http://id.example/.well-known/jwks.json"
     )
     .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_loopback_jwks_uri() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    assert!(ProductionJwksSource::new(
-        vec![make_config_with_uri(
-            "https://id.example",
-            "https://127.0.0.1/.well-known/jwks.json"
-        )],
-        fetcher
+#[test]
+fn contract_rejects_loopback_jwks_uri() {
+    assert!(make_config_with_uri(
+        "https://id.example",
+        "https://127.0.0.1/.well-known/jwks.json"
     )
     .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_private_ip_jwks_uri() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    assert!(ProductionJwksSource::new(
-        vec![make_config_with_uri(
-            "https://id.example",
-            "https://10.0.0.1/.well-known/jwks.json"
-        )],
-        fetcher
+#[test]
+fn contract_rejects_private_ip_jwks_uri() {
+    assert!(make_config_with_uri(
+        "https://id.example",
+        "https://10.0.0.1/.well-known/jwks.json"
     )
     .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_jwks_uri_with_credentials() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    assert!(ProductionJwksSource::new(
-        vec![make_config_with_uri(
-            "https://id.example",
-            "https://user:pass@id.example/.well-known/jwks.json"
-        )],
-        fetcher
+#[test]
+fn contract_rejects_jwks_uri_with_credentials() {
+    assert!(make_config_with_uri(
+        "https://id.example",
+        "https://user:pass@id.example/.well-known/jwks.json"
     )
     .is_none());
 }
 
-#[tokio::test]
-async fn new_rejects_jwks_uri_with_fragment() {
-    let fetcher = FakeJwksFetcher {
-        body: Ok(minimal_jwks_json("k1")),
-        call_count: Arc::new(AtomicUsize::new(0)),
-    };
-    assert!(ProductionJwksSource::new(
-        vec![make_config_with_uri(
-            "https://id.example",
-            "https://id.example/.well-known/jwks.json#keys"
-        )],
-        fetcher
+#[test]
+fn contract_rejects_jwks_uri_with_fragment() {
+    assert!(make_config_with_uri(
+        "https://id.example",
+        "https://id.example/.well-known/jwks.json#keys"
     )
     .is_none());
 }
@@ -323,9 +279,12 @@ async fn generation_stable_for_identical_document() {
     };
     let config = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
-        refresh_interval_seconds: 1,
-        key_snapshot_hard_deadline_seconds: 3600,
+        contract: JwksSourceContract::new(
+            format!("https://{issuer}/.well-known/jwks.json"),
+            1,
+            3600,
+        )
+        .unwrap(),
     };
     let source = ProductionJwksSource::new(vec![config], fetcher).unwrap();
 
@@ -372,9 +331,12 @@ async fn generation_advances_for_changed_document() {
 
     let config = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
-        refresh_interval_seconds: 1,
-        key_snapshot_hard_deadline_seconds: 3600,
+        contract: JwksSourceContract::new(
+            format!("https://{issuer}/.well-known/jwks.json"),
+            1,
+            3600,
+        )
+        .unwrap(),
     };
     let source = ProductionJwksSource::new(vec![config], MultiBodyFetcher { bodies }).unwrap();
 
@@ -728,9 +690,12 @@ async fn expired_snapshot_never_served_after_hard_deadline() {
     let issuer = "https://id.example";
     let config = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 1,
-        key_snapshot_hard_deadline_seconds: 2,
+        contract: JwksSourceContract::new(
+            "https://id.example/.well-known/jwks.json".to_owned(),
+            1,
+            2,
+        )
+        .unwrap(),
     };
     let bodies = Arc::new(std::sync::Mutex::new(vec![
         Err::<String, JwksFetchError>(JwksFetchError::NetworkError),
@@ -837,6 +802,15 @@ async fn two_issuer_keys_and_generations_are_isolated() {
     }
 
     fn policy(issuer: &str, aud: &str) -> IssuerPolicy {
+        let contract = JwksSourceContract::new(
+            format!(
+                "https://{}/jwks.json",
+                issuer.trim_start_matches("https://")
+            ),
+            1,
+            3600,
+        )
+        .expect("valid contract");
         IssuerPolicy::new(
             issuer.to_owned(),
             vec![aud.to_owned()],
@@ -847,6 +821,7 @@ async fn two_issuer_keys_and_generations_are_isolated() {
             60,
             3600,
             None,
+            contract,
         )
         .expect("valid policy")
     }
@@ -855,15 +830,21 @@ async fn two_issuer_keys_and_generations_are_isolated() {
         (
             IssuerJwksConfig {
                 issuer: issuer_a.to_owned(),
-                jwks_uri: "https://a.example/.well-known/jwks.json".to_owned(),
-                refresh_interval_seconds: 1,
-                key_snapshot_hard_deadline_seconds: 3600,
+                contract: JwksSourceContract::new(
+                    "https://a.example/.well-known/jwks.json".to_owned(),
+                    1,
+                    3600,
+                )
+                .unwrap(),
             },
             IssuerJwksConfig {
                 issuer: issuer_b.to_owned(),
-                jwks_uri: "https://b.example/.well-known/jwks.json".to_owned(),
-                refresh_interval_seconds: 1,
-                key_snapshot_hard_deadline_seconds: 3600,
+                contract: JwksSourceContract::new(
+                    "https://b.example/.well-known/jwks.json".to_owned(),
+                    1,
+                    3600,
+                )
+                .unwrap(),
             },
         )
     }
@@ -1061,11 +1042,12 @@ async fn shared_arc_source_verifier_observes_rotation() {
         }
     }
 
+    let jwks_contract =
+        JwksSourceContract::new(format!("https://{issuer}/.well-known/jwks.json"), 1, 3600)
+            .unwrap();
     let config = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
-        refresh_interval_seconds: 1,
-        key_snapshot_hard_deadline_seconds: 3600,
+        contract: jwks_contract.clone(),
     };
 
     // Wrap the source in Arc — this is the sharing path under test.
@@ -1089,6 +1071,7 @@ async fn shared_arc_source_verifier_observes_rotation() {
             60,
             3600,
             None,
+            jwks_contract,
         )
         .unwrap(),
     );

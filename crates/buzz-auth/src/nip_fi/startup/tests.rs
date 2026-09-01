@@ -1,7 +1,18 @@
 use super::*;
 use crate::nip_fi::config::{FreshnessClass, IssuerPolicy, IssuerRegistry, TokenClass};
-use crate::nip_fi::jwks::IssuerJwksConfig;
+use crate::nip_fi::jwks::{IssuerJwksConfig, JwksSourceContract};
 use jsonwebtoken::Algorithm as JwtAlgorithm;
+
+fn test_contract(issuer: &str) -> JwksSourceContract {
+    // Build a canonical JWKS URI from the issuer URL. The issuer may already
+    // be a full HTTPS URL (e.g. "https://id.example") or a bare hostname.
+    let uri = if issuer.starts_with("https://") {
+        format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'))
+    } else {
+        format!("https://{}/.well-known/jwks.json", issuer)
+    };
+    JwksSourceContract::new(uri, 300, 3600).expect("valid test contract")
+}
 
 fn make_offline_policy(issuer: &str) -> IssuerPolicy {
     IssuerPolicy::new(
@@ -14,6 +25,7 @@ fn make_offline_policy(issuer: &str) -> IssuerPolicy {
         0,
         3600,
         None,
+        test_contract(issuer),
     )
     .unwrap()
 }
@@ -29,6 +41,7 @@ fn make_status_policy(issuer: &str) -> IssuerPolicy {
         0,
         3600,
         Some(60),
+        test_contract(issuer),
     )
     .unwrap()
 }
@@ -36,9 +49,7 @@ fn make_status_policy(issuer: &str) -> IssuerPolicy {
 fn make_jwks_config(issuer: &str) -> IssuerJwksConfig {
     IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
+        contract: test_contract(issuer),
     }
 }
 
@@ -112,39 +123,28 @@ fn enforce_unmatched_jwks_config_rejects() {
     assert_eq!(err, NipFiStartupError::UnmatchedJwksConfig);
 }
 
+/// A JWKS config whose contract differs from the policy contract must be
+/// rejected — a mismatch means two independent copies of URI/timing have
+/// drifted, violating the single-source-of-truth invariant.
 #[test]
-fn enforce_refresh_equals_hard_deadline_rejects() {
+fn enforce_jwks_contract_mismatch_rejects() {
     let issuer = "https://id.example";
     let mut registry = IssuerRegistry::new();
     registry.insert(make_offline_policy(issuer));
 
-    let jwks = vec![IssuerJwksConfig {
+    // Config carries a different refresh interval than the policy (300 vs 600).
+    let mismatched_config = IssuerJwksConfig {
         issuer: issuer.to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 3600,
-        key_snapshot_hard_deadline_seconds: 3600,
-    }];
+        contract: JwksSourceContract::new(
+            format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/')),
+            600, // differs from policy contract (300)
+            3600,
+        )
+        .unwrap(),
+    };
     assert_eq!(
-        validate_nip_fi_config(NipFiMode::Enforce, &registry, &jwks).unwrap_err(),
-        NipFiStartupError::InvalidJwksTiming
-    );
-}
-
-#[test]
-fn enforce_zero_refresh_interval_rejects() {
-    let issuer = "https://id.example";
-    let mut registry = IssuerRegistry::new();
-    registry.insert(make_offline_policy(issuer));
-
-    let jwks = vec![IssuerJwksConfig {
-        issuer: issuer.to_owned(),
-        jwks_uri: "https://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 0,
-        key_snapshot_hard_deadline_seconds: 3600,
-    }];
-    assert_eq!(
-        validate_nip_fi_config(NipFiMode::Enforce, &registry, &jwks).unwrap_err(),
-        NipFiStartupError::InvalidJwksTiming
+        validate_nip_fi_config(NipFiMode::Enforce, &registry, &[mismatched_config]).unwrap_err(),
+        NipFiStartupError::JwksContractMismatch
     );
 }
 
@@ -178,41 +178,5 @@ fn enforce_duplicate_jwks_issuer_in_configs_rejects() {
     assert!(
         validate_nip_fi_config(NipFiMode::Enforce, &registry, &jwks).is_err(),
         "duplicate JWKS configs must not pass"
-    );
-}
-
-#[test]
-fn enforce_non_https_jwks_uri_rejects() {
-    let issuer = "https://id.example";
-    let mut registry = IssuerRegistry::new();
-    registry.insert(make_offline_policy(issuer));
-
-    let jwks = vec![IssuerJwksConfig {
-        issuer: issuer.to_owned(),
-        jwks_uri: "http://id.example/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
-    }];
-    assert_eq!(
-        validate_nip_fi_config(NipFiMode::Enforce, &registry, &jwks).unwrap_err(),
-        NipFiStartupError::InvalidJwksUri
-    );
-}
-
-#[test]
-fn enforce_loopback_jwks_uri_rejects() {
-    let issuer = "https://id.example";
-    let mut registry = IssuerRegistry::new();
-    registry.insert(make_offline_policy(issuer));
-
-    let jwks = vec![IssuerJwksConfig {
-        issuer: issuer.to_owned(),
-        jwks_uri: "https://127.0.0.1/.well-known/jwks.json".to_owned(),
-        refresh_interval_seconds: 300,
-        key_snapshot_hard_deadline_seconds: 3600,
-    }];
-    assert_eq!(
-        validate_nip_fi_config(NipFiMode::Enforce, &registry, &jwks).unwrap_err(),
-        NipFiStartupError::InvalidJwksUri
     );
 }

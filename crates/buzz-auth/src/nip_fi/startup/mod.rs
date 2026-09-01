@@ -7,7 +7,7 @@
 //! (`FI-INV-14`, `FI-INV-15`).
 
 use super::config::{FreshnessClass, IssuerRegistry};
-use super::jwks::{validate_jwks_uri, IssuerJwksConfig, MAX_JWKS_TIMING_SECONDS};
+use super::jwks::IssuerJwksConfig;
 
 /// Variant names are stable contract values; do not rename without a
 /// `VERIFIER_CONTRACT_VERSION` bump.
@@ -46,15 +46,11 @@ pub enum NipFiStartupError {
     #[error("NIP-FI JWKS config issuer does not match any registered policy")]
     UnmatchedJwksConfig,
 
-    /// `refresh_interval_seconds` is zero, exceeds [`MAX_JWKS_TIMING_SECONDS`],
-    /// or is ≥ `key_snapshot_hard_deadline_seconds`.
-    #[error("NIP-FI JWKS config has invalid timing bounds")]
-    InvalidJwksTiming,
-
-    /// Non-HTTPS scheme, embedded credentials, fragment, or bare
-    /// private/reserved IP host. See [`validate_jwks_uri`].
-    #[error("NIP-FI JWKS URI failed safety validation")]
-    InvalidJwksUri,
+    /// The `JwksSourceContract` embedded in the `IssuerJwksConfig` does not
+    /// match the contract in the corresponding `IssuerPolicy`. Both must carry
+    /// exactly the same contract to keep a single source of truth per issuer.
+    #[error("NIP-FI JWKS config contract does not match the registered policy contract")]
+    JwksContractMismatch,
 
     /// `current-status` requires an authenticated status witness that is not
     /// yet implemented. Use `FreshnessClass::OfflineJwt` instead.
@@ -114,16 +110,14 @@ pub fn validate_nip_fi_config(
         if registry.policy_for_issuer(&config.issuer).is_none() {
             return Err(NipFiStartupError::UnmatchedJwksConfig);
         }
-        if config.refresh_interval_seconds == 0
-            || config.key_snapshot_hard_deadline_seconds == 0
-            || config.key_snapshot_hard_deadline_seconds <= config.refresh_interval_seconds
-            || config.refresh_interval_seconds > MAX_JWKS_TIMING_SECONDS
-            || config.key_snapshot_hard_deadline_seconds > MAX_JWKS_TIMING_SECONDS
-        {
-            return Err(NipFiStartupError::InvalidJwksTiming);
-        }
-        if validate_jwks_uri(&config.jwks_uri).is_err() {
-            return Err(NipFiStartupError::InvalidJwksUri);
+        // Contract fields are pre-validated inside `JwksSourceContract::new`
+        // at `IssuerPolicy` construction. Enforce that the config carries the
+        // same contract as the policy — a mismatch would mean two independent
+        // copies of the URI/timing drifted apart, violating the single-source-
+        // of-truth invariant.
+        let policy = registry.policy_for_issuer(&config.issuer).unwrap();
+        if &config.contract != policy.jwks_source_contract() {
+            return Err(NipFiStartupError::JwksContractMismatch);
         }
     }
 
