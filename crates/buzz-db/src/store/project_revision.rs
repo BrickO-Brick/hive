@@ -167,16 +167,18 @@ impl Db {
         let role = if actor.as_slice() == owner.as_slice() {
             None
         } else if let Some(home_channel_id) = home {
-            // Serialize the authorization read with roster mutations. Without
-            // the shared membership lock, an admin removal or demotion could
-            // commit while this transaction still acts on the stale role.
+            // Serialize the authorization read with roster mutations. The
+            // channel-row share lock also serializes archive/deletion. Without
+            // both, a revocation could commit while this transaction still
+            // acts on stale authority.
             acquire_channel_membership_lock(&mut tx, community_id, home_channel_id).await?;
             sqlx::query_scalar::<_, String>(
                 "SELECT cm.role::text FROM channel_members cm \
                  JOIN channels c ON c.community_id=cm.community_id AND c.id=cm.channel_id \
                  WHERE cm.community_id=$1 AND cm.channel_id=$2 AND cm.pubkey=$3 \
                    AND cm.removed_at IS NULL AND c.deleted_at IS NULL \
-                   AND c.archived_at IS NULL",
+                   AND c.archived_at IS NULL \
+                 FOR SHARE OF c",
             )
             .bind(community_id.as_uuid())
             .bind(home_channel_id)
