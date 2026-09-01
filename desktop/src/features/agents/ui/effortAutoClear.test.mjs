@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { after, afterEach, before, test } from "node:test";
+import { afterEach, before, test } from "node:test";
 import { JSDOM } from "jsdom";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {

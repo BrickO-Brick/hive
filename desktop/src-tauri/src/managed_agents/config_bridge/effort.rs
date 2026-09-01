@@ -471,6 +471,7 @@ fn resolve_effective_effort(
 /// location fails the child-env assertions. Tests that call this function
 /// enter the SAME seam production uses — removing the `effort_launch_projection`
 /// call or the `apply_effort_launch_to_command` call inside fails them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_effort_sequence_to_command(
     cmd: &mut std::process::Command,
     record: &ManagedAgentRecord,
