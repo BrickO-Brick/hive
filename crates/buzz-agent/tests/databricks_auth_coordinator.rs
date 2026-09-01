@@ -1511,6 +1511,265 @@ async fn test_joiner_with_different_rejected_does_not_inherit_leaders_rejection_
     );
 }
 
+// ---- in-process joiner state reconciliation (P1 regressions) ---------------
+//
+// These tests drive two independently constructed same-key sources through real
+// leader/joiner acquisition and verify that subsequent public reads on both
+// sources reflect the shared outcome — not the stale or absent credential each
+// source carried before joining.
+//
+// The coordinator's in-process single-flight coalesces callers on a shared
+// `InflightSlot`. On the old bearer-only publication path the joiner's own
+// `state` cell was never updated, so:
+//   - success: B's next plain `bearer()` served the locally-fresh-but-rejected
+//     token X rather than the just-acquired Y (memory won over disk).
+//   - failure: B's matching rejected X remained live; its next `bearer()` still
+//     served it.
+//   - no-persistence (Windows): B's state stayed empty; its next headless read
+//     returned `NoCredential` instead of Y and a second browser opened.
+//
+// All three tests exercise the full `finish()` → `acquire_locked()` →
+// `acquire_leader()` → `LeaderGuard::complete()` → joiner wiring.
+
+// Unix-specific: the seed provides a live refresh token. The non-Unix constructor
+// does not read the disk cache, so without a seed in memory A's headless path
+// returns NoCredential rather than RefreshRejected.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_inprocess_joiner_reconciles_stale_state_after_shared_success() {
+    // Scenario: A and B both loaded a locally-fresh-but-401'd token X. A leads,
+    // refreshes to Y. B joins and wakes to Ok(Y). Without reconciliation B's
+    // state still holds unexpired X, so B's next plain bearer() serves X — the
+    // exact token the caller just reported 401-rejected.
+    //
+    // `join!` polls A first: A registers the INFLIGHT slot as leader, takes the
+    // file lock, and yields on the refresh HTTP call. B is polled while A is in
+    // flight, finds the slot, and joins.
+    //
+    // Mutation check (no state reconciliation): B.state stays Some(unexpired-X).
+    // The subsequent bearer() call on B hits the memory cache (X is not expired,
+    // rejected=None so identity check passes), and `a_next == b_next` FAILS
+    // because ra_next = Y and rb_next = X.
+    let stub = spawn_stub(false).await; // refresh returns fresh token
+    let cache = TempDir::new().unwrap();
+    let opener = ScriptedOpener::new(Script::FailToOpen); // headless — no browser
+    let cfg = config(&stub, "/disco/a", cache.path());
+
+    // Unexpired X with a live refresh token: both A and B load it as their
+    // initial state via the constructor's `read_cache` call.
+    seed_cache(
+        &cfg,
+        cache.path(),
+        json!({
+            "access_token": "stale-X",
+            "refresh_token": "live-refresh",
+            "expires_at": future_secs(),  // NOT expired — locally fresh
+        }),
+    );
+
+    let a = PkceOAuthTokenSource::new_with(cfg.clone(), Arc::new(opener.clone())).unwrap();
+    let b = PkceOAuthTokenSource::new_with(cfg.clone(), Arc::new(opener.clone())).unwrap();
+
+    // Both 401-recovery callers on the same key. A becomes leader (polled
+    // first), refreshes to "refreshed-token-1", B joins A's slot.
+    let (ra, rb) = tokio::join!(
+        a.acquire_with_intent(AuthIntent::Headless, Some("stale-X")),
+        b.acquire_with_intent(AuthIntent::Headless, Some("stale-X")),
+    );
+
+    assert_eq!(
+        ra,
+        Ok("refreshed-token-1".to_string()),
+        "leader (A) receives the refreshed token"
+    );
+    assert_eq!(
+        rb,
+        Ok("refreshed-token-1".to_string()),
+        "joiner (B) receives the leader's token"
+    );
+    assert_eq!(
+        stub.refresh_grants.load(Ordering::SeqCst),
+        1,
+        "exactly one refresh — B joined A's slot rather than running its own"
+    );
+
+    // After the join, both sources must hold the new token in state. Subsequent
+    // plain bearer() calls (rejected=None) on both must return Y, not stale X.
+    let ra_next = a
+        .acquire_with_intent(AuthIntent::Headless, None)
+        .await
+        .expect("A subsequent read must return the refreshed token");
+    let rb_next = b
+        .acquire_with_intent(AuthIntent::Headless, None)
+        .await
+        .expect("B subsequent read must return the refreshed token, not stale X");
+
+    assert_eq!(ra_next, "refreshed-token-1", "A subsequent read returns Y");
+    assert_eq!(
+        rb_next, "refreshed-token-1",
+        "B subsequent read returns Y, not stale X — \
+         mutation check: fails if joiner state was not reconciled (bearer-only publication)"
+    );
+    // No second refresh: both subsequent reads hit the in-memory cache.
+    assert_eq!(
+        stub.refresh_grants.load(Ordering::SeqCst),
+        1,
+        "subsequent reads hit the in-memory cache — no second network call"
+    );
+}
+
+// Unix-specific: refresh token is required for a headless rejection path.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_inprocess_joiner_neutralizes_rejected_on_matching_shared_failure() {
+    // Scenario: A and B both carry unexpired X as their rejected token. A leads,
+    // attempts a refresh, gets 401 (RefreshRejected). B joins and wakes to the
+    // shared failure. Without reconciliation B's state still holds unexpired X,
+    // so B's next plain bearer() serves it — the rejected credential reappears.
+    //
+    // With reconciliation, expire_rejected is called under lock, so X is
+    // force-expired in B's state and cannot be served again.
+    //
+    // Mutation check (no expire_rejected call on the joiner Err path): B.state
+    // still holds unexpired X after the join. B's next bearer() (rejected=None)
+    // hits the memory cache and returns X. The assertion `rb_next != Ok("stale-X")`
+    // FAILS — the rejected credential reappears.
+    let stub = spawn_stub(true).await; // reject_refresh=true → 401 on every refresh
+    let cache = TempDir::new().unwrap();
+    let opener = ScriptedOpener::new(Script::FailToOpen); // headless — no browser
+    let cfg = config(&stub, "/disco/a", cache.path());
+
+    // Unexpired X with a live (but destined-to-be-rejected) refresh token.
+    seed_cache(
+        &cfg,
+        cache.path(),
+        json!({
+            "access_token": "stale-X",
+            "refresh_token": "live-refresh",
+            "expires_at": future_secs(),  // NOT expired — locally fresh
+        }),
+    );
+
+    let a = PkceOAuthTokenSource::new_with(cfg.clone(), Arc::new(opener.clone())).unwrap();
+    let b = PkceOAuthTokenSource::new_with(cfg.clone(), Arc::new(opener.clone())).unwrap();
+
+    let (ra, rb) = tokio::join!(
+        a.acquire_with_intent(AuthIntent::Headless, Some("stale-X")),
+        b.acquire_with_intent(AuthIntent::Headless, Some("stale-X")),
+    );
+
+    assert_eq!(
+        ra,
+        Err(AuthError::RefreshRejected),
+        "leader (A) gets RefreshRejected — dead refresh"
+    );
+    assert_eq!(
+        rb,
+        Err(AuthError::RefreshRejected),
+        "joiner (B) shares the leader's RefreshRejected failure"
+    );
+    assert_eq!(
+        stub.refresh_grants.load(Ordering::SeqCst),
+        1,
+        "exactly one refresh attempt — B joined the failure rather than retrying"
+    );
+
+    // After the shared failure, B must not be able to serve stale X on a
+    // subsequent plain bearer() call. Without reconciliation, B.state still
+    // holds unexpired X and the next bearer() would return it.
+    let rb_next = b.acquire_with_intent(AuthIntent::Headless, None).await;
+    assert_ne!(
+        rb_next,
+        Ok("stale-X".to_string()),
+        "B must not serve the rejected token after adopting a matching shared failure — \
+         mutation check: fails if the joiner Err path skips expire_rejected"
+    );
+}
+
+// Non-Unix-specific: disk persistence is disabled on Windows, so the only way
+// for B to retain Y after joining is in-memory state reconciliation. On Unix
+// the disk can provide Y as a fallback, masking a reconciliation failure.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn test_inprocess_joiner_populates_empty_state_no_second_acquisition() {
+    // Scenario: A and B both start with empty state (no disk token on non-Unix).
+    // A leads, opens a browser, exchanges the code for Y. B joins A's slot and
+    // wakes to Ok(Y). Without reconciliation, B.state stays None. B's next
+    // headless acquire returns NoCredential instead of Y, and a second browser
+    // would open if UserInitiated.
+    //
+    // Mutation check (no state reconciliation): B.state stays None. The
+    // subsequent headless acquire on B returns Err(NoCredential) instead of
+    // Ok("browser-token-1") — the assertion FAILS.
+    let stub = spawn_stub(false).await;
+    let cache = TempDir::new().unwrap();
+    let approve = ScriptedOpener::new(Script::Approve);
+
+    let a = PkceOAuthTokenSource::new_with(
+        config(&stub, "/disco/a", cache.path()),
+        Arc::new(approve.clone()),
+    )
+    .unwrap();
+    let b = PkceOAuthTokenSource::new_with(
+        config(&stub, "/disco/a", cache.path()),
+        Arc::new(approve.clone()),
+    )
+    .unwrap();
+
+    // Both start with empty state — UserInitiated falls through to a browser.
+    let (ra, rb) = tokio::join!(
+        a.acquire_with_intent(AuthIntent::UserInitiated, None),
+        b.acquire_with_intent(AuthIntent::UserInitiated, None),
+    );
+
+    assert_eq!(
+        ra,
+        Ok("browser-token-1".to_string()),
+        "leader (A) gets the browser token"
+    );
+    assert_eq!(
+        rb,
+        Ok("browser-token-1".to_string()),
+        "joiner (B) shares the leader's browser token"
+    );
+    assert_eq!(
+        approve.call_count(),
+        1,
+        "exactly one browser opened — B joined rather than launching its own"
+    );
+    assert_eq!(
+        stub.code_grants.load(Ordering::SeqCst),
+        1,
+        "exactly one authorization-code exchange"
+    );
+
+    // B's subsequent headless acquire must return Y from in-memory state without
+    // a second browser. Without reconciliation, B.state is None and headless
+    // returns NoCredential (no disk fallback on non-Unix).
+    let rb_next = b
+        .acquire_with_intent(AuthIntent::Headless, None)
+        .await
+        .expect(
+            "B subsequent headless read must return Y from in-memory state, not NoCredential — \
+             mutation check: fails if joiner state was not reconciled (bearer-only publication)",
+        );
+    assert_eq!(
+        rb_next, "browser-token-1",
+        "B retains Y in memory for subsequent headless reads"
+    );
+    // No second browser: B's subsequent read hit the in-memory cache.
+    assert_eq!(
+        approve.call_count(),
+        1,
+        "no second browser opened — B's subsequent headless read hit the in-memory cache"
+    );
+    assert_eq!(
+        stub.code_grants.load(Ordering::SeqCst),
+        1,
+        "no second code exchange"
+    );
+}
+
 // ---- a browser success that re-issues the rejected bytes must fail typed ---
 //
 // The 401-recovery invariant lives at `finish`'s persistence boundary, so it
@@ -2729,9 +2988,7 @@ async fn test_crossprocess_userinitiated_waiter_adopts_predecessor_denial() {
     //
     // SNAPSHOT_MARKER is emitted by the tracing layer in B's process after B
     // snapshots gen=0 and before it queues on the file lock — so observing it
-    // proves B has committed to gen=0 and is waiting behind A. This replaces
-    // an earlier unconditional sleep: the marker proves B captured generation 0
-    // before A records generation 1, not just that some time elapsed.
+    // proves B captured generation 0 before A records generation 1.
     let snapshot_b = cache.path().join("b.snapshot");
     let worker_b = spawn_worker(
         &cfg,
@@ -2865,7 +3122,7 @@ async fn test_crossprocess_adopter_does_not_advance_generation() {
     // than opening its own browser (B was queued while A held the lock).
     // SNAPSHOT_MARKER is emitted by the tracing layer in B's process after B
     // snapshots gen=0 and before it queues on the lock — so observing it
-    // proves B has committed to gen=0 and is waiting behind A.
+    // proves B captured generation 0 before A records generation 1.
     let snapshot_b = cache.path().join("b.snapshot");
     let worker_b = spawn_worker(
         &cfg,
