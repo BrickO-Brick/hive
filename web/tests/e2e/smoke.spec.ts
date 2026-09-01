@@ -13,6 +13,34 @@ test("home page shows repositories section", async ({ page }) => {
   await expect(page.getByText("Repositories")).toBeVisible();
 });
 
+test("Hive redirects a signed-out browser to Mantap", async ({ page }) => {
+  await page.route("https://mantap.onebrick.io/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<title>Mantap</title>",
+    });
+  });
+
+  await page.goto("/app");
+
+  await expect(page).toHaveURL("https://mantap.onebrick.io/");
+});
+
+test("Hive redirects a missing SSO ticket to Mantap", async ({ page }) => {
+  await page.route("https://mantap.onebrick.io/**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<title>Mantap</title>",
+    });
+  });
+
+  await page.goto("/mantul-sso");
+
+  await expect(page).toHaveURL("https://mantap.onebrick.io/");
+});
+
 test("invite requires age and legal consent before opening Buzz", async ({
   page,
 }) => {

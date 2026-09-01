@@ -1,27 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { ensureMantapBrowserIdentity } from "@/shared/lib/nostr-signer";
 import { exchangeMantapTicket } from "../mantap-sso-api";
 
 export function MantapSsoPage() {
-  const [message, setMessage] = useState("Memvalidasi sesi Mantap Anda…");
-
   useEffect(() => {
     const ticket = new URLSearchParams(window.location.hash.slice(1)).get(
       "ticket",
     );
     window.history.replaceState(null, "", window.location.pathname);
     if (!ticket) {
-      setMessage(
-        "Tiket SSO Mantap tidak ditemukan. Buka Hive kembali dari Mantap.",
-      );
+      window.location.replace("https://mantap.onebrick.io");
       return;
     }
     ensureMantapBrowserIdentity();
     exchangeMantapTicket(ticket)
       .then(() => window.location.replace("/app"))
-      .catch(() =>
-        setMessage("Login Hive gagal. Kembali ke Mantap lalu buka Hive lagi."),
-      );
+      .catch(() => window.location.replace("https://mantap.onebrick.io"));
   }, []);
 
   return (
@@ -32,7 +26,7 @@ export function MantapSsoPage() {
         </div>
         <h1 className="text-2xl font-semibold">Masuk ke Hive</h1>
         <p className="mt-3 text-sm leading-6 text-slate-400" aria-live="polite">
-          {message}
+          Memvalidasi sesi Mantap Anda…
         </p>
       </div>
     </div>

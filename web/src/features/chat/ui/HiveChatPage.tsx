@@ -49,23 +49,14 @@ export function HiveChatPage() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!identity || !hasMantapBrowserIdentity()) {
+      window.location.replace("https://mantap.onebrick.io");
+    }
+  }, [identity]);
+
   if (!identity || !hasMantapBrowserIdentity()) {
-    return (
-      <div className="grid min-h-dvh place-items-center bg-slate-950 p-6 text-slate-100">
-        <div className="max-w-md rounded-3xl border border-white/10 bg-white/5 p-8">
-          <h1 className="text-2xl font-semibold">Hive</h1>
-          <p className="mt-3 text-slate-400">
-            Buka Hive dari menu Mantap untuk masuk dengan akun OneBrick Anda.
-          </p>
-          <a
-            className="mt-6 inline-flex rounded-xl bg-violet-500 px-4 py-2 font-medium"
-            href="https://mantap.onebrick.io"
-          >
-            Buka Mantap
-          </a>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   const send = async (event: FormEvent) => {
