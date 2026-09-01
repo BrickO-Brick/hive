@@ -391,16 +391,17 @@ where
 ///
 /// The host is extracted via the typed `Url::host()` accessor, **not**
 /// `host_str()`. `host_str()` returns IPv6 literals with brackets (e.g.
-/// `[2606:4700::1]`), which breaks two downstream consumers:
+/// `[2606:4700::1]`), which breaks `IpAddr::parse`: brackets are not valid,
+/// so the fast path in `resolve_and_check_ssrf` would fail and fall through
+/// to the DNS path, which may attempt to resolve `[2606:4700::1]` as a
+/// hostname instead of an IP literal.
 ///
-/// 1. `IpAddr::parse` — brackets are not valid; the fast path in
-///    `resolve_and_check_ssrf` would fail and fall through to the DNS path,
-///    which may resolve `[2606:4700::1]` as a hostname instead of an IP.
-/// 2. `reqwest::ClientBuilder::resolve(host, addr)` — uses the host string as
-///    its override key; the bracketed key `[2606:4700::1]` does not match the
-///    bare authority `2606:4700::1` used in the request URL, so the SSRF-
-///    resolved pin is silently bypassed and the client resolves the address
-///    independently.
+/// The extracted bare host string is also the correct input form for
+/// `reqwest::ClientBuilder::resolve(host, addr)`, whose key must match the
+/// URL authority form (bare, without brackets for IPv6). Whether the
+/// connector-level pin behaves as expected under mutation is a runtime
+/// boundary concern; this function's contract is that it produces the bare
+/// form required as input.
 ///
 /// This function is `pub(crate)` so tests can assert the extracted host string
 /// directly and confirm the mutation (restoring `host_str()`) turns the
@@ -409,15 +410,14 @@ where
 /// ## Mutation oracle
 /// Restoring `Some(url::Host::Ipv6(addr)) => format!("[{}]", addr)` (the
 /// `host_str()` form) causes the IPv6 host extraction test to fail: the
-/// returned string carries brackets, `IpAddr::parse` rejects it, and reqwest's
-/// `.resolve()` key mismatches the URL authority.
+/// returned string carries brackets, `IpAddr::parse` rejects it, and the
+/// extracted host no longer matches the bare URL authority form.
 pub(crate) fn extract_url_host_and_port(uri: &str) -> Result<(String, u16), JwksFetchError> {
     let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
     let host = match parsed.host() {
         Some(url::Host::Ipv4(addr)) => addr.to_string(),
         // MUST use the typed accessor — `host_str()` returns `[2606:4700::1]`
-        // (with brackets) for IPv6 literals, which breaks IpAddr::parse and
-        // reqwest's .resolve() pin-key matching.
+        // (with brackets) for IPv6 literals, which breaks IpAddr::parse.
         Some(url::Host::Ipv6(addr)) => addr.to_string(),
         Some(url::Host::Domain(d)) => d.to_owned(),
         None => return Err(JwksFetchError::InvalidUri),

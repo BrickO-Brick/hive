@@ -439,6 +439,76 @@ fn validate_uri_rejects_reserved_class_e_ip() {
 }
 
 #[test]
+fn validate_uri_rejects_ietf_protocol_assignments_ipv4() {
+    // 192.0.0.0/24 — IETF Protocol Assignments (non-global by default).
+    // 192.0.0.1 is a representative interior address.
+    assert_eq!(
+        validate_jwks_uri("https://192.0.0.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_accepts_ietf_protocol_assignments_pcp_turn_anycast() {
+    // 192.0.0.9 (PCP anycast, RFC 7723) and 192.0.0.10 (TURN anycast, RFC 8155)
+    // are the only globally-reachable exceptions inside 192.0.0.0/24.
+    assert!(validate_jwks_uri("https://192.0.0.9/jwks.json").is_ok());
+    assert!(validate_jwks_uri("https://192.0.0.10/jwks.json").is_ok());
+}
+
+#[test]
+fn validate_uri_rejects_deprecated_6to4_anycast_ipv4() {
+    // 192.88.99.0/24 — deprecated 6to4 relay anycast (RFC 7526).
+    // Registry global field is None/blank; conservative posture: block.
+    assert_eq!(
+        validate_jwks_uri("https://192.88.99.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_ietf_protocol_assignments_v6_interior() {
+    // 2001:2::1 — interior of 2001::/23 IETF Protocol Assignments (non-global).
+    assert_eq!(
+        validate_jwks_uri("https://[2001:2::1]/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_accepts_ietf_protocol_assignments_v6_global_exception() {
+    // 2001:1::1 (PCP anycast, RFC 7723) — globally reachable exception inside 2001::/23.
+    assert!(validate_jwks_uri("https://[2001:1::1]/jwks.json").is_ok());
+}
+
+#[test]
+fn validate_uri_rejects_discard_only_v6() {
+    // 100::1 — 100::/64 Discard-Only address space (RFC 6666).
+    assert_eq!(
+        validate_jwks_uri("https://[100::1]/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_documentation_v6_3fff() {
+    // 3fff::1 — 3fff::/20 Documentation space (RFC 9637).
+    assert_eq!(
+        validate_jwks_uri("https://[3fff::1]/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_srv6_sids_v6() {
+    // 5f00::1 — 5f00::/16 SRv6 SID space (RFC 9252).
+    assert_eq!(
+        validate_jwks_uri("https://[5f00::1]/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
 fn validate_uri_rejects_credentials() {
     assert_eq!(
         validate_jwks_uri("https://user:pass@id.example/jwks.json").unwrap_err(),
@@ -1234,7 +1304,7 @@ fn jwks_contract_uri_canonicalization_convergence_and_divergence() {
     );
 }
 
-/// **Fix 2 — Public bracketed-IPv6 JWKS URI through the full SSRF/pin-key seam.**
+/// **Fix 2 — Public bracketed-IPv6 JWKS URI through the resolved-target and pin-input seam.**
 ///
 /// This seam test is network-free: both public `2606:4700::1` and site-local
 /// `fec0::1` are IP literals, so `resolve_and_check_ssrf` takes the fast path
@@ -1252,6 +1322,10 @@ fn jwks_contract_uri_canonicalization_convergence_and_divergence() {
 ///    string as its pin key. The key must equal the URL authority form —
 ///    bare for IPv6, brackets forbidden.
 ///
+/// This test proves that the extracted host string is bare (the correct input
+/// form for `reqwest::ClientBuilder::resolve`). It does not exercise the
+/// reqwest connector; connector-boundary behavior is a runtime concern.
+///
 /// For `fec0::1`: `extract_url_host_and_port` still extracts the bare address;
 /// `resolve_and_check_ssrf` rejects it via `is_not_global_unicast`.
 ///
@@ -1264,7 +1338,7 @@ fn jwks_contract_uri_canonicalization_convergence_and_divergence() {
 /// - `is_not_global_unicast` is never called on `fec0::1` (the parse also
 ///   fails) → `resolve_and_check_ssrf` returns `NetworkError` not `InvalidUri`
 ///   → fec0 rejection-kind assertion flips red.
-/// - The pin-key equality assertion also flips red (bracket mismatch).
+/// - The pin-input equality assertion also flips red (bracket mismatch).
 #[tokio::test]
 async fn resolved_target_and_pin_key_seam_public_ipv6_and_fec0_rejection() {
     use buzz_core::network::is_not_global_unicast;

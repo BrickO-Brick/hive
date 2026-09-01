@@ -1706,7 +1706,7 @@ fn assertion_policy_id_is_stable_for_same_jwks_contract() {
 }
 
 #[test]
-fn key_rotation_does_not_change_assertion_policy_id() {
+fn identical_contract_produces_stable_assertion_policy_id() {
     // `AssertionPolicyId` is derived from the contract fields only — not from
     // JWKS key material. This means JWKS key additions/removals (runtime
     // rotation) cannot change the policy ID; only changes to the contract
@@ -1737,7 +1737,7 @@ fn key_rotation_does_not_change_assertion_policy_id() {
     assert_eq!(
         p1.id(),
         p2.id(),
-        "key rotation must not change assertion_policy_id (key material is not hashed)"
+        "identical contract must produce the same assertion_policy_id (key material is not hashed)"
     );
 }
 
