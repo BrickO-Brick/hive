@@ -89,6 +89,8 @@ jobs:
           grep -Fq '/workspace:ro' deploy/onebrick/compose.yml
           test "$(grep -c '^    read_only: true$' deploy/onebrick/compose.yml)" -ge 1
           grep -Fq 'reverse_proxy hive-relay:3000' deploy/onebrick/Caddyfile.hive
+          grep -Fq 'header Accept *text/html*' deploy/onebrick/Caddyfile.hive
+          grep -Fq 'redir @hiveBrowserRoot /app 302' deploy/onebrick/Caddyfile.hive
           rm -f "$fixture"
       - name: Reject tracked secrets and floating runtime images
         run: |

@@ -9,6 +9,14 @@ hive.onebrick.io {
 		-Server
 	}
 
+	# Human visitors should enter the web client. Nostr relay clients do not
+	# advertise HTML and continue to receive the NIP-11 document at `/`.
+	@hiveBrowserRoot {
+		path /
+		header Accept *text/html*
+	}
+	redir @hiveBrowserRoot /app 302
+
 	request_body {
 		max_size 100MB
 	}
