@@ -21,32 +21,40 @@ fn embedded_ipv4(v6: &std::net::Ipv6Addr, prefix: &[u8; 12]) -> Option<std::net:
 
 /// Returns `true` when the address is not a globally reachable public unicast
 /// address. Used for SSRF protection — outbound targets must resolve only to
-/// publicly routable space. `fec0::/10` (deprecated IPv6 site-local, RFC 3879)
-/// is blocked in addition to the ranges in the original `is_private_ip`.
+/// publicly routable space.
 ///
 /// Callers: `buzz-auth` JWKS boundary, `buzz-workflow` webhook SSRF check,
 ///          desktop `link_preview` SSRF check.
 ///
-/// Blocked ranges:
-/// - IPv4 loopback       127.0.0.0/8
-/// - IPv4 private        10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-/// - IPv4 link-local     169.254.0.0/16
-/// - IPv4 unspecified    0.0.0.0/8
-/// - IPv4 broadcast      255.255.255.255
-/// - IPv4 CGNAT          100.64.0.0/10 (RFC 6598) — cloud metadata risk
-/// - IPv4 benchmarking   198.18.0.0/15 (RFC 2544)
-/// - IPv6 loopback       ::1
-/// - IPv6 unspecified    ::
-/// - IPv6 ULA            fc00::/7
-/// - IPv6 link-local     fe80::/10
-/// - IPv6 multicast      ff00::/8
-/// - IPv6 documentation  2001:db8::/32 (RFC 3849) — should never appear in production
-/// - IPv4-compatible and mapped IPv6 (checked recursively against IPv4 rules)
-/// - IPv4-translated     ::ffff:0:0:0/96 (embedded IPv4 checked recursively)
-/// - NAT64 well-known    64:ff9b::/96 (embedded IPv4 checked recursively)
-/// - NAT64 local-use     64:ff9b:1::/48 (RFC 8215)
-/// - Teredo              2001::/32 (RFC 4380)
-/// - 6to4                2002::/16 (RFC 3056)
+/// The predicate is conservative: any address class not unambiguously assigned
+/// as globally reachable public unicast is rejected. Addresses embedded in
+/// IPv4-mapped, IPv4-compatible, NAT64 well-known (64:ff9b::/96), and SIIT
+/// IPv4-translated (::ffff:0:0:0/96) forms are checked recursively against the
+/// IPv4 table.
+///
+/// Blocked IPv4 ranges:
+/// - Loopback          127.0.0.0/8
+/// - Private           10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+/// - Link-local        169.254.0.0/16
+/// - Unspecified       0.0.0.0/8
+/// - Broadcast         255.255.255.255
+/// - CGNAT             100.64.0.0/10 (RFC 6598) — cloud metadata risk
+/// - Benchmarking      198.18.0.0/15 (RFC 2544)
+/// - Documentation     192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737)
+/// - Multicast         224.0.0.0/4
+/// - Reserved          240.0.0.0/4
+///
+/// Blocked IPv6 ranges:
+/// - Loopback          ::1
+/// - Unspecified       ::
+/// - ULA               fc00::/7
+/// - Link-local        fe80::/10
+/// - Deprecated site-local  fec0::/10 (RFC 3879)
+/// - Multicast         ff00::/8
+/// - Teredo            2001::/32 (RFC 4380)
+/// - 6to4              2002::/16 (RFC 3056)
+/// - Documentation     2001:db8::/32 (RFC 3849)
+/// - NAT64 local-use   64:ff9b:1::/48 (RFC 8215)
 pub fn is_not_global_unicast(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => {
@@ -61,6 +69,14 @@ pub fn is_not_global_unicast(ip: &std::net::IpAddr) -> bool {
                 || (octets[0] == 100 && (octets[1] & 0xC0) == 64)
                 // Benchmarking (RFC 2544) — 198.18.0.0/15
                 || (octets[0] == 198 && (octets[1] & 0xFE) == 18)
+                // Documentation (RFC 5737) — TEST-NET-1/2/3, never globally routed.
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+                // Multicast (RFC 5771) — 224.0.0.0/4
+                || octets[0] & 0xf0 == 0xe0
+                // Reserved (RFC 1112 class E) — 240.0.0.0/4 (excluding broadcast, already matched)
+                || (octets[0] & 0xf0 == 0xf0 && !v4.is_broadcast())
         }
         std::net::IpAddr::V6(v6) => {
             // Check IPv4-compatible and mapped addresses against IPv4 rules.
@@ -377,5 +393,69 @@ mod tests {
     fn test_ipv6_not_multicast() {
         // fe00:: — just below ff00::/8 (not multicast, not link-local, not ULA)
         assert!(!is_private_ip(&"fe00::1".parse::<IpAddr>().unwrap()));
+    }
+
+    // IPv4 documentation ranges (RFC 5737) — TEST-NET-1/2/3
+    #[test]
+    fn test_documentation_192_0_2() {
+        // 192.0.2.0/24 — TEST-NET-1
+        assert!(is_private_ip(&"192.0.2.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip(&"192.0.2.255".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_documentation_192_0_2_boundary() {
+        // 192.0.1.255 — just below TEST-NET-1
+        assert!(!is_private_ip(&"192.0.1.255".parse::<IpAddr>().unwrap()));
+        // 192.0.3.0 — just above TEST-NET-1
+        assert!(!is_private_ip(&"192.0.3.0".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_documentation_198_51_100() {
+        // 198.51.100.0/24 — TEST-NET-2
+        assert!(is_private_ip(&"198.51.100.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip(&"198.51.100.255".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_documentation_203_0_113() {
+        // 203.0.113.0/24 — TEST-NET-3
+        assert!(is_private_ip(&"203.0.113.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip(&"203.0.113.255".parse::<IpAddr>().unwrap()));
+    }
+
+    // IPv4 multicast — 224.0.0.0/4
+    #[test]
+    fn test_ipv4_multicast_start() {
+        // 224.0.0.1 — all-hosts group
+        assert!(is_private_ip(&"224.0.0.1".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_ipv4_multicast_end() {
+        // 239.255.255.255 — end of multicast range
+        assert!(is_private_ip(&"239.255.255.255".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_ipv4_multicast_below_range() {
+        // 223.255.255.255 — just below multicast range
+        assert!(!is_private_ip(
+            &"223.255.255.255".parse::<IpAddr>().unwrap()
+        ));
+    }
+
+    // IPv4 reserved — 240.0.0.0/4 (class E)
+    #[test]
+    fn test_ipv4_reserved_start() {
+        // 240.0.0.1 — start of reserved range
+        assert!(is_private_ip(&"240.0.0.1".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_ipv4_reserved_near_broadcast() {
+        // 255.255.255.254 — one below broadcast, still reserved
+        assert!(is_private_ip(&"255.255.255.254".parse::<IpAddr>().unwrap()));
+    }
+    #[test]
+    fn test_ipv4_reserved_below_range() {
+        // 239.255.255.255 — top of multicast, below reserved/class-E
+        // (also blocked as multicast, verified here for completeness)
+        assert!(is_private_ip(&"239.255.255.255".parse::<IpAddr>().unwrap()));
     }
 }

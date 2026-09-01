@@ -1707,18 +1707,16 @@ fn assertion_policy_id_is_stable_for_same_jwks_contract() {
 
 #[test]
 fn key_rotation_does_not_change_assertion_policy_id() {
-    // Key additions/removals (JWKS rotation) change per-token state via the
-    // generation counter and `AssertionKeySet` content, but must NOT change
-    // the policy's `AssertionPolicyId`. The ID is built from the contract
-    // fields only — not from key material.
+    // `AssertionPolicyId` is derived from the contract fields only — not from
+    // JWKS key material. This means JWKS key additions/removals (runtime
+    // rotation) cannot change the policy ID; only changes to the contract
+    // itself (JWKS URI, refresh interval, hard deadline) would do so.
     //
-    // This test proves the invariant at the `IssuerPolicy` level: constructing
-    // two policies with the same contract and different issuers (simulating
-    // a rotated JWKS) must produce the same ID if and only if all contract
-    // fields are identical. Because `IssuerPolicy` is a sealed type and JWKS
-    // key material never flows into `derive_assertion_policy_id`, we verify
-    // the invariant by constructing the same policy twice and confirming the
-    // ID is stable across calls.
+    // This test verifies the structural invariant: two `IssuerPolicy` values
+    // built from identical contracts produce the same `AssertionPolicyId`,
+    // regardless of when or how many times the ID is derived. Because key
+    // material never flows into `derive_assertion_policy_id`, the ID is
+    // stable for the lifetime of a given contract.
     let p1 = policy_with_contract(
         crate::nip_fi::jwks::JwksSourceContract::new(
             format!("{}/.well-known/jwks.json", ISSUER),
@@ -1735,8 +1733,7 @@ fn key_rotation_does_not_change_assertion_policy_id() {
         )
         .unwrap(),
     );
-    // Identical contract, identical policy — the ID is the same even if JWKS
-    // content would differ at runtime (keys are not part of the hash input).
+    // Identical contract → identical ID: key material is not part of the hash.
     assert_eq!(
         p1.id(),
         p2.id(),

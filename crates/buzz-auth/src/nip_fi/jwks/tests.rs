@@ -394,6 +394,51 @@ fn validate_uri_rejects_link_local_ip() {
 }
 
 #[test]
+fn validate_uri_rejects_documentation_ip_test_net_1() {
+    // 192.0.2.0/24 — RFC 5737 TEST-NET-1, never globally routed.
+    assert_eq!(
+        validate_jwks_uri("https://192.0.2.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_documentation_ip_test_net_2() {
+    // 198.51.100.0/24 — RFC 5737 TEST-NET-2.
+    assert_eq!(
+        validate_jwks_uri("https://198.51.100.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_documentation_ip_test_net_3() {
+    // 203.0.113.0/24 — RFC 5737 TEST-NET-3.
+    assert_eq!(
+        validate_jwks_uri("https://203.0.113.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_multicast_ip() {
+    // 224.0.0.1 — all-hosts multicast group (224.0.0.0/4).
+    assert_eq!(
+        validate_jwks_uri("https://224.0.0.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
+fn validate_uri_rejects_reserved_class_e_ip() {
+    // 240.0.0.1 — reserved class E (240.0.0.0/4).
+    assert_eq!(
+        validate_jwks_uri("https://240.0.0.1/jwks.json").unwrap_err(),
+        JwksFetchError::InvalidUri
+    );
+}
+
+#[test]
 fn validate_uri_rejects_credentials() {
     assert_eq!(
         validate_jwks_uri("https://user:pass@id.example/jwks.json").unwrap_err(),
@@ -1257,18 +1302,20 @@ async fn resolved_target_and_pin_key_seam_public_ipv6_and_fec0_rejection() {
         "resolved address must equal the IpAddr parsed from the bare host"
     );
 
-    // ── Stage 3: reqwest pin-key equality ────────────────────────────────────
-    // reqwest's `.resolve(host, SocketAddr::new(ip, port))` matches the host
-    // argument against the URL authority. For IPv6, the URL authority uses the
-    // bare form (no brackets), so the key must be the bare string.
+    // ── Stage 3: pin-key string form ────────────────────────────────────────
+    // The host string extracted by `extract_url_host_and_port` is the value
+    // passed to reqwest's `.resolve(host, ...)`. For a reqwest pin to apply,
+    // the key passed to `.resolve()` must equal the URL authority form. For
+    // IPv6 literals the URL authority form is bare (no brackets), so the
+    // extracted host must also be bare. This assertion verifies that the
+    // extracted host string is bare — it does not directly exercise the
+    // reqwest connector, but proves the input to the pin call is correct.
     let socket_addr = std::net::SocketAddr::new(resolved, port);
-    // Verify key identity: the same `host` used in `.resolve()` is what
-    // `extract_url_host_and_port` returns. A bracketed key would differ from
-    // the URL authority and the pin would silently not apply.
     let expected_pin_key = "2606:4700::1";
     assert_eq!(
         host, expected_pin_key,
-        "pin key must equal the bare URL authority; mutation: bracketed key bypasses reqwest pin"
+        "extracted host must equal the bare URL authority for use as reqwest pin key; \
+         mutation: bracketed extraction returns \"[2606:4700::1]\" (differs from authority form)"
     );
     // Sanity: confirm the SocketAddr is valid (no panic = key formation succeeded).
     let _ = socket_addr;
@@ -1311,8 +1358,8 @@ async fn resolved_target_and_pin_key_seam_public_ipv6_and_fec0_rejection() {
 /// A1's immutable hard deadline without wall-clock sleep. A1's deadline is
 /// computed at first-fetch time (T0) and never mutated. The clock then advances
 /// to T0 + HARD_DEADLINE_SECS + 1, beyond A1's original absolute deadline.
-/// `get_snapshot` fires the expiry purge, fetches A2, and the one unchanged
-/// verifier (never rebuilt) must reflect the new keys.
+/// `get_snapshot` fires because the snapshot is expired, fetches A2, and the
+/// one unchanged verifier (never rebuilt) must reflect the new keys.
 ///
 /// ## Mutation oracles
 /// 1. **Sharing:** Replace `Arc::clone(&source)` passed to the verifier with a
@@ -1320,9 +1367,11 @@ async fn resolved_target_and_pin_key_seam_public_ipv6_and_fec0_rejection() {
 ///    Pre-advancement A1 still verifies (both arcs warm from the same initial
 ///    fetch). Post-advancement the verifier's arc is stale; A1-reject and
 ///    A2-accept assertions both flip red.
-/// 2. **Expiry/purge:** Remove `state.snapshot = None` in `get_snapshot` when
-///    `now >= hard_deadline`. A1 snapshot survives its deadline; the re-fetch
-///    never fires; both post-expiry assertions flip red.
+///
+/// Note: the expiry-purge (`state.snapshot = None` in `get_snapshot`) is a
+/// write-path optimization; A1 rejection after the deadline is enforced
+/// independently by the `key_set` read path (`filter(|c| now < c.hard_deadline)`),
+/// so no separate purge mutation oracle is claimed here.
 #[tokio::test]
 async fn shared_arc_source_verifier_rejects_expired_a1_accepts_a2() {
     use crate::nip_fi::{
@@ -1463,9 +1512,6 @@ async fn shared_arc_source_verifier_rejects_expired_a1_accepts_a2() {
         .expect("A1 token must verify before clock advances past its deadline");
 
     // Step 3: advance clock past A1's original hard deadline (no sleep).
-    // Mutation oracle 2 (expiry/purge): remove `state.snapshot = None` in
-    // `get_snapshot` when `now >= hard_deadline`. A1 snapshot survives;
-    // re-fetch never fires; post-expiry assertions below flip red.
     clock.store(t0 + HARD_DEADLINE_SECS as i64 + 1, Ordering::SeqCst);
 
     // Step 4: re-fetch through the SAME shared source.
@@ -1491,6 +1537,7 @@ async fn shared_arc_source_verifier_rejects_expired_a1_accepts_a2() {
     verifier
         .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
         .expect_err(
-            "A1 must be rejected after expiry + rotation;              mutation oracle 1: use independent Arc -> A1 still passes (red)",
+            "A1 must be rejected after expiry + rotation; \
+             mutation oracle: use independent Arc -> A1 still passes (red)",
         );
 }
