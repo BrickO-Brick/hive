@@ -118,9 +118,10 @@ pub fn validate_jwks_uri(uri: &str) -> Result<(), JwksFetchError> {
 /// *is*; JWKS content is what the contract currently *says*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JwksSourceContract {
-    /// Validated JWKS endpoint URI (HTTPS, no credentials/fragment, no bare
-    /// private/reserved-IP host). Stored exactly as validated — canonical form
-    /// used verbatim in the hash.
+    /// Validated JWKS endpoint URI normalized to its canonical `Url` serialization.
+    /// `Url::to_string()` lowercases the scheme and host, removes the default
+    /// HTTPS port, and resolves dot-segments — so equivalent URI spellings hash
+    /// identically. Validated at construction; only stored after parse succeeds.
     jwks_uri: String,
     /// Positive, ≤ [`MAX_JWKS_TIMING_SECONDS`], strictly less than
     /// `key_snapshot_hard_deadline_seconds`.
@@ -153,11 +154,24 @@ impl JwksSourceContract {
         {
             return None;
         }
-        if validate_jwks_uri(&jwks_uri).is_err() {
+        // Parse once, reject via validate_jwks_uri's rule-set, then store the
+        // canonical serialization produced by `Url::to_string()`. The `url`
+        // crate lowercases scheme and host, removes the default HTTPS port,
+        // and resolves dot-segments — guaranteeing that equivalent URI spellings
+        // (e.g. uppercase host, explicit `:443`, `.///../`) produce an identical
+        // stored string and therefore an identical `AssertionPolicyId` hash.
+        let canonical_uri = match Url::parse(&jwks_uri) {
+            Ok(parsed) => parsed.to_string(),
+            Err(_) => return None,
+        };
+        // Re-validate on the canonical form so that any normalisation that
+        // would introduce a forbidden form (e.g. port stripping that leaves
+        // a bare-IP host) is caught here rather than silently stored.
+        if validate_jwks_uri(&canonical_uri).is_err() {
             return None;
         }
         Some(Self {
-            jwks_uri,
+            jwks_uri: canonical_uri,
             refresh_interval_seconds,
             key_snapshot_hard_deadline_seconds,
         })
@@ -373,6 +387,45 @@ where
         .map_err(|_| JwksFetchError::NetworkError)?
 }
 
+/// Extract the bare host string and port from a validated JWKS URI.
+///
+/// The host is extracted via the typed `Url::host()` accessor, **not**
+/// `host_str()`. `host_str()` returns IPv6 literals with brackets (e.g.
+/// `[2606:4700::1]`), which breaks two downstream consumers:
+///
+/// 1. `IpAddr::parse` — brackets are not valid; the fast path in
+///    `resolve_and_check_ssrf` would fail and fall through to the DNS path,
+///    which may resolve `[2606:4700::1]` as a hostname instead of an IP.
+/// 2. `reqwest::ClientBuilder::resolve(host, addr)` — uses the host string as
+///    its override key; the bracketed key `[2606:4700::1]` does not match the
+///    bare authority `2606:4700::1` used in the request URL, so the SSRF-
+///    resolved pin is silently bypassed and the client resolves the address
+///    independently.
+///
+/// This function is `pub(crate)` so tests can assert the extracted host string
+/// directly and confirm the mutation (restoring `host_str()`) turns the
+/// equivalence oracle red without making a live network request.
+///
+/// ## Mutation oracle
+/// Restoring `Some(url::Host::Ipv6(addr)) => format!("[{}]", addr)` (the
+/// `host_str()` form) causes the IPv6 host extraction test to fail: the
+/// returned string carries brackets, `IpAddr::parse` rejects it, and reqwest's
+/// `.resolve()` key mismatches the URL authority.
+pub(crate) fn extract_url_host_and_port(uri: &str) -> Result<(String, u16), JwksFetchError> {
+    let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
+    let host = match parsed.host() {
+        Some(url::Host::Ipv4(addr)) => addr.to_string(),
+        // MUST use the typed accessor — `host_str()` returns `[2606:4700::1]`
+        // (with brackets) for IPv6 literals, which breaks IpAddr::parse and
+        // reqwest's .resolve() pin-key matching.
+        Some(url::Host::Ipv6(addr)) => addr.to_string(),
+        Some(url::Host::Domain(d)) => d.to_owned(),
+        None => return Err(JwksFetchError::InvalidUri),
+    };
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    Ok((host, port))
+}
+
 /// Inner fetch logic. Called only by `HttpJwksFetcher::fetch_jwks` via `with_deadline`.
 async fn fetch_jwks_inner(uri: &str) -> Result<String, JwksFetchError> {
     // Full URI validation first — scheme, credentials, fragment, bare
@@ -381,18 +434,7 @@ async fn fetch_jwks_inner(uri: &str) -> Result<String, JwksFetchError> {
     // pre-validated the URI.
     validate_jwks_uri(uri)?;
 
-    let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
-    let host = match parsed.host() {
-        Some(url::Host::Ipv4(addr)) => addr.to_string(),
-        // `host_str()` on an IPv6 literal includes brackets (e.g.
-        // `[2606:4700::1]`), which `IpAddr::parse` and reqwest's `resolve()`
-        // expect without them. Use the typed accessor to extract the bare
-        // address.
-        Some(url::Host::Ipv6(addr)) => addr.to_string(),
-        Some(url::Host::Domain(d)) => d.to_owned(),
-        None => return Err(JwksFetchError::InvalidUri),
-    };
-    let port = parsed.port_or_known_default().unwrap_or(443);
+    let (host, port) = extract_url_host_and_port(uri)?;
 
     // Resolve and check every IP before sending. Pins DNS to the validated
     // address to prevent rebinding TOCTOU between check and connect.
@@ -623,6 +665,24 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
 
         drop(permit);
         None
+    }
+
+    /// **Test-only helper.** Sets the snapshot for `issuer` to expired by
+    /// backdating its `hard_deadline` to one second ago, so that the next
+    /// `get_snapshot` call triggers a re-fetch. Use this instead of a
+    /// wall-clock sleep to drive the controlled-clock rotation test.
+    ///
+    /// Not compiled into production builds.
+    #[cfg(test)]
+    pub(crate) async fn force_expire_snapshot_for_test(&self, issuer: &str) {
+        use chrono::Duration;
+        let states = self.states.read().await;
+        if let Some(state_mutex) = states.get(issuer) {
+            let mut state = state_mutex.lock().await;
+            if let Some(ref mut snap) = state.snapshot {
+                snap.hard_deadline = Utc::now() - Duration::seconds(1);
+            }
+        }
     }
 }
 

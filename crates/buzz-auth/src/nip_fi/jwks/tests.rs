@@ -1101,3 +1101,310 @@ async fn shared_arc_source_verifier_observes_rotation() {
         .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
         .expect_err("old A1 token must be rejected after rotation (kid no longer in JWKS)");
 }
+
+/// **Fix 1 — URI canonicalization convergence/divergence oracle.**
+///
+/// `JwksSourceContract::new` must store the `Url`-normalized form of the URI,
+/// not the caller's raw input bytes. This means:
+/// - An uppercase host (`EXAMPLE.COM`) normalizes to lowercase (`example.com`)
+///   and produces the same `AssertionPolicyId` as the lowercase form.
+/// - An explicit default HTTPS port (`:443`) is removed by `Url` normalization
+///   and produces the same ID as the form without the port.
+/// - A genuinely different host always produces a distinct ID.
+///
+/// Mutation (correctness): changing `JwksSourceContract::new` to store the raw
+/// input `jwks_uri` instead of `parsed.to_string()` causes the uppercase-host
+/// and explicit-port variant tests to fail — the raw bytes differ, the SHA-256
+/// hash diverges, and `assert_eq!` on the policy IDs turns red.
+#[test]
+fn jwks_contract_uri_canonicalization_convergence_and_divergence() {
+    use crate::nip_fi::{config::IssuerPolicy, FreshnessClass, TokenClass};
+    use jsonwebtoken::Algorithm;
+
+    fn make_policy(jwks_uri: &str) -> Option<crate::nip_fi::AssertionPolicyId> {
+        let contract = JwksSourceContract::new(jwks_uri.to_owned(), 300, 3600)?;
+        IssuerPolicy::new(
+            "https://issuer.example".to_owned(),
+            vec!["https://aud.example".to_owned()],
+            TokenClass::DedicatedNipFi,
+            FreshnessClass::OfflineJwt,
+            vec![Algorithm::ES256],
+            false,
+            30,
+            600,
+            None,
+            contract,
+        )
+        .ok()
+        .map(|p| p.id())
+    }
+
+    let canonical =
+        make_policy("https://issuer.example/.well-known/jwks.json").expect("canonical form");
+
+    // Equivalent spellings must converge after `Url` normalization.
+    let uppercase_host =
+        make_policy("https://ISSUER.EXAMPLE/.well-known/jwks.json").expect("uppercase host");
+    assert_eq!(
+        canonical, uppercase_host,
+        "uppercase host must normalize to lowercase and produce identical policy ID; \
+         mutation: store raw input bytes → this diverges"
+    );
+
+    let explicit_port =
+        make_policy("https://issuer.example:443/.well-known/jwks.json").expect("explicit port");
+    assert_eq!(
+        canonical, explicit_port,
+        "explicit default HTTPS port :443 must be stripped by Url normalization; \
+         mutation: store raw input bytes → this diverges"
+    );
+
+    // A genuinely different host MUST diverge (not accidentally collapse).
+    let different_host =
+        make_policy("https://other.example/.well-known/jwks.json").expect("different host");
+    assert_ne!(
+        canonical, different_host,
+        "different JWKS host must produce distinct policy ID"
+    );
+
+    // A different path MUST diverge.
+    let different_path =
+        make_policy("https://issuer.example/.well-known/other-jwks.json").expect("different path");
+    assert_ne!(
+        canonical, different_path,
+        "different JWKS path must produce distinct policy ID"
+    );
+}
+
+/// **Fix 2 — Public bracketed-IPv6 URL → bare host extraction oracle.**
+///
+/// `extract_url_host_and_port` must extract the bare IPv6 address (without
+/// brackets) from a HTTPS URL whose authority is an IPv6 literal.
+/// This is the seam that `fetch_jwks_inner` uses before SSRF resolution and
+/// before reqwest's `.resolve(host, addr)` pinning.
+///
+/// The two downstream requirements for a bracket-free host:
+/// 1. `IpAddr::parse(host)` must succeed so `resolve_and_check_ssrf` takes
+///    the fast path and checks the address directly (instead of falling to the
+///    DNS hostname path).
+/// 2. `reqwest::ClientBuilder::resolve(host, pin)` must match the URL
+///    authority: reqwest keyed on the host string and matches it against the
+///    authority in the request URL.  A bracketed key like `[2606:4700::1]`
+///    does not match the bare authority `2606:4700::1`, so the SSRF-pinned
+///    address is silently bypassed.
+///
+/// ## Mutation oracle
+/// Restoring `Some(url::Host::Ipv6(addr)) => format!("[{}]", addr)` in
+/// `extract_url_host_and_port` (the `host_str()` equivalent) causes the
+/// assertions below to fail:
+/// - The returned host string is `"[2606:4700::1]"`, not `"2606:4700::1"`.
+/// - `IpAddr::parse("[2606:4700::1]")` fails, so the fast path is skipped.
+/// - reqwest's `.resolve("[2606:4700::1]", ...)` key mismatches the URL
+///   authority, bypassing the SSRF pin.
+#[test]
+fn extract_url_host_and_port_strips_ipv6_brackets_for_public_address() {
+    // A public global-unicast IPv6 URI — passes validate_jwks_uri (not loopback
+    // or site-local), so the extraction is the only thing under test.
+    let uri = "https://[2606:4700::1]/.well-known/jwks.json";
+
+    let (host, port) =
+        super::extract_url_host_and_port(uri).expect("public IPv6 URI must be parseable");
+
+    // The host MUST be bare — no brackets.
+    assert_eq!(
+        host, "2606:4700::1",
+        "IPv6 host must be bracket-free for IpAddr::parse and reqwest .resolve() key; \
+         mutation: restore host_str() form → returns \"[2606:4700::1]\" and this fails"
+    );
+    assert_eq!(port, 443, "default HTTPS port");
+
+    // Confirm the extracted host parses as an IpAddr — proving the fast path
+    // in resolve_and_check_ssrf is reachable (no DNS lookup needed).
+    let ip: std::net::IpAddr = host.parse().expect(
+        "bracket-free host must parse as IpAddr; \
+         mutation: restore bracketed form → parse fails",
+    );
+    assert!(ip.is_ipv6(), "must be IPv6");
+
+    // Confirm the extracted host is NOT the bracketed form that host_str() returns.
+    assert!(
+        !host.starts_with('['),
+        "host must not start with '['; mutation: bracketed form breaks reqwest .resolve() key"
+    );
+}
+
+/// **Fix 3 — Unchanged verifier observes A1→A2 rotation after A1's snapshot deadline expires.**
+///
+/// The shared-rotation test (`shared_arc_source_verifier_observes_rotation`)
+/// proves Arc-sharing before the snapshot hard deadline. This test proves the
+/// stronger claim: when A1's snapshot deadline has passed and the shared source
+/// is refreshed to A2, the same unchanged verifier (never rebuilt) correctly
+/// rejects A1 and accepts A2 — and carries A2's later absolute deadline.
+///
+/// Because `ProductionJwksSource` uses `chrono::Utc::now()` rather than a
+/// controllable clock, we use `force_expire_snapshot_for_test` to simulate
+/// deadline expiry without a wall-clock sleep. The scripted fetcher then
+/// returns A2 JWKS on the next `get_snapshot` call.
+///
+/// ## Mutation oracles
+/// 1. Mutation-disconnect Arc sharing (`Arc::clone` → owned clone not shared):
+///    the verifier holds a stale source; after expiry + re-fetch the verifier
+///    still serves A1 → `expect_err("A1 rejected")` turns red.
+/// 2. Mutation-disable expiry (remove `state.snapshot = None` in `get_snapshot`
+///    when `now >= hard_deadline`): A1 snapshot survives past its deadline;
+///    `force_expire_snapshot_for_test` has no effect; the re-fetch never fires;
+///    both post-expiry assertions flip.
+#[tokio::test]
+async fn shared_arc_source_verifier_rejects_expired_a1_accepts_a2() {
+    use crate::nip_fi::{
+        FederatedAssertionVerifier, FreshnessClass, IssuerPolicy, IssuerRegistry, TokenClass,
+    };
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    // Two distinct P-256 keypairs (reuse constants from shared_arc test).
+    const PKCS8_A1: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgcnxDM4EiirH9dHUE\
+        WZc759TX4s5PAn8kO5ovXSnGxCWhRANCAARFb6ZnsfkqOOXyEhj3KBQphGKF4vTa\
+        zhebbavbZ1ZoklqkF1cGg+jTO7rONAVEzXvXUWtV6CdDV+rybiVmFP2w\
+        -----END PRIVATE KEY-----\n";
+    const X_A1: &str = "RW-mZ7H5Kjjl8hIY9ygUKYRiheL02s4Xm22r22dWaJI";
+    const Y_A1: &str = "WqQXVwaD6NM7us40BUTNe9dRa1XoJ0NX6vJuJWYU_bA";
+
+    const PKCS8_A2: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgMKMRn6EQMn67Z6tu\
+        DbUTZWzrQpbRRTL3SJSMSd+EDG2hRANCAATGgMYxftLlZ11AIANHcr0b13pWkaLy\
+        lkOeBZRG0bBMoUesLN7EdVYhtzcrCeNJh031QuO+UDWcwOmShbeR43x6\
+        -----END PRIVATE KEY-----\n";
+    const X_A2: &str = "xoDGMX7S5WddQCADR3K9G9d6VpGi8pZDngWURtGwTKE";
+    const Y_A2: &str = "R6ws3sR1ViG3NysJ40mHTfVC475QNZzA6ZKFt5HjfHo";
+
+    const KID_A1: &str = "exp-key-1";
+    const KID_A2: &str = "exp-key-2";
+
+    let issuer = "https://exp-issuer.example";
+    let audience = "https://exp-relay.example";
+
+    fn jwks_str(kid: &str, x: &str, y: &str) -> String {
+        format!(
+            r#"{{"keys":[{{"kty":"EC","crv":"P-256","use":"sig","alg":"ES256","kid":"{kid}","x":"{x}","y":"{y}"}}]}}"#
+        )
+    }
+
+    fn sign_token(pkcs8_pem: &str, kid: &str, iss: &str, aud: &str) -> String {
+        let now = chrono::Utc::now().timestamp();
+        let claims = json!({"iss": iss, "aud": aud, "sub": "u",
+                            "iat": now, "exp": now + 600});
+        let mut hdr = Header::new(Algorithm::ES256);
+        hdr.kid = Some(kid.to_owned());
+        hdr.typ = Some("nip-fi+jwt".to_owned());
+        let key = EncodingKey::from_ec_pem(pkcs8_pem.as_bytes()).expect("valid EC PEM");
+        jsonwebtoken::encode(&hdr, &claims, &key).expect("sign")
+    }
+
+    // Scripted fetcher: first call → A1, second call → A2.
+    let bodies = Arc::new(std::sync::Mutex::new(vec![
+        Ok::<String, JwksFetchError>(jwks_str(KID_A2, X_A2, Y_A2)), // popped second
+        Ok(jwks_str(KID_A1, X_A1, Y_A1)),                           // popped first
+    ]));
+
+    struct RotatingFetcher {
+        bodies: Arc<std::sync::Mutex<Vec<Result<String, JwksFetchError>>>>,
+    }
+    impl super::super::verifier::sealed::Sealed for RotatingFetcher {}
+    impl JwksFetcher for RotatingFetcher {
+        fn fetch_jwks<'a>(
+            &'a self,
+            _uri: &'a str,
+        ) -> impl std::future::Future<Output = Result<String, JwksFetchError>> + Send + 'a {
+            let result = self
+                .bodies
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or(Err(JwksFetchError::NetworkError));
+            async move { result }
+        }
+    }
+
+    // Contract: short refresh interval so stale check fires; hard deadline
+    // is longer (will be forcibly expired by the test helper).
+    let jwks_contract =
+        JwksSourceContract::new(format!("https://{issuer}/.well-known/jwks.json"), 1, 3600)
+            .unwrap();
+    let config = IssuerJwksConfig {
+        issuer: issuer.to_owned(),
+        contract: jwks_contract.clone(),
+    };
+
+    // Mutation oracle 1: removing Arc::clone here (using a separate owned
+    // source instead) disconnects cache sharing — after expiry the verifier
+    // holds a dead source and the post-expiry A1-reject / A2-accept assertions flip.
+    let source =
+        Arc::new(ProductionJwksSource::new(vec![config], RotatingFetcher { bodies }).unwrap());
+
+    // Step 1: warm cache with A1 JWKS (first scripted fetch).
+    let snap_a1 = source.get_snapshot(issuer).await.unwrap();
+    let gen_a1 = snap_a1.generation();
+    let deadline_a1 = snap_a1.hard_deadline();
+
+    // Step 2: build the ONE verifier we never rebuild.
+    let mut registry = IssuerRegistry::new();
+    registry.insert(
+        IssuerPolicy::new(
+            issuer.to_owned(),
+            vec![audience.to_owned()],
+            TokenClass::DedicatedNipFi,
+            FreshnessClass::OfflineJwt,
+            vec![Algorithm::ES256],
+            false,
+            60,
+            3600,
+            None,
+            jwks_contract,
+        )
+        .unwrap(),
+    );
+    let verifier = FederatedAssertionVerifier::new(registry, Arc::clone(&source));
+
+    // Pre-expiry: A1 token verifies through the shared source.
+    verifier
+        .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
+        .expect("A1 token must verify before deadline expiry");
+
+    // Step 3: simulate A1 snapshot hard deadline passing without wall-clock sleep.
+    // Mutation oracle 2: commenting out this call (or the snapshot-purge logic
+    // in get_snapshot) leaves A1 alive past its deadline — post-expiry
+    // assertions flip.
+    source.force_expire_snapshot_for_test(issuer).await;
+
+    // Step 4: re-fetch through the SAME shared source (second scripted fetch → A2).
+    let snap_a2 = source.get_snapshot(issuer).await.unwrap();
+    let gen_a2 = snap_a2.generation();
+    let deadline_a2 = snap_a2.hard_deadline();
+
+    // A2's generation must be strictly greater than A1's (different key material
+    // → content digest changed → generation advanced).
+    assert!(
+        gen_a2 > gen_a1,
+        "generation must advance on key rotation: A1={gen_a1} A2={gen_a2}"
+    );
+
+    // A2's absolute deadline must be later than A1's expired deadline.
+    assert!(
+        deadline_a2 > deadline_a1,
+        "A2 snapshot deadline must be later than expired A1 deadline"
+    );
+
+    // Step 5: the SAME unchanged verifier must now reflect A2 keys.
+    verifier
+        .verify(&sign_token(PKCS8_A2, KID_A2, issuer, audience))
+        .expect("A2 token must verify through the unchanged verifier after A1 deadline expired");
+    verifier
+        .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
+        .expect_err(
+            "A1 token must be rejected after expiry + rotation; \
+             mutation-disconnect Arc sharing → A1 still passes here",
+        );
+}

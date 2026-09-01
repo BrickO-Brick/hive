@@ -136,6 +136,13 @@ impl AssertionKeySet {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// The snapshot hard deadline. Test-only accessor for deadline-crossing
+    /// oracles; not compiled into production builds.
+    #[cfg(test)]
+    pub(crate) fn hard_deadline(&self) -> chrono::DateTime<chrono::Utc> {
+        self.hard_deadline
+    }
 }
 
 impl fmt::Debug for AssertionKeySet {
