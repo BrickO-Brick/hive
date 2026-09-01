@@ -79,6 +79,7 @@ jobs:
           grep -Fq 'BUZZ_RELAY_URL: wss://hive.onebrick.io' <<<"$agent_config"
           grep -Fq 'BUZZ_ACP_PERMISSION_MODE: dont-ask' <<<"$agent_config"
           grep -Fq 'BUZZ_ACP_RESPOND_TO: anyone' <<<"$agent_config"
+          grep -Fq 'BUZZ_ACP_NO_MENTION_FILTER: "true"' <<<"$agent_config"
           jq -e --arg owner "$(printf '1%.0s' {1..64})" \
             '.services["bricko-agent"].environment.BUZZ_ACP_AGENT_OWNER == $owner' \
             <<<"$(HIVE_ENV_FILE="$fixture" docker compose --profile agent -p hive-ci --env-file "$fixture" -f deploy/onebrick/compose.yml config --format json)" \

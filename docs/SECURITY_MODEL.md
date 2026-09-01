@@ -7,8 +7,9 @@
 - Closed relay membership and private channel membership gate content.
 - SaGad, relay, and BrickO use separate stable Nostr keys.
 - BrickO starts with one worker, admits authors only after relay and private
-  channel membership checks, requires an explicit mention, uses thread-scoped
-  sessions, disables heartbeat, and runs Codex in `read-only` mode.
+  channel membership checks, consumes human messages only from its dedicated
+  private channel, uses thread-scoped sessions, disables heartbeat, and runs
+  Codex in `read-only` mode.
 - PostgreSQL, Redis, MinIO, health, metrics, and agent control have no published
   ports.
 - Containers drop Linux capabilities, set `no-new-privileges`, have PID/CPU/RAM

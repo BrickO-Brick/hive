@@ -210,8 +210,10 @@ services:
       BUZZ_ACP_LAZY_POOL: "true"
       BUZZ_ACP_SESSION_POLICY: thread
       # The relay and channel already enforce authenticated OneBrick membership.
-      # Let every admitted Mantap user invoke BrickO with an explicit mention.
+      # The browser composer currently emits visible @text without a Nostr p-tag,
+      # so consume every human message in BrickO's dedicated private channel.
       BUZZ_ACP_RESPOND_TO: anyone
+      BUZZ_ACP_NO_MENTION_FILTER: "true"
       BUZZ_ACP_AGENT_OWNER: ${RELAY_OWNER_PUBKEY:?set RELAY_OWNER_PUBKEY}
       BUZZ_ACP_TEAM_INSTRUCTIONS: >-
         You are BrickO, the internal OneBrick conversational and operational bot.
