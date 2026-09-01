@@ -475,9 +475,34 @@ pub(crate) fn start_agent_update_listener(app: AppHandle) -> Result<(), String> 
 }
 
 fn template_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .resource_dir()
-        .map(|path| path.join("resources").join("project-canvas-template"))
+    let resource_root = app.path().resource_dir().map_err(|error| error.to_string());
+    let dev_exe_dir = if cfg!(debug_assertions) {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    } else {
+        None
+    };
+    template_path_from(resource_root, dev_exe_dir)
+}
+
+/// Joins the bundled `project-canvas-template` resource against the app's
+/// resource root.
+///
+/// Dev builds run the bare executable out of the cargo target directory,
+/// where `tauri-build` copies `bundle.resources` next to the binary — but
+/// Tauri only recognizes that layout when the directory is literally named
+/// `target`, so a redirected CARGO_TARGET_DIR makes `resource_dir()` fail
+/// with "unknown path" even though the resources are present. Fall back to
+/// the executable's directory there; release builds pass `dev_exe_dir: None`
+/// and keep failing loudly.
+fn template_path_from(
+    resource_root: Result<PathBuf, String>,
+    dev_exe_dir: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    resource_root
+        .or_else(|error| dev_exe_dir.ok_or(error))
+        .map(|root| root.join("resources").join("project-canvas-template"))
         .map_err(|error| format!("resolve project canvas template: {error}"))
 }
 

@@ -271,6 +271,23 @@ fn first_activation_seeds_the_validated_template() {
         .any(|entry| entry.file_name().to_string_lossy().starts_with(".seed-")));
 }
 
+// Binds the shipped resource to the loader: these are the exact files
+// `tauri-build` copies next to the executable, so a template edit that fails
+// manifest validation surfaces here instead of on the first canvas load.
+#[test]
+fn bundled_template_seeds_a_valid_snapshot() {
+    let temp = TempDir::new().unwrap();
+    let template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("project-canvas-template");
+    let binding = ProjectBinding::parse(request()).unwrap();
+
+    let snapshot =
+        prepare_snapshot(&temp.path().join("CANVASES"), &binding, Some(&template)).unwrap();
+
+    assert!(snapshot.data["dashboards"].is_object());
+}
+
 #[test]
 fn source_index_is_machine_readable_sorted_and_path_derived() {
     let temp = TempDir::new().unwrap();
@@ -726,4 +743,44 @@ fn agent_update_socket_serves_when_started_outside_the_async_runtime() {
     let _client = StdUnixStream::connect(&socket_path).unwrap();
     wait.recv_timeout(Duration::from_secs(5))
         .expect("socket bound before the runtime handoff should still accept connections");
+}
+
+#[test]
+fn template_resolution_prefers_the_resource_dir() {
+    let resolved = super::template_path_from(
+        Ok(std::path::PathBuf::from("/bundle")),
+        Some(std::path::PathBuf::from("/exe")),
+    );
+    assert_eq!(
+        resolved,
+        Ok(std::path::PathBuf::from(
+            "/bundle/resources/project-canvas-template"
+        ))
+    );
+}
+
+// A redirected CARGO_TARGET_DIR defeats Tauri's `target/` directory heuristic,
+// so dev builds must resolve resources next to the executable instead of
+// failing the canvas load with "unknown path".
+#[test]
+fn template_resolution_falls_back_to_the_dev_executable_directory() {
+    let resolved = super::template_path_from(
+        Err("unknown path".to_string()),
+        Some(std::path::PathBuf::from("/exe")),
+    );
+    assert_eq!(
+        resolved,
+        Ok(std::path::PathBuf::from(
+            "/exe/resources/project-canvas-template"
+        ))
+    );
+}
+
+#[test]
+fn template_resolution_without_a_dev_fallback_propagates_the_error() {
+    let resolved = super::template_path_from(Err("unknown path".to_string()), None);
+    assert_eq!(
+        resolved,
+        Err("resolve project canvas template: unknown path".to_string())
+    );
 }

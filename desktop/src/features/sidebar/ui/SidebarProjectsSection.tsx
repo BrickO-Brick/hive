@@ -35,7 +35,6 @@ import { ProjectChannelIcon } from "@/features/projects/ui/ProjectChannelIcon";
 import { useCreateProjectMutation } from "@/features/projects/useCreateProject";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel } from "@/shared/api/types";
-import { FeatureGate } from "@/shared/features";
 import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { cn } from "@/shared/lib/cn";
 import { useRelayOrigin } from "@/shared/lib/useRelayOrigin";
@@ -114,34 +113,11 @@ const SECTION_LABEL_CHEVRON_ICON_CLASS =
   "absolute left-1/2 top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2";
 
 /**
- * Collapsible list of the viewer's projects in the left sidebar. Rendered
- * only when the Projects experiment is enabled, and only includes projects
- * the viewer owns or contributes to (optionally owned-only).
+ * Collapsible list of the viewer's projects in the left sidebar. Only
+ * includes projects the viewer owns or contributes to (optionally
+ * owned-only).
  */
 export function SidebarProjectsSection({
-  addedProjectAddresses,
-  channelRowContext,
-  onVisibleProjectAddressesChange,
-  sectionChannelsByProjectAddress,
-}: {
-  addedProjectAddresses: readonly string[];
-  channelRowContext: SidebarProjectChildChannelRowContext;
-  onVisibleProjectAddressesChange: (addresses: readonly string[]) => void;
-  sectionChannelsByProjectAddress?: ReadonlyMap<string, readonly Channel[]>;
-}) {
-  return (
-    <FeatureGate feature="projects">
-      <SidebarProjectsSectionContent
-        addedProjectAddresses={addedProjectAddresses}
-        channelRowContext={channelRowContext}
-        onVisibleProjectAddressesChange={onVisibleProjectAddressesChange}
-        sectionChannelsByProjectAddress={sectionChannelsByProjectAddress}
-      />
-    </FeatureGate>
-  );
-}
-
-function SidebarProjectsSectionContent({
   addedProjectAddresses,
   channelRowContext,
   onVisibleProjectAddressesChange,
