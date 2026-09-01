@@ -208,6 +208,7 @@ services:
       BUZZ_ACP_LAZY_POOL: "true"
       BUZZ_ACP_SESSION_POLICY: thread
       BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_AGENT_OWNER: ${RELAY_OWNER_PUBKEY:?set RELAY_OWNER_PUBKEY}
       # Never auto-approve an ACP permission request. Codex itself is also
       # pinned to its read-only sandbox in agent/config.toml.
       BUZZ_ACP_PERMISSION_MODE: dont-ask

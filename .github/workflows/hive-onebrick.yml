@@ -78,6 +78,7 @@ jobs:
           agent_config="$(HIVE_ENV_FILE="$fixture" docker compose --profile agent -p hive-ci --env-file "$fixture" -f deploy/onebrick/compose.yml config)"
           grep -Fq 'BUZZ_RELAY_URL: wss://hive.onebrick.io' <<<"$agent_config"
           grep -Fq 'BUZZ_ACP_PERMISSION_MODE: dont-ask' <<<"$agent_config"
+          grep -Fq "BUZZ_ACP_AGENT_OWNER: $(printf '1%.0s' {1..64})" <<<"$agent_config"
           grep -Fq 'init: false' <<<"$agent_config"
           ! grep -Fq 'INITIAL_AGENT_MODE' <<<"$agent_config"
           grep -Fq 'sandbox_mode = "read-only"' deploy/onebrick/agent/config.toml
