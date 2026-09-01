@@ -26,7 +26,7 @@ import { cn } from "@/shared/lib/cn";
 import type { EntityLinkTab } from "@/shared/lib/entityLink";
 import { Button } from "@/shared/ui/button";
 import { ProjectChannelManagement } from "./ProjectChannelManagement";
-import { useCanManageProjectChannels } from "./ProjectChannelManagement";
+import { useProjectChannelManagementAccess } from "./ProjectChannelManagement";
 import { useRemoveProjectRelatedChannelMutation } from "@/features/projects/useRemoveProjectRelatedChannel";
 import {
   ContextMenu,
@@ -237,7 +237,7 @@ export function ProjectHomeContextPanel({
     ...project.repositories.flatMap((repository) => repository.contributors),
   ]).size;
   const activityQuery = useProjectActivitySummariesQuery([project]);
-  const canManageProjectChannels = useCanManageProjectChannels(
+  const channelManagementAccess = useProjectChannelManagementAccess(
     project,
     identityPubkey,
   );
@@ -368,11 +368,15 @@ export function ProjectHomeContextPanel({
                     : () => onOpenChannel(binding.channel.id)
                 }
                 onRemove={
-                  !isHome && canManageProjectChannels
+                  !isHome && channelManagementAccess.canManage
                     ? () =>
                         removeProjectChannelMutation.mutate({
                           channelId: binding.channel.id,
+                          ownerControlAgentPubkey:
+                            channelManagementAccess.ownerControlAgentPubkey,
                           project,
+                          signAsManagedOwner:
+                            channelManagementAccess.signAsManagedOwner,
                         })
                     : undefined
                 }

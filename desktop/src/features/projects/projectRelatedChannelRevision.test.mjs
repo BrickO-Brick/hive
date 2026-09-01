@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildProjectRelatedChannelRevisionTemplate,
+  publishProjectRelatedChannelRevision,
   removeProjectRelatedChannel,
 } from "./projectRelatedChannelRevision.ts";
 
@@ -99,4 +100,59 @@ test("removeProjectRelatedChannel publishes a remove revision and advances local
   assert.equal(calls[0][0].tags[2][1], "remove-related-channel");
   assert.deepEqual(updated.relatedChannelIds, []);
   assert.equal(updated.effectiveRevisionId, "c".repeat(64));
+});
+
+test("publishProjectRelatedChannelRevision can sign as a locally managed owner", async () => {
+  const calls = [];
+  const event = await publishProjectRelatedChannelRevision(
+    project(),
+    RELATED,
+    "add-related-channel",
+    {
+      publishOwnerAnnouncement: async (input) => {
+        calls.push(input);
+        return {
+          event: {
+            ...input,
+            id: "c".repeat(64),
+            pubkey: OWNER,
+            created_at: 123,
+          },
+          publicationError: null,
+        };
+      },
+    },
+    { signAsManagedOwner: true },
+  );
+
+  assert.equal(calls[0].targetOwner, OWNER);
+  assert.equal(calls[0].kind, 47001);
+  assert.equal(event.pubkey, OWNER);
+});
+
+test("publishProjectRelatedChannelRevision can delegate signing to a controlled owner agent", async () => {
+  const calls = [];
+  const event = await publishProjectRelatedChannelRevision(
+    project(),
+    RELATED,
+    "add-related-channel",
+    {
+      publishOwnedAgentAnnouncements: async (...args) => {
+        calls.push(args);
+        return [
+          {
+            ...args[1][0],
+            id: "c".repeat(64),
+            pubkey: OWNER,
+            created_at: 123,
+          },
+        ];
+      },
+    },
+    { ownerControlAgentPubkey: OWNER },
+  );
+
+  assert.equal(calls[0][0], OWNER);
+  assert.equal(calls[0][1][0].kind, 47001);
+  assert.equal(event.pubkey, OWNER);
 });

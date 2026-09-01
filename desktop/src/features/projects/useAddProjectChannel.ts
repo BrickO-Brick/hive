@@ -23,7 +23,9 @@ import { KIND_PROJECT_ANNOUNCEMENT } from "@/shared/constants/kinds";
 export type AddProjectChannelInput = {
   description?: string;
   name: string;
+  ownerControlAgentPubkey?: string;
   project: Project;
+  signAsManagedOwner?: boolean;
   templateId?: string;
   ttlSeconds?: number;
   visibility: ChannelVisibility;
@@ -113,11 +115,23 @@ export async function addProjectChannel(
     );
   }
 
-  const revision: RelayEvent = await publishRevision(
-    input.project,
-    channel.id,
-    "add-related-channel",
-  ).catch((error: unknown) =>
+  const controlledSigner =
+    input.ownerControlAgentPubkey || input.signAsManagedOwner
+      ? {
+          ownerControlAgentPubkey: input.ownerControlAgentPubkey,
+          signAsManagedOwner: input.signAsManagedOwner,
+        }
+      : undefined;
+  const revisionPromise = controlledSigner
+    ? publishRevision(
+        input.project,
+        channel.id,
+        "add-related-channel",
+        undefined,
+        controlledSigner,
+      )
+    : publishRevision(input.project, channel.id, "add-related-channel");
+  const revision: RelayEvent = await revisionPromise.catch((error: unknown) =>
     removeCreatedChannelAndThrow(
       isUnsupportedProjectKindError(error)
         ? new Error(

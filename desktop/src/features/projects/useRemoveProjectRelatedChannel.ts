@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { projectsQueryKey } from "@/features/projects/hooks";
 import type { Project } from "@/features/projects/projectModels";
@@ -10,11 +11,19 @@ export function useRemoveProjectRelatedChannelMutation() {
   return useMutation({
     mutationFn: ({
       channelId,
+      ownerControlAgentPubkey,
       project,
+      signAsManagedOwner,
     }: {
       channelId: string;
+      ownerControlAgentPubkey?: string;
       project: Project;
-    }) => removeProjectRelatedChannel(project, channelId),
+      signAsManagedOwner?: boolean;
+    }) =>
+      removeProjectRelatedChannel(project, channelId, undefined, {
+        ownerControlAgentPubkey,
+        signAsManagedOwner,
+      }),
     onSuccess: (project) => {
       markProjectDataAuthoritative(project, "local-write");
       queryClient.setQueryData<Project[]>(projectsQueryKey, (current = []) =>
@@ -23,6 +32,9 @@ export function useRemoveProjectRelatedChannelMutation() {
         ),
       );
       void queryClient.invalidateQueries({ queryKey: projectsQueryKey });
+    },
+    onError: () => {
+      toast.error("Couldn’t remove channel from Project");
     },
   });
 }

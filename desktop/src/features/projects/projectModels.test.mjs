@@ -185,6 +185,27 @@ test("buildProjectReadModels folds the relay-authorized related-channel revision
   assert.equal(project.effectiveRevisionId, removeId);
 });
 
+test("buildProjectReadModels keeps project freshness monotonic across revisions", () => {
+  const related = "22222222-2222-4222-8222-222222222222";
+  const base = projectEvent([], {
+    id: "a".repeat(64),
+    created_at: 300,
+  });
+  const [project] = buildProjectReadModels({
+    projectEvents: [base],
+    projectRevisionEvents: [
+      projectRevision("b".repeat(64), base.id, "add-related-channel", related, {
+        created_at: 250,
+      }),
+    ],
+    repositoryEvents: [],
+    relayOrigin: RELAY_ORIGIN,
+  });
+
+  assert.equal(project.createdAt, 300);
+  assert.deepEqual(project.relatedChannelIds, [related]);
+});
+
 test("buildProjectReadModels ignores stale branches and malformed revisions", () => {
   const relatedA = "22222222-2222-4222-8222-222222222222";
   const relatedB = "33333333-3333-4333-8333-333333333333";

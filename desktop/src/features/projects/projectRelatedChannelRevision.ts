@@ -1,5 +1,7 @@
 import type { Project } from "@/features/projects/projectModels";
 import { isValidProjectChannelId } from "@/features/projects/projectModels";
+import { publishOwnedAgentProjectAnnouncements } from "@/features/projects/projectOwnerControl";
+import { publishProjectOwnerAnnouncement } from "@/shared/api/projectGit";
 import { relayClient } from "@/shared/api/relayClient";
 import { signRelayEvent } from "@/shared/api/tauri";
 import type { RelayEvent } from "@/shared/api/types";
@@ -62,12 +64,43 @@ export async function publishProjectRelatedChannelRevision(
   operation: ProjectRelatedChannelOperation,
   deps?: {
     publishEvent?: typeof relayClient.publishEvent;
+    publishOwnedAgentAnnouncements?: typeof publishOwnedAgentProjectAnnouncements;
+    publishOwnerAnnouncement?: typeof publishProjectOwnerAnnouncement;
     signEvent?: typeof signRelayEvent;
   },
+  signer?: {
+    ownerControlAgentPubkey?: string;
+    signAsManagedOwner?: boolean;
+  },
 ): Promise<RelayEvent> {
-  const event = await (deps?.signEvent ?? signRelayEvent)(
-    buildProjectRelatedChannelRevisionTemplate(project, channelId, operation),
+  const template = buildProjectRelatedChannelRevisionTemplate(
+    project,
+    channelId,
+    operation,
   );
+  if (signer?.ownerControlAgentPubkey) {
+    const [event] = await (
+      deps?.publishOwnedAgentAnnouncements ??
+      publishOwnedAgentProjectAnnouncements
+    )(signer.ownerControlAgentPubkey, [template]);
+    if (!event) {
+      throw new Error("The Project owner agent returned no revision event.");
+    }
+    return event;
+  }
+  if (signer?.signAsManagedOwner) {
+    const result = await (
+      deps?.publishOwnerAnnouncement ?? publishProjectOwnerAnnouncement
+    )({
+      targetOwner: project.projectAddress.split(":")[1] ?? "",
+      ...template,
+    });
+    if (result.publicationError) {
+      throw new Error(result.publicationError);
+    }
+    return result.event;
+  }
+  const event = await (deps?.signEvent ?? signRelayEvent)(template);
   await (deps?.publishEvent ?? relayClient.publishEvent.bind(relayClient))(
     event,
     "Could not confirm the Project channel change. Refresh before retrying.",
@@ -80,12 +113,14 @@ export async function removeProjectRelatedChannel(
   project: Project,
   channelId: string,
   deps?: Parameters<typeof publishProjectRelatedChannelRevision>[3],
+  signer?: Parameters<typeof publishProjectRelatedChannelRevision>[4],
 ): Promise<Project> {
   const revision = await publishProjectRelatedChannelRevision(
     project,
     channelId,
     "remove-related-channel",
     deps,
+    signer,
   );
   return {
     ...project,

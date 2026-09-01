@@ -57,12 +57,45 @@ export function ProjectsCategoryCreateDialogs({
     const role = homeRosterQueries[index]?.data?.find(
       (member) => member.pubkey.toLowerCase() === identityPubkey?.toLowerCase(),
     )?.role;
-    return canManageProjectChannels(project, identityPubkey, role);
+    const viewerCanControlOwner = editableProjects.some(
+      (candidate) => candidate.id === project.id,
+    );
+    return canManageProjectChannels(
+      project,
+      identityPubkey,
+      role,
+      viewerCanControlOwner,
+    );
   });
   const [channelProjectId, setChannelProjectId] = React.useState("");
   const channelProject =
     channelProjects.find((project) => project.id === channelProjectId) ??
     channelProjects[0];
+  const channelProjectIndex = channelProject
+    ? channelCandidateProjects.findIndex(
+        (candidate) => candidate.id === channelProject.id,
+      )
+    : -1;
+  const channelViewerRole =
+    channelProjectIndex >= 0
+      ? homeRosterQueries[channelProjectIndex]?.data?.find(
+          (member) =>
+            member.pubkey.toLowerCase() === identityPubkey?.toLowerCase(),
+        )?.role
+      : undefined;
+  const channelOwnerControlAgentPubkey = channelProject
+    ? ownerControlAgentPubkeyFor(channelProject)
+    : undefined;
+  const channelSignAsManagedOwner = Boolean(
+    channelProject &&
+      editableProjects.some(
+        (candidate) => candidate.id === channelProject.id,
+      ) &&
+      identityPubkey?.toLowerCase() !== channelProject.owner.toLowerCase() &&
+      channelViewerRole !== "owner" &&
+      channelViewerRole !== "admin" &&
+      !channelOwnerControlAgentPubkey,
+  );
   const createChannelMutation = useAddProjectChannelMutation();
   const createRepositoryMutation = useAddProjectRepositoryMutation();
   const channelsQuery = useChannelsQuery({ enabled: repositoryOpen });
@@ -92,7 +125,9 @@ export function ProjectsCategoryCreateDialogs({
           if (!channelProject) throw new Error("Choose a project.");
           const result = await createChannelMutation.mutateAsync({
             ...input,
+            ownerControlAgentPubkey: channelOwnerControlAgentPubkey,
             project: channelProject,
+            signAsManagedOwner: channelSignAsManagedOwner,
           });
           toast.success(`Channel "#${result.channel.name}" created.`);
           await goChannel(result.channel.id);

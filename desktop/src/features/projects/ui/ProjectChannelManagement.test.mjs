@@ -18,6 +18,10 @@ test("Project owner and home-channel owner/admin can manage related channels", (
   assert.equal(canManageProjectChannels(project(), OWNER), true);
   assert.equal(canManageProjectChannels(project(), VIEWER, "owner"), true);
   assert.equal(canManageProjectChannels(project(), VIEWER, "admin"), true);
+  assert.equal(
+    canManageProjectChannels(project(), VIEWER, undefined, true),
+    true,
+  );
 });
 
 test("members, guests, bots, unrelated identities, and legacy Projects cannot manage channels", () => {

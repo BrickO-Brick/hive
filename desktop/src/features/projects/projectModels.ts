@@ -591,9 +591,11 @@ export function applyProjectRevisionEvents(
   }
   return {
     ...project,
-    createdAt:
+    createdAt: Math.max(
+      project.createdAt,
       events.find((event) => event.id.toLowerCase() === effectiveRevisionId)
         ?.created_at ?? project.createdAt,
+    ),
     effectiveRevisionId,
     relatedChannelIds,
   };
