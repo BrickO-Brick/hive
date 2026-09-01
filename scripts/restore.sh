@@ -49,6 +49,8 @@ hive_compose exec -T postgres pg_restore \
 hive_compose stop redis minio
 hive_compose run --rm --no-deps --entrypoint /bin/sh redis -euc \
   'busybox find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+# The single quotes deliberately defer array expansion to bash inside MinIO.
+# shellcheck disable=SC2016
 hive_compose run --rm --no-deps --entrypoint /bin/bash minio -euc \
   'shopt -s dotglob nullglob; entries=(/data/*); ((${#entries[@]} == 0)) || /usr/bin/rm -rf -- "${entries[@]}"'
 hive_compose run --rm --no-deps --entrypoint /bin/bash relay -euc \
