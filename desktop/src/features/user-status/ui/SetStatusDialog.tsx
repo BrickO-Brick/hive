@@ -199,6 +199,7 @@ export function SetStatusDialog({
   const [duration, setDuration] = React.useState<DurationLabel>("Today");
   const [customUntil, setCustomUntil] = React.useState(defaultCustomDate);
   const [durationTouched, setDurationTouched] = React.useState(false);
+  const [saveError, setSaveError] = React.useState("");
   const [baseline, setBaseline] = React.useState(() => ({
     text: initialText,
     emoji: initialEmoji,
@@ -247,6 +248,7 @@ export function SetStatusDialog({
       });
     }
     setDurationTouched(false);
+    setSaveError("");
   }, [
     open,
     initialText,
@@ -269,24 +271,10 @@ export function SetStatusDialog({
       baseline.duration === "Custom" &&
       baseline.customUntil !== null &&
       customUntil.getTime() !== baseline.customUntil.getTime());
-  const canSave =
-    hasContent &&
-    isDirty &&
-    (duration !== "Custom" || customUntil.getTime() > Date.now());
-
-  function handlePresetClick(preset: { text: string; emoji: string }) {
-    setText(preset.text);
-    setEmoji(preset.emoji);
-  }
-
-  function handleEmojiSelect(selectedEmoji: string) {
-    setEmoji(selectedEmoji);
-    setPickerOpen(false);
-  }
-
-  function expirationUnixSeconds(): number | undefined {
-    if (!durationTouched) return baseline.expiresAt;
-    const now = new Date();
+  function expirationUnixSeconds(now = new Date()): number | undefined {
+    if (!durationTouched && baseline.hasExistingStatus) {
+      return baseline.expiresAt;
+    }
     const expiresAt = (() => {
       switch (duration) {
         case "1 hour":
@@ -304,12 +292,36 @@ export function SetStatusDialog({
     return Math.floor(expiresAt.getTime() / 1_000);
   }
 
+  const displayedExpiration = expirationUnixSeconds();
+  const expirationIsFuture =
+    displayedExpiration === undefined ||
+    displayedExpiration > Math.floor(Date.now() / 1_000);
+  const canSave = hasContent && isDirty && expirationIsFuture;
+
+  function handlePresetClick(preset: { text: string; emoji: string }) {
+    setText(preset.text);
+    setEmoji(preset.emoji);
+  }
+
+  function handleEmojiSelect(selectedEmoji: string) {
+    setEmoji(selectedEmoji);
+    setPickerOpen(false);
+  }
+
   function handleSave() {
-    if (!canSave) return;
+    if (!hasContent || !isDirty) return;
+    const expiresAt = expirationUnixSeconds();
+    if (
+      expiresAt !== undefined &&
+      expiresAt <= Math.floor(Date.now() / 1_000)
+    ) {
+      setSaveError("Choose a duration in the future.");
+      return;
+    }
     onSave({
       text: text.trim(),
       emoji: effectiveEmoji,
-      expiresAt: expirationUnixSeconds(),
+      expiresAt,
     });
     onOpenChange(false);
   }
@@ -420,6 +432,7 @@ export function SetStatusDialog({
                   onSelect={() => {
                     setDuration(option);
                     setDurationTouched(true);
+                    setSaveError("");
                   }}
                 >
                   {option}
@@ -452,6 +465,7 @@ export function SetStatusDialog({
                     onSelect={(selected) => {
                       if (!selected) return;
                       setDurationTouched(true);
+                      setSaveError("");
                       setCustomUntil((current) =>
                         withCustomDate(current, selected),
                       );
@@ -490,6 +504,7 @@ export function SetStatusDialog({
                       key={time.value}
                       onSelect={() => {
                         setDurationTouched(true);
+                        setSaveError("");
                         setCustomUntil((current) =>
                           withCustomTime(current, time.value),
                         );
@@ -504,6 +519,11 @@ export function SetStatusDialog({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+          ) : null}
+          {saveError || (!expirationIsFuture && isDirty) ? (
+            <p className="px-3 py-2 text-xs text-destructive" role="alert">
+              {saveError || "Choose a duration in the future."}
+            </p>
           ) : null}
         </StatusSection>
 

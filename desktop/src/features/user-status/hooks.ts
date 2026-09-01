@@ -107,12 +107,75 @@ export const USER_STATUS_REFETCH_INTERVAL_MS = 120_000;
 /** Suppresses the focus refetch until user-status data is genuinely stale.
  * The live subscription (setQueriesData) is the primary freshness path. */
 export const USER_STATUS_FOCUS_STALE_TIME_MS = 5 * 60_000;
+export const USER_STATUS_AUTHOR_CHUNK_SIZE = 1_000;
 
 /** Focus-refetch policy for the user-status query; consumed by focusRefetchPolicy.test.mjs. */
 export const userStatusFocusRefetchPolicy = {
   staleTime: USER_STATUS_FOCUS_STALE_TIME_MS,
   refetchOnWindowFocus: false,
 } as const;
+
+type FetchStatusEvents = (
+  filter: Parameters<typeof relayClient.fetchEvents>[0],
+) => Promise<RelayEvent[]>;
+
+export async function fetchUserStatusLookup(
+  pubkeys: string[],
+  fetchEvents: FetchStatusEvents = (filter) => relayClient.fetchEvents(filter),
+): Promise<UserStatusLookup> {
+  const normalizedAuthors = normalizePubkeys(pubkeys);
+  const chunks: string[][] = [];
+  for (
+    let index = 0;
+    index < normalizedAuthors.length;
+    index += USER_STATUS_AUTHOR_CHUNK_SIZE
+  ) {
+    chunks.push(
+      normalizedAuthors.slice(index, index + USER_STATUS_AUTHOR_CHUNK_SIZE),
+    );
+  }
+  const pages = await Promise.all(
+    chunks.map((authors) =>
+      fetchEvents({
+        kinds: [KIND_USER_STATUS],
+        authors,
+        "#d": ["general"],
+        limit: authors.length,
+      }),
+    ),
+  );
+
+  const lookup: UserStatusLookup = {};
+  for (const pubkey of normalizedAuthors) lookup[pubkey] = null;
+  const latestEvents = new Map<string, RelayEvent>();
+  for (const event of pages.flat()) {
+    const pubkey = normalizePubkey(event.pubkey);
+    const existing = latestEvents.get(pubkey);
+    if (
+      !existing ||
+      event.created_at > existing.created_at ||
+      (event.created_at === existing.created_at && event.id < existing.id)
+    ) {
+      latestEvents.set(pubkey, event);
+    }
+  }
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  for (const event of latestEvents.values()) {
+    const parsed = parseUserStatusEvent(event);
+    const isExpired =
+      parsed.expiresAt !== undefined && parsed.expiresAt <= nowSeconds;
+    lookup[parsed.pubkey] =
+      (parsed.text || parsed.emoji) && !isExpired
+        ? {
+            text: parsed.text,
+            emoji: parsed.emoji,
+            updatedAt: parsed.updatedAt,
+            expiresAt: parsed.expiresAt,
+          }
+        : null;
+  }
+  return lookup;
+}
 
 export function useUserStatusQuery(pubkeys: string[]) {
   const refetchInterval = useFocusedRefetchInterval(
@@ -124,40 +187,7 @@ export function useUserStatusQuery(pubkeys: string[]) {
   return useQuery<UserStatusLookup>({
     enabled,
     queryKey: userStatusQueryKey(normalizedPubkeys),
-    queryFn: async () => {
-      const events = await relayClient.fetchEvents({
-        kinds: [KIND_USER_STATUS],
-        authors: normalizedPubkeys,
-        "#d": ["general"],
-        limit: normalizedPubkeys.length,
-      });
-
-      const lookup: UserStatusLookup = {};
-      for (const pk of normalizedPubkeys) {
-        lookup[pk] = null;
-      }
-
-      for (const event of events) {
-        const parsed = parseUserStatusEvent(event);
-        const existing = lookup[parsed.pubkey];
-        if (!existing || parsed.updatedAt > existing.updatedAt) {
-          const isExpired =
-            parsed.expiresAt !== undefined &&
-            parsed.expiresAt <= Math.floor(Date.now() / 1_000);
-          lookup[parsed.pubkey] =
-            (parsed.text || parsed.emoji) && !isExpired
-              ? {
-                  text: parsed.text,
-                  emoji: parsed.emoji,
-                  updatedAt: parsed.updatedAt,
-                  expiresAt: parsed.expiresAt,
-                }
-              : null;
-        }
-      }
-
-      return lookup;
-    },
+    queryFn: () => fetchUserStatusLookup(normalizedPubkeys),
     refetchInterval,
     ...userStatusFocusRefetchPolicy,
   });

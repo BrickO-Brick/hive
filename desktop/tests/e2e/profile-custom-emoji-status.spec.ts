@@ -201,38 +201,53 @@ test("keeps an open status draft when the saved status expires", async ({
   await seedMockStatus(page, {
     text: "Original draft",
     emoji: "📝",
-    expiresAt: nowSeconds + 60,
+    expiresAt: nowSeconds + 2,
     createdAt: nowSeconds,
   });
   await page.getByTestId("profile-popover-set-status").click();
   const dialog = page.getByTestId("set-status-dialog");
   await dialog.getByTestId("set-status-input").fill("Unsaved draft");
-  await page.getByTestId("set-status-duration").click();
-  await page.getByRole("menuitem", { name: "This week" }).click();
-
-  await page.evaluate(
-    ({ createdAt, expiresAt }) => {
-      window.__BUZZ_E2E_SET_MOCK_USER_STATUS__?.({
-        text: "Original draft",
-        emoji: "📝",
-        createdAt,
-        expiresAt,
-      });
-    },
-    { createdAt: nowSeconds + 1, expiresAt: nowSeconds },
-  );
-  await expect(page.getByTestId("sidebar-user-status")).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-profile-user-status")).toHaveCount(0, {
+    timeout: 5_000,
+  });
 
   await expect(dialog.getByTestId("set-status-input")).toHaveValue(
     "Unsaved draft",
   );
-  await expect(page.getByTestId("set-status-duration")).toContainText(
-    "This week",
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Choose a duration in the future.",
   );
+  await expect(dialog.getByLabel("Save status")).toBeDisabled();
+  await page.getByTestId("set-status-duration").click();
+  await page.getByRole("menuitem", { name: "This week" }).click();
+  await expect(dialog.getByLabel("Save status")).toBeEnabled();
   await expect(dialog.getByText("Quick statuses", { exact: true })).toHaveCount(
     0,
   );
   await expect(dialog.getByTestId("set-status-clear")).toBeVisible();
+});
+
+test("new statuses default to expiring at local midnight", async ({ page }) => {
+  await page.goto("/");
+  await openProfilePopover(page);
+  await page.getByTestId("profile-popover-set-status").click();
+  const dialog = page.getByTestId("set-status-dialog");
+  await dialog.getByTestId("set-status-preset-working-remotely").click();
+  await dialog.getByTestId("set-status-save").click();
+
+  const publishedExpiration = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_SIGNED_EVENTS__
+        ?.filter((event) => event.kind === 30315)
+        .at(-1)
+        ?.tags.find((tag) => tag[0] === "expiration")?.[1],
+  );
+  const expectedMidnight = await page.evaluate(() => {
+    const midnight = new Date();
+    midnight.setHours(24, 0, 0, 0);
+    return Math.floor(midnight.getTime() / 1_000);
+  });
+  expect(Number(publishedExpiration)).toBe(expectedMidnight);
 });
 
 test("can apply Today to an existing status without an expiration", async ({

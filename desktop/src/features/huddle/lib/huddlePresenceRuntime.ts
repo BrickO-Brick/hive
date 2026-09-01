@@ -6,6 +6,7 @@ import {
 } from "@/features/huddle/lib/huddlePresence";
 import type { RelaySubscriptionFilter } from "@/shared/api/relayClientShared";
 import type { RelayEvent } from "@/shared/api/types";
+import { MAX_EXPLICIT_CHANNEL_VALUES } from "@/shared/api/relayClientShared";
 import {
   KIND_HUDDLE_ENDED,
   KIND_HUDDLE_PARTICIPANT_JOINED,
@@ -27,6 +28,7 @@ type Dispose = () => void | Promise<void>;
 
 export type HuddlePresenceRuntimeDependencies = {
   relaySelfPubkey: string;
+  channelIds: readonly string[];
   subscribeLive: (
     filter: RelaySubscriptionFilter,
     onEvent: (event: RelayEvent) => void,
@@ -70,6 +72,23 @@ export function startHuddlePresenceRuntime(
   let retryHandle: unknown = null;
   let retryDelayMs = INITIAL_RETRY_DELAY_MS;
 
+  const channelChunks: string[][] = [];
+  const normalizedChannelIds = [...new Set(dependencies.channelIds)].sort();
+  for (
+    let index = 0;
+    index < normalizedChannelIds.length;
+    index += MAX_EXPLICIT_CHANNEL_VALUES
+  ) {
+    channelChunks.push(
+      normalizedChannelIds.slice(index, index + MAX_EXPLICIT_CHANNEL_VALUES),
+    );
+  }
+
+  if (channelChunks.length === 0) {
+    dependencies.onPresence(new Set());
+    return () => {};
+  }
+
   const clearScheduledRetry = () => {
     if (retryHandle === null) return;
     clearRetryTimer(retryHandle);
@@ -112,9 +131,16 @@ export function startHuddlePresenceRuntime(
     }
     reconciling = true;
     try {
-      const history = await fetchHuddleLifecycleHistory(
-        dependencies.fetchEvents,
+      const historyPages = await Promise.all(
+        channelChunks.map((channelIds) =>
+          fetchHuddleLifecycleHistory(dependencies.fetchEvents, channelIds),
+        ),
       );
+      const history = [
+        ...new Map(
+          historyPages.flat().map((event) => [event.id, event]),
+        ).values(),
+      ];
       if (disposed) return;
       const nextTracker = new HuddlePresenceTracker(
         dependencies.relaySelfPubkey,
@@ -157,14 +183,27 @@ export function startHuddlePresenceRuntime(
     if (disposed || liveDispose || connecting) return;
     connecting = true;
     try {
-      const unsubscribe = await dependencies.subscribeLive(
-        {
-          kinds: [...LIFECYCLE_KINDS],
-          since: nowSeconds(),
-          limit: HUDDLE_LIFECYCLE_PAGE_LIMIT,
-        },
-        applyLiveEvent,
-      );
+      const unsubscribes: Dispose[] = [];
+      try {
+        for (const channelIds of channelChunks) {
+          unsubscribes.push(
+            await dependencies.subscribeLive(
+              {
+                kinds: [...LIFECYCLE_KINDS],
+                "#h": channelIds,
+                since: nowSeconds(),
+                limit: HUDDLE_LIFECYCLE_PAGE_LIMIT,
+              },
+              applyLiveEvent,
+            ),
+          );
+        }
+      } catch (error) {
+        await Promise.all(unsubscribes.map((unsubscribe) => unsubscribe()));
+        throw error;
+      }
+      const unsubscribe = () =>
+        Promise.all(unsubscribes.map((dispose) => dispose())).then(() => {});
       if (disposed) {
         void unsubscribe();
         return;

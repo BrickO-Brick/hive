@@ -236,6 +236,82 @@ test("accepts lower revisions from a new relay room generation", () => {
     true,
   );
   assert.equal(tracker.snapshot().has(BOB), true);
+
+  tracker.apply(
+    participantEvent({
+      id: "4",
+      kind: 48101,
+      admissionId: "another-participant",
+      rosterRevision: 2,
+      tags: [["p", CHARLIE]],
+    }),
+  );
+  tracker.apply(
+    participantEvent({
+      id: "5",
+      kind: 48102,
+      admissionId: "after-restart",
+      rosterRevision: 3,
+    }),
+  );
+  assert.equal(tracker.snapshot().has(BOB), false);
+  assert.equal(tracker.snapshot().has(CHARLIE), true);
+
+  const hydrated = reconstructHuddlePresence(
+    [
+      event({ id: "1", kind: 48100 }),
+      participantEvent({
+        id: "2",
+        kind: 48101,
+        admissionId: "before-restart",
+        rosterRevision: 20,
+      }),
+      participantEvent({
+        id: "3",
+        kind: 48101,
+        admissionId: "after-restart",
+        rosterRevision: 1,
+      }),
+      participantEvent({
+        id: "4",
+        kind: 48101,
+        admissionId: "another-participant",
+        rosterRevision: 2,
+        tags: [["p", CHARLIE]],
+      }),
+      participantEvent({
+        id: "5",
+        kind: 48102,
+        admissionId: "after-restart",
+        rosterRevision: 3,
+      }),
+    ],
+    RELAY,
+  );
+  assert.equal(hydrated.has(BOB), false);
+  assert.equal(hydrated.has(CHARLIE), true);
+});
+
+test("a lower-id same-second start is canonical and clears old participants", () => {
+  const tracker = new HuddlePresenceTracker(RELAY);
+  tracker.apply(event({ id: "z", kind: 48100, createdAt: 10 }));
+  tracker.apply(
+    participantEvent({
+      id: "join",
+      kind: 48101,
+      admissionId: "desktop",
+      rosterRevision: 1,
+      createdAt: 11,
+    }),
+  );
+  assert.equal(tracker.snapshot().has(BOB), true);
+
+  assert.equal(
+    tracker.apply(event({ id: "a", kind: 48100, createdAt: 10 })),
+    true,
+  );
+  assert.equal(tracker.snapshot().has(BOB), false);
+  assert.equal(tracker.snapshot().has(ALICE), true);
 });
 
 test("rejects an unauthorized end signer", () => {

@@ -23,6 +23,9 @@ type HuddleSession = {
   endState: AdmissionState | null;
   admissionsByParticipant: Map<string, Map<string, AdmissionState>>;
   legacyStateByParticipant: Map<string, AdmissionState>;
+  latestRosterRevision: number | null;
+  latestRosterCreatedAt: number;
+  latestRosterEventId: string;
 };
 
 type LifecycleContent = {
@@ -158,6 +161,7 @@ export const HUDDLE_LIFECYCLE_PAGE_LIMIT = 500;
  */
 export async function fetchHuddleLifecycleHistory(
   fetchEvents: FetchEvents,
+  channelIds?: string[],
 ): Promise<RelayEvent[]> {
   const events = new Map<string, RelayEvent>();
   let until: number | undefined;
@@ -170,6 +174,7 @@ export async function fetchHuddleLifecycleHistory(
         KIND_HUDDLE_PARTICIPANT_LEFT,
         KIND_HUDDLE_ENDED,
       ],
+      ...(channelIds?.length ? { "#h": channelIds } : {}),
       ...(until === undefined ? {} : { until }),
       limit: HUDDLE_LIFECYCLE_PAGE_LIMIT,
     });
@@ -212,7 +217,7 @@ export class HuddlePresenceTracker {
         existing &&
         (event.created_at < existing.startCreatedAt ||
           (event.created_at === existing.startCreatedAt &&
-            event.id < existing.startEventId))
+            event.id > existing.startEventId))
       ) {
         return false;
       }
@@ -224,6 +229,9 @@ export class HuddlePresenceTracker {
         endState: null,
         admissionsByParticipant: new Map(),
         legacyStateByParticipant: new Map(),
+        latestRosterRevision: null,
+        latestRosterCreatedAt: 0,
+        latestRosterEventId: "",
       });
       return true;
     }
@@ -267,6 +275,24 @@ export class HuddlePresenceTracker {
       eventId: event.id,
     };
 
+    const isAfterLatestRosterEvent =
+      event.created_at > session.latestRosterCreatedAt ||
+      (event.created_at === session.latestRosterCreatedAt &&
+        event.id > session.latestRosterEventId);
+    if (
+      content.rosterRevision !== null &&
+      session.latestRosterRevision !== null &&
+      content.rosterRevision < session.latestRosterRevision &&
+      isAfterLatestRosterEvent
+    ) {
+      // Relay roster revisions are process-local. A lower revision arriving
+      // after the latest authenticated roster event starts a new room
+      // generation, so admissions from the previous relay process are dead.
+      session.admissionsByParticipant.clear();
+      session.legacyStateByParticipant.clear();
+      session.creatorPresent = false;
+    }
+
     if (content.admissionId) {
       const admissions =
         session.admissionsByParticipant.get(participant) ??
@@ -279,6 +305,11 @@ export class HuddlePresenceTracker {
       const existing = session.legacyStateByParticipant.get(participant);
       if (!isNewerAdmissionState(next, existing)) return false;
       session.legacyStateByParticipant.set(participant, next);
+    }
+    if (content.rosterRevision !== null && isAfterLatestRosterEvent) {
+      session.latestRosterRevision = content.rosterRevision;
+      session.latestRosterCreatedAt = event.created_at;
+      session.latestRosterEventId = event.id;
     }
     if (
       participant === session.creator &&

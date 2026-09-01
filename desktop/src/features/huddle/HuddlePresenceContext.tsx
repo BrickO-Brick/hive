@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { useRelaySelfQuery } from "@/features/moderation/hooks";
+import { useChannelsQuery } from "@/features/channels/hooks";
 import { startHuddlePresenceRuntime } from "@/features/huddle/lib/huddlePresenceRuntime";
 import { relayClient } from "@/shared/api/relayClient";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -17,19 +18,32 @@ export function HuddlePresenceProvider({
   children: React.ReactNode;
 }) {
   const relaySelfQuery = useRelaySelfQuery();
+  const channelsQuery = useChannelsQuery();
   const relaySelfPubkey = relaySelfQuery.data;
   const [participantPubkeys, setParticipantPubkeys] = React.useState<
     ReadonlySet<string>
   >(EMPTY_HUDDLE_PRESENCE);
-
+  const channelIds = React.useMemo(
+    () =>
+      (channelsQuery.data ?? [])
+        .filter((channel) => channel.isMember)
+        .map((channel) => channel.id)
+        .sort(),
+    [channelsQuery.data],
+  );
   React.useEffect(() => {
-    if (!relaySelfPubkey || relaySelfQuery.isError) {
+    if (
+      !relaySelfPubkey ||
+      relaySelfQuery.isError ||
+      !channelsQuery.isSuccess
+    ) {
       setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
       return;
     }
 
     const dispose = startHuddlePresenceRuntime({
       relaySelfPubkey,
+      channelIds,
       subscribeLive: (filter, onEvent) =>
         relayClient.subscribeLive(filter, onEvent),
       fetchEvents: (filter) => relayClient.fetchEvents(filter),
@@ -43,7 +57,12 @@ export function HuddlePresenceProvider({
       dispose();
       setParticipantPubkeys(EMPTY_HUDDLE_PRESENCE);
     };
-  }, [relaySelfPubkey, relaySelfQuery.isError]);
+  }, [
+    relaySelfPubkey,
+    relaySelfQuery.isError,
+    channelsQuery.isSuccess,
+    channelIds,
+  ]);
 
   return (
     <HuddlePresenceContext.Provider value={participantPubkeys}>
