@@ -880,14 +880,56 @@ impl PkceOAuthTokenSource {
             //     here — the next real acquisition re-reads under the lock.
             let (leader_rejected_digest, outcome) = slot.wait().await;
             match outcome {
-                Ok(token) if Some(token.as_str()) != rejected => return Ok(token),
-                Ok(_) => return self.acquire_leader(intent, rejected).await,
+                Ok(token) if Some(token.access_token.as_str()) != rejected => {
+                    // Conditionally reconcile this source's own credential
+                    // state so a subsequent plain `bearer()` on this source
+                    // returns the newly-acquired token rather than a stale or
+                    // absent credential. Adopt when B's state is absent,
+                    // expired, or still pointing at B's own rejected token —
+                    // i.e. the token the leader refreshed/acquired is strictly
+                    // better than what B holds. Preserve a distinct newer
+                    // usable credential that B may have acquired independently
+                    // after it joined (e.g. another task wrote a fresh token
+                    // into B's state between B joining and waking).
+                    //
+                    // `try_lock` rather than `lock().await`: if state is
+                    // contended another flow is running and will write a fresh
+                    // token of its own — skipping reconciliation here is
+                    // correct. We still return the shared bearer regardless.
+                    if let Ok(mut state) = self.state.try_lock() {
+                        let adopt = state.as_ref().map_or(true, |cur| {
+                            is_expired(cur) || rejected.is_some_and(|rej| cur.access_token == rej)
+                        });
+                        if adopt {
+                            *state = Some(token.clone());
+                        }
+                    }
+                    return Ok(token.access_token);
+                }
+                Ok(_) => {
+                    return self
+                        .acquire_leader(intent, rejected)
+                        .await
+                        .map(|t| t.access_token);
+                }
                 Err(shared) => {
                     // Reject-digest mismatch: the leader's failure was
                     // rejection-relative to ITS OWN `rejected` token, not ours.
                     // Rerun so we can pursue our own refresh/browser path.
                     if leader_rejected_digest != digest_of(rejected) {
-                        return self.acquire_leader(intent, rejected).await;
+                        return self
+                            .acquire_leader(intent, rejected)
+                            .await
+                            .map(|t| t.access_token);
+                    }
+                    // Neutralize B's matching rejected in-memory state so a
+                    // subsequent plain `bearer()` on this source does not
+                    // resurface the rejected credential. `try_lock` is safe
+                    // here for the same reason as the success path above:
+                    // contention means another flow is in progress and will
+                    // write its own outcome.
+                    if let Ok(mut state) = self.state.try_lock() {
+                        self.expire_rejected(&mut state, rejected);
                     }
                     if let Some(hit) = self.usable_from_disk(rejected) {
                         return Ok(hit);
@@ -914,7 +956,7 @@ impl PkceOAuthTokenSource {
         &self,
         intent: AuthIntent,
         rejected: Option<&str>,
-    ) -> Result<String, AuthError> {
+    ) -> Result<CachedToken, AuthError> {
         // Snapshot the current attempt generation *before* queueing on the
         // lock. When we acquire the lock, we compare: if the generation
         // advanced, a predecessor completed while we were waiting and we can
@@ -981,7 +1023,7 @@ impl PkceOAuthTokenSource {
         attempt_deadline: std::time::Instant,
         attempt_path: &Path,
         snapshot_gen: u64,
-    ) -> Result<String, AuthError> {
+    ) -> Result<CachedToken, AuthError> {
         let mut state = self.state.lock().await;
 
         // A 401 (`rejected = Some`) proves the cached access token is dead even
@@ -996,8 +1038,10 @@ impl PkceOAuthTokenSource {
 
         // Re-check under the lock: a holder we queued behind may have already
         // produced a token (this process or a sibling wrote the cache).
-        if let Some(hit) = self.cached_hit(&mut state, rejected) {
-            return Ok(hit);
+        if self.cached_hit(&mut state, rejected).is_some() {
+            // `cached_hit` guarantees state is populated on a hit (memory entry
+            // was already there, or disk token was adopted into state).
+            return Ok(state.clone().expect("cached_hit confirmed token in state"));
         }
 
         // Cross-process failure single-flight. A predecessor completed while
@@ -1071,8 +1115,8 @@ impl PkceOAuthTokenSource {
                 // token while we ran, so honor that first; otherwise this is
                 // infrastructural and surfaces as NetworkUnavailable.
                 RefreshOutcome::Network => {
-                    if let Some(hit) = self.cached_hit(&mut state, rejected) {
-                        return Ok(hit);
+                    if self.cached_hit(&mut state, rejected).is_some() {
+                        return Ok(state.clone().expect("cached_hit confirmed token in state"));
                     }
                     return Err(AuthError::NetworkUnavailable);
                 }
@@ -1081,8 +1125,8 @@ impl PkceOAuthTokenSource {
                 // fall through to a browser (interactive) or RefreshRejected
                 // (headless).
                 RefreshOutcome::Rejected => {
-                    if let Some(hit) = self.cached_hit(&mut state, rejected) {
-                        return Ok(hit);
+                    if self.cached_hit(&mut state, rejected).is_some() {
+                        return Ok(state.clone().expect("cached_hit confirmed token in state"));
                     }
                     refresh_failed = true;
                 }
@@ -1147,11 +1191,11 @@ impl PkceOAuthTokenSource {
         }
     }
 
-    /// Persist a freshly-obtained token, clear any cooldown, and return its
-    /// bearer. A cache-write failure maps to [`AuthError::NetworkUnavailable`]
-    /// (the infrastructural bucket) — the token was valid but couldn't be
-    /// persisted, which the caller should treat as transient, not as a
-    /// credential rejection.
+    /// Persist a freshly-obtained token, clear any cooldown, and return the
+    /// full [`CachedToken`] on success. A cache-write failure maps to
+    /// [`AuthError::NetworkUnavailable`] (the infrastructural bucket) — the
+    /// token was valid but couldn't be persisted, which the caller should treat
+    /// as transient, not as a credential rejection.
     ///
     /// The candidate-token persistence boundary for refresh and browser results.
     /// Cache-hit paths bypass this function, but every refresh- or browser-issued
@@ -1166,13 +1210,18 @@ impl PkceOAuthTokenSource {
     /// `cached_hit` and `usable_from_disk` already exclude `rejected`, so guarding
     /// the two live-token sites (refresh and browser exchange) here covers every
     /// path that can produce the rejected bytes.
+    ///
+    /// Returning the full [`CachedToken`] (rather than just the bearer string)
+    /// lets `acquire_locked` → `acquire_leader` propagate it all the way to
+    /// [`LeaderGuard::complete`], which publishes it through the [`InflightSlot`]
+    /// so every joiner can reconcile its own independent `state` cell.
     fn finish(
         &self,
         state: &mut Option<CachedToken>,
         token: CachedToken,
         intent: AuthIntent,
         rejected: Option<&str>,
-    ) -> Result<String, AuthError> {
+    ) -> Result<CachedToken, AuthError> {
         if rejected == Some(token.access_token.as_str()) {
             return Err(if intent.may_open_browser() {
                 AuthError::NetworkUnavailable
@@ -1180,11 +1229,10 @@ impl PkceOAuthTokenSource {
                 AuthError::RefreshRejected
             });
         }
-        let bearer = token.access_token.clone();
-        self.save(state, token)
+        self.save(state, token.clone())
             .map_err(|_| AuthError::NetworkUnavailable)?;
         clear_cooldown(&self.cooldown_path());
-        Ok(bearer)
+        Ok(token)
     }
 }
 
@@ -1527,7 +1575,15 @@ fn inflight_registry() -> std::sync::MutexGuard<'static, HashMap<InflightKey, Ar
 /// `rejected`) paired with the attempt result. Joiners use the digest to detect
 /// a mismatch — the leader's rejection-relative failure is not valid for a
 /// joiner that carried a *different* rejected token.
-type SlotPublish = (Option<String>, Result<String, AuthError>);
+///
+/// On success the full [`CachedToken`] is published so each joiner can
+/// conditionally reconcile its own independent [`PkceOAuthTokenSource::state`]
+/// cell. Publishing the full credential (not just the bearer string) prevents
+/// a joining source's state from remaining stale or empty after the coalesced
+/// flow, which would otherwise cause a subsequent plain `bearer()` on that
+/// source to resurface a rejected or absent credential rather than the
+/// newly-acquired one.
+type SlotPublish = (Option<String>, Result<CachedToken, AuthError>);
 
 /// The shared result of one leader's auth attempt, awaited by any joiner that
 /// arrived while the leader was in flight. A `watch` channel gives us
@@ -1566,7 +1622,7 @@ impl InflightSlot {
 
     /// Publish `(rejected_digest, result)` to every waiting joiner. A send
     /// error means no joiners remain, which is fine.
-    fn publish(&self, rejected_digest: Option<String>, result: Result<String, AuthError>) {
+    fn publish(&self, rejected_digest: Option<String>, result: Result<CachedToken, AuthError>) {
         let _ = self.tx.send(Some((rejected_digest, result)));
     }
 }
@@ -1592,20 +1648,28 @@ impl LeaderGuard {
     }
 
     /// Normal completion: evict the slot, publish `(rejected_digest, result)`
-    /// to joiners, and return `result` to the leader. Evicting *before*
+    /// to joiners, and return the bearer to the leader. The full
+    /// [`CachedToken`] is published so joiners can reconcile their own
+    /// [`PkceOAuthTokenSource::state`] before returning. Evicting *before*
     /// publishing means a caller arriving after this point starts a fresh
     /// attempt (a later explicit retry may launch), while joiners already
     /// holding the slot still receive the result. `Drop` covers the cancel/panic
     /// path.
     fn complete(
         mut self,
-        result: Result<String, AuthError>,
+        result: Result<CachedToken, AuthError>,
         rejected_digest: Option<String>,
     ) -> Result<String, AuthError> {
         self.done = true;
         Self::evict(&self.key, &self.slot);
-        self.slot.publish(rejected_digest, result.clone());
-        result
+        // Clone the error before moving `result` into the slot publish so we
+        // can return the original error to the leader on failure.
+        let leader_return = result
+            .as_ref()
+            .map(|t| t.access_token.clone())
+            .map_err(|e| e.clone());
+        self.slot.publish(rejected_digest, result);
+        leader_return
     }
 
     /// Remove this leader's slot from the registry, but only if it is still the
@@ -2138,6 +2202,7 @@ mod tests {
         assert!(token_from_response(&v, None).is_err());
     }
 
+    #[cfg(unix)] // Disk adoption relies on `write_private_cache`; non-Unix disables disk persistence.
     #[tokio::test]
     async fn test_bearer_reuses_disk_token_after_expiry() {
         let dir = tempfile::tempdir().unwrap();
@@ -2187,6 +2252,10 @@ mod tests {
     /// fix reads the cache lock-free. Deterministic: the slot is pre-installed
     /// and pre-published, and `state` is held for the whole call, so the
     /// contended branch is forced rather than raced.
+    ///
+    /// Disk-dependent: the replacement lives on disk, so `write_private_cache`
+    /// must be available (i.e. Unix only).
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_joiner_shared_failure_recovers_disk_replacement_under_state_contention() {
         let dir = tempfile::tempdir().unwrap();
@@ -2721,5 +2790,299 @@ mod tests {
         );
 
         drop(holder);
+    }
+}
+
+// ---- Joiner credential-state reconciliation regressions ------------------
+//
+// These tests verify that a joining source (B) reconciles its own independent
+// `state` cell after the leader publishes a success. Without the fix, `B.state`
+// remains stale or empty after the join, causing subsequent `bearer()` calls on
+// B to resurface the rejected or absent credential. Each test:
+//   1. Pre-installs an InflightSlot with a pre-published result (eliminates
+//      network/lock; forces the joiner branch deterministically).
+//   2. Holds `state` where needed to force specific branches.
+//   3. Asserts subsequent plain `bearer()` calls on each source.
+//
+// Mutation check: these assertions FAIL if `SlotPublish` is reverted to
+// `Result<String, AuthError>` (bearer-only, no CachedToken), because without
+// the full token the joiner cannot update `state` and subsequent reads regress.
+
+#[cfg(test)]
+mod joiner_reconciliation_tests {
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{
+        digest_of, inflight_registry, is_expired, AuthError, AuthIntent, CachedToken, InflightKey,
+        InflightSlot, PkceOAuthConfig, PkceOAuthTokenSource,
+    };
+
+    fn future_exp() -> Option<u64> {
+        Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 7200,
+        )
+    }
+
+    fn make_token(access: &str) -> CachedToken {
+        CachedToken {
+            access_token: access.into(),
+            refresh_token: Some("rt".into()),
+            expires_at: future_exp(),
+        }
+    }
+
+    fn make_source(dir: &std::path::Path) -> Arc<PkceOAuthTokenSource> {
+        PkceOAuthTokenSource::new(PkceOAuthConfig {
+            discovery_url: "https://invalid.example.test/.well-known".into(),
+            client_id: "test-client".into(),
+            scopes: vec!["offline_access".into()],
+            cache_namespace: "test".into(),
+            cache_dir_override: Some(dir.to_path_buf()),
+        })
+        .unwrap()
+    }
+
+    /// Pre-install a slot and publish a success so the caller takes the joiner
+    /// path and wakes to `Ok(token)`. Returns the installed key so callers can
+    /// clean up after if needed (though the slot is evicted by `acquire`).
+    async fn install_success_slot(
+        source: &Arc<PkceOAuthTokenSource>,
+        intent: AuthIntent,
+        token: CachedToken,
+    ) {
+        let key: InflightKey = (source.lock_path(), intent);
+        let slot = Arc::new(InflightSlot::new());
+        inflight_registry().insert(key.clone(), slot.clone());
+        slot.publish(None, Ok(token));
+    }
+
+    /// Install a slot with a pre-published failure. Rejected digest matches
+    /// `rejected_bytes` so the joiner does NOT rerun.
+    async fn install_failure_slot(
+        source: &Arc<PkceOAuthTokenSource>,
+        intent: AuthIntent,
+        rejected_bytes: Option<&str>,
+        error: AuthError,
+    ) {
+        let key: InflightKey = (source.lock_path(), intent);
+        let slot = Arc::new(InflightSlot::new());
+        inflight_registry().insert(key.clone(), slot.clone());
+        slot.publish(digest_of(rejected_bytes), Err(error));
+    }
+
+    /// **Unix stale-X success regression.**
+    ///
+    /// A and B are independently constructed with stale rejected X in state
+    /// (simulating both sources independently loaded the same cached-but-now-rejected
+    /// token before any coalescing occurred). A leads, acquires Y. B joins, wakes to
+    /// `Ok(Y)`. After the join:
+    ///   - B.state must hold Y (reconciled from the slot publish).
+    ///   - A subsequent `bearer()` call on B must return Y, not X.
+    ///
+    /// Without the fix (`SlotPublish = Result<String, AuthError>`): B's state
+    /// remains `Some(X)` after the join — B's `bearer()` returns X, violating
+    /// the 401-neutralization invariant.
+    #[tokio::test]
+    async fn test_joiner_reconciles_state_after_shared_success() {
+        let dir = tempfile::tempdir().unwrap();
+        // B is the joining source. We simulate A's outcome by pre-publishing Y
+        // into the in-process slot that B will join (see the `install_success_slot`
+        // helper). No second source object is needed — the slot publish is the
+        // only mechanism tested here.
+        let b = make_source(dir.path());
+
+        let token_x = make_token("token-X");
+        let token_y = make_token("token-Y");
+
+        // B holds stale rejected X in its state cell.
+        {
+            let mut sb = b.state.lock().await;
+            *sb = Some(token_x.clone());
+        }
+
+        // Pre-publish Y into the slot before B calls acquire, so B takes the
+        // joiner branch and wakes to Ok(token_y).
+        install_success_slot(&b, AuthIntent::Headless, token_y.clone()).await;
+
+        // B joins and wakes to Ok(token_y). It should reconcile state.
+        let result = b.acquire(AuthIntent::Headless, Some("token-X")).await;
+        assert_eq!(
+            result,
+            Ok("token-Y".to_string()),
+            "B must receive Y as the join result"
+        );
+
+        // B.state must now hold Y.
+        {
+            let sb = b.state.lock().await;
+            assert_eq!(
+                sb.as_ref().map(|t| t.access_token.as_str()),
+                Some("token-Y"),
+                "B.state must be reconciled to Y after the join (mutation check: \
+                 fails if SlotPublish carries only the bearer string)"
+            );
+        }
+
+        // Subsequent plain bearer() on B must return Y, not stale X.
+        // Without the fix, B.state still holds X (unexpired, rejected=None skips
+        // the identity check), so bearer() returns X. With the fix, state holds Y.
+        let bearer_after = b.acquire(AuthIntent::Headless, None).await;
+        assert_eq!(
+            bearer_after,
+            Ok("token-Y".to_string()),
+            "subsequent plain bearer() on B must return Y, not stale X \
+             (mutation check: fails if B.state was not reconciled after the join)"
+        );
+    }
+
+    /// **Matching shared failure — B's rejected X must not reappear.**
+    ///
+    /// A and B share the same `rejected` value. A leads, fails (RefreshRejected),
+    /// and the digest matches B's rejected. Without the fix, B returns the shared
+    /// error but its state still holds X. B's next plain `bearer()` (rejected=None)
+    /// would find unexpired X in state and serve it, violating the invariant.
+    ///
+    /// With the fix, the joiner neutralizes its own matching rejected state on a
+    /// matching shared failure, so X is expired and cannot reappear.
+    #[tokio::test]
+    async fn test_joiner_neutralizes_own_rejected_on_matching_shared_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = make_source(dir.path());
+
+        let token_x = make_token("token-X");
+
+        // B holds X in state — this is the stale rejected credential.
+        {
+            let mut sb = b.state.lock().await;
+            *sb = Some(token_x.clone());
+        }
+
+        // Install a failure slot with the same rejected digest as B's rejected value.
+        install_failure_slot(
+            &b,
+            AuthIntent::Headless,
+            Some("token-X"),
+            AuthError::RefreshRejected,
+        )
+        .await;
+
+        // B joins the shared failure. Digest matches → B does NOT rerun, returns Err.
+        let result = b.acquire(AuthIntent::Headless, Some("token-X")).await;
+        assert_eq!(
+            result,
+            Err(AuthError::RefreshRejected),
+            "B must adopt the shared failure"
+        );
+
+        // B.state must now have X's expires_at=0 (neutralized), so a subsequent
+        // plain bearer() (rejected=None) does not serve X.
+        {
+            let sb = b.state.lock().await;
+            let state_expired = sb.as_ref().is_none_or(|t| is_expired(t));
+            assert!(
+                state_expired,
+                "B.state must be neutralized after matching shared failure — \
+                 token-X must be force-expired so subsequent plain bearer() cannot serve it \
+                 (mutation check: fails if the joiner Err path skips expire_rejected)"
+            );
+        }
+    }
+
+    /// **Preserve-distinct-newer — reconciliation must not overwrite B's valid credential.**
+    ///
+    /// B already holds a distinct, usable credential Z (different from the leader's
+    /// result Y and from the rejected token). Reconciliation must NOT overwrite Z.
+    ///
+    /// The adoption rule: adopt when state is absent, expired, or matching `rejected`.
+    /// B's state is none of those — it holds Z, which is unexpired and != rejected —
+    /// so reconciliation must skip the adopt and B's state stays as Z.
+    #[tokio::test]
+    async fn test_joiner_does_not_overwrite_distinct_newer_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = make_source(dir.path());
+
+        let token_z = make_token("token-Z"); // B's distinct, independently acquired credential.
+        let token_y = make_token("token-Y"); // leader's shared result.
+
+        // B holds Z — a newer usable credential B acquired independently.
+        {
+            let mut sb = b.state.lock().await;
+            *sb = Some(token_z.clone());
+        }
+
+        // Install a success slot publishing Y. B joins with rejected="token-X"
+        // (different from Z's access_token and from Y's access_token).
+        install_success_slot(&b, AuthIntent::Headless, token_y.clone()).await;
+
+        let result = b.acquire(AuthIntent::Headless, Some("token-X")).await;
+        assert_eq!(
+            result,
+            Ok("token-Y".to_string()),
+            "B must still receive Y from the join"
+        );
+
+        // B.state must still hold Z — the distinct newer credential.
+        {
+            let sb = b.state.lock().await;
+            assert_eq!(
+                sb.as_ref().map(|t| t.access_token.as_str()),
+                Some("token-Z"),
+                "B.state must not be overwritten by the leader's Y when B already \
+                 holds a distinct usable credential Z \
+                 (mutation check: fails if adopt is unconditional)"
+            );
+        }
+    }
+
+    /// **All-platforms empty-state join (analogous to Windows/no-persistence).**
+    ///
+    /// A and B both start with empty state (no credential). A leads and acquires Y.
+    /// B joins waking to Ok(Y). B.state must hold Y so subsequent headless reads
+    /// from B return Y without a second acquisition.
+    ///
+    /// This covers the no-persistence scenario: on Windows, disk persistence is
+    /// disabled, so a joining B cannot recover Y from disk after the join. Without
+    /// state reconciliation, B.state stays empty and the next headless B.bearer()
+    /// returns NoCredential rather than Y.
+    #[tokio::test]
+    async fn test_joiner_populates_empty_state_after_shared_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = make_source(dir.path());
+
+        // B starts with empty state — no credential at all.
+        assert!(
+            b.state.lock().await.is_none(),
+            "precondition: B.state must be empty"
+        );
+
+        let token_y = make_token("token-Y");
+
+        // Install a success slot publishing Y (no rejected — fresh acquisition).
+        install_success_slot(&b, AuthIntent::Auto, token_y.clone()).await;
+
+        let result = b.acquire(AuthIntent::Auto, None).await;
+        assert_eq!(
+            result,
+            Ok("token-Y".to_string()),
+            "B must receive Y from the join"
+        );
+
+        // B.state must now hold Y.
+        {
+            let sb = b.state.lock().await;
+            assert_eq!(
+                sb.as_ref().map(|t| t.access_token.as_str()),
+                Some("token-Y"),
+                "B.state must be populated with Y after joining a successful leader \
+                 (mutation check: fails if SlotPublish carries only the bearer string — \
+                 simulates the Windows/no-persistence scenario where B cannot fall \
+                 back to disk and would return NoCredential on its next headless read)"
+            );
+        }
     }
 }

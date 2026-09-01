@@ -2726,9 +2726,23 @@ async fn test_crossprocess_userinitiated_waiter_adopts_predecessor_denial() {
     // Worker B (also UserInitiated, approve-scripted) queues behind A on the
     // file lock. Even though B would succeed if it ran its own browser, it
     // must adopt A's denial since it was queued while A held the lock.
-    let worker_b = spawn_worker(&cfg, cache.path(), "userinitiated", "approve", "b", &[]);
-    // Give B time to queue on the file lock before releasing A.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    //
+    // SNAPSHOT_MARKER is emitted by the tracing layer in B's process after B
+    // snapshots gen=0 and before it queues on the file lock — so observing it
+    // proves B has committed to gen=0 and is waiting behind A. This replaces
+    // an earlier unconditional sleep: the marker proves B captured generation 0
+    // before A records generation 1, not just that some time elapsed.
+    let snapshot_b = cache.path().join("b.snapshot");
+    let worker_b = spawn_worker(
+        &cfg,
+        cache.path(),
+        "userinitiated",
+        "approve",
+        "b",
+        &[("AUTH_WORKER_SNAPSHOT_MARKER", snapshot_b.as_path())],
+    );
+    // Wait until B has snapshotted gen=0, then release A.
+    wait_for_marker(&snapshot_b, "worker B snapshot").await;
 
     // Release A: it denies, writes the cooldown + attempt sidecars, releases lock.
     std::fs::write(&proceed_a, b"go").unwrap();
