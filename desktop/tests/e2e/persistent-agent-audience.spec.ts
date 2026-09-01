@@ -298,7 +298,7 @@ test("automatically mentions multiple agents from the mention picker", async ({
     composer.getByTestId(`composer-address-lock-${AGENT_B}`),
   ).toBeVisible();
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Manage mentions" }),
   ).toBeVisible();
 });
 
@@ -526,7 +526,7 @@ test("the mention button opens settings and can undo an address", async ({
   await automaticallyMention(composer, "Morgarita");
   const input = composer.getByTestId("message-input");
   const ingress = composer.getByRole("button", {
-    name: "Manage automatic agent mentions",
+    name: "Manage mentions",
   });
 
   await input.type("draft text");
@@ -657,7 +657,7 @@ test("always-mentioned agents remain selected without replaying their animation 
     { timeout: 500 },
   );
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Manage mentions" }),
   ).toBeVisible();
   await expect(input).toBeFocused();
   await expect(composer.getByTestId("mention-autocomplete")).toHaveCount(0);
@@ -1210,7 +1210,7 @@ test("a restored multi-word automatic mention remains a chip with the caret afte
     composer.getByTestId(`composer-address-lock-${AGENT_A}`),
   ).toBeVisible();
   await expect(
-    composer.getByRole("button", { name: "Manage automatic agent mentions" }),
+    composer.getByRole("button", { name: "Manage mentions" }),
   ).toBeVisible();
   await page.waitForTimeout(500);
   await expect(input.locator(".agent-mention-highlight")).toHaveCount(1);
@@ -1281,7 +1281,7 @@ test("the mention-button placement fits the narrow composer", async ({
   await automaticallyMention(overlay, "Vogue");
   await expect(overlay.getByTestId("composer-address-locks")).toBeVisible();
   await expect(
-    overlay.getByRole("button", { name: "Manage automatic agent mentions" }),
+    overlay.getByRole("button", { name: "Manage mentions" }),
   ).toBeVisible();
   await waitForAnimations(page);
   await composer.screenshot({ path: `${SHOTS}/narrow-mention-button.png` });
