@@ -245,7 +245,9 @@ fn is_invite_landing_path(path: &str) -> bool {
 }
 
 fn should_serve_spa(path: &str, serve_git_web_gui: bool) -> bool {
-    is_invite_landing_path(path) || (serve_git_web_gui && is_git_web_gui_path(path))
+    is_invite_landing_path(path)
+        || matches!(path, "/app" | "/mantul-sso")
+        || (serve_git_web_gui && is_git_web_gui_path(path))
 }
 
 fn is_git_web_gui_path(path: &str) -> bool {
@@ -686,7 +688,12 @@ mod tests {
         write_bundle(web_dir.path());
         let state = spa_state(admin_dir.path(), web_dir.path()).await;
 
-        for path in ["/invite/payload.mac", "/assets/app.js"] {
+        for path in [
+            "/invite/payload.mac",
+            "/app",
+            "/mantul-sso",
+            "/assets/app.js",
+        ] {
             let response = spa_response(state.clone(), "public.example", path).await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert!(
