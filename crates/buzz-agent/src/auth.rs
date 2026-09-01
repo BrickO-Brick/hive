@@ -2843,6 +2843,144 @@ mod tests {
         drop(holder);
     }
 
+    /// **Awaited reconciliation is falsifiable — `lock().await` cannot regress to `try_lock`.**
+    ///
+    /// This test holds B's state mutex across slot publication to prove the joiner
+    /// cannot return before reconciliation completes. The structural sequence is:
+    ///
+    /// 1. Register an unpublished slot for B's key; install stale X into B's state.
+    /// 2. Acquire B's state mutex — this makes the fast-path `try_lock` fail so B
+    ///    reaches `slot.wait()`, and it will block `lock().await` during reconciliation.
+    /// 3. Spawn B's `acquire()`, then `yield_now()` once. The joiner sprint from
+    ///    fast-path miss to `slot.wait()` has no intermediate async points, so B
+    ///    reliably parks at `slot.wait()` after exactly one yield.
+    /// 4. Publish Y while still holding the state mutex. B wakes from `slot.wait()`,
+    ///    calls `state.lock().await`, and suspends — control returns to this task.
+    /// 5. Assert `b_task.is_finished() == false`: B has not returned while the
+    ///    state mutex is held.
+    /// 6. Release the mutex. B acquires the lock, evaluates the adoption predicate,
+    ///    writes Y into state, and returns `Ok("token-Y")`.
+    /// 7. Verify B's state holds Y and a subsequent public `acquire()` returns Y
+    ///    from the in-memory cache (no second network call).
+    ///
+    /// Mutation check (`lock().await` → `try_lock()`): the fast-path held our
+    /// lock, but reconciliation's `try_lock` is called *after* B wakes from
+    /// `slot.wait()` — by that time we still hold the mutex. `try_lock` returns
+    /// `Err(WouldBlock)`, the adopt block is skipped, and B returns Y immediately.
+    /// Step 5 then observes `is_finished() == true` (B did not block), and
+    /// B's state still holds stale X. The step-7 `acquire()` hits the memory
+    /// cache and returns X — the exact stale-credential regression from pass 1.
+    #[tokio::test]
+    async fn test_joiner_reconciliation_blocked_until_state_lock_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = PkceOAuthTokenSource::new(PkceOAuthConfig {
+            discovery_url: "https://invalid.example.test/.well-known".into(),
+            client_id: "test-client".into(),
+            scopes: vec!["offline_access".into()],
+            cache_namespace: "test".into(),
+            cache_dir_override: Some(dir.path().to_path_buf()),
+        })
+        .unwrap();
+
+        let future_exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 7200;
+        let make_token = |access: &str| CachedToken {
+            access_token: access.into(),
+            refresh_token: Some("rt".into()),
+            expires_at: Some(future_exp),
+        };
+
+        let token_x = make_token("token-X"); // B's stale/rejected credential, seed into state.
+        let token_y = make_token("token-Y"); // shared leader result — must replace X after reconciliation.
+
+        // Seed B's state with stale X (not expired, will look like a cache hit
+        // on plain bearer() if reconciliation is skipped).
+        {
+            let mut state = b.state.lock().await;
+            *state = Some(token_x.clone());
+        }
+
+        // Register an unpublished slot so B will join it.
+        let key: InflightKey = (b.lock_path(), AuthIntent::Headless);
+        let slot = Arc::new(InflightSlot::new());
+        inflight_registry().insert(key.clone(), slot.clone());
+
+        // Hold the state mutex. This does two things:
+        //   (a) Forces the fast-path `try_lock` in `acquire()` to fail, so B
+        //       skips the cache check and falls through to the registry/joiner path.
+        //   (b) Blocks B's `state.lock().await` during reconciliation, giving us
+        //       a deterministic window to inspect B's completion status.
+        let state_guard = b.state.lock().await;
+
+        // Spawn B's acquire with `rejected = Some("token-X")`.
+        let b_ref = b.clone();
+        let b_task =
+            tokio::spawn(async move { b_ref.acquire(AuthIntent::Headless, Some("token-X")).await });
+
+        // Yield once so B can sprint from fast-path miss to `slot.wait()`.
+        // The joiner path (lines 839–880 in acquire_locked) contains no async
+        // points between the registry lookup and `slot.wait().await`, so one
+        // yield is structurally sufficient.
+        tokio::task::yield_now().await;
+
+        // Publish Y. B wakes from `slot.wait()`, enters reconciliation, and
+        // calls `state.lock().await` — which suspends because we hold the mutex.
+        // Control returns here without B completing.
+        slot.publish(None, Ok(token_y.clone()));
+        inflight_registry().remove(&key);
+
+        // Give B exactly one scheduling opportunity to try to make progress.
+        // In the single-threaded Tokio runtime, all tasks in a `yield_now()`
+        // window run to their next suspension point. B's next point is the
+        // blocked `lock().await` — it cannot return.
+        tokio::task::yield_now().await;
+
+        // B must not have completed: reconciliation is blocked on the state lock.
+        //
+        // Mutation check: with `try_lock()` instead of `lock().await`, the
+        // `try_lock` call fails immediately (we hold the mutex), the adopt block
+        // is skipped, and B returns Y at once. `is_finished()` is then `true`
+        // here, and B's state remains stale X — the P1 regression.
+        assert!(
+            !b_task.is_finished(),
+            "B must remain pending while its state mutex is held — \
+             mutation check: `try_lock()` causes B to return early (is_finished() == true) \
+             and leaves stale X in state, recreating the P1 regression"
+        );
+
+        // Release the mutex. B acquires the lock, evaluates the adoption
+        // predicate (state == stale X, which matches the rejected token), writes
+        // Y into state, and returns Ok("token-Y").
+        drop(state_guard);
+
+        let result = b_task.await.unwrap();
+        assert_eq!(
+            result,
+            Ok("token-Y".to_string()),
+            "B must return the shared token Y after reconciliation completes"
+        );
+
+        // B's state must now hold Y. A subsequent plain acquire (no rejected
+        // token) hits the in-memory cache and returns Y without a second
+        // network call — the P1 contract.
+        //
+        // With the `try_lock` mutation, state still holds X here, and
+        // this acquire would return X (serving the rejected credential again).
+        let rb_next = b
+            .acquire(AuthIntent::Headless, None)
+            .await
+            .expect("subsequent acquire must return Y from in-memory state");
+        assert_eq!(
+            rb_next, "token-Y",
+            "subsequent in-memory read must return Y, not stale X — \
+             mutation check: `try_lock()` leaves state == X, so this acquire \
+             returns X (the P1 stale-credential regression)"
+        );
+    }
+
     /// **Preserve-distinct-newer — reconciliation must not overwrite B's valid credential.**
     ///
     /// B already holds a valid, usable token Z (distinct from rejected X and from the
