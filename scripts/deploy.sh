@@ -22,6 +22,17 @@ if ! getent hosts hive.onebrick.io >/dev/null 2>&1; then
   exit 1
 fi
 
+ingress_network="${ONEBRICK_INGRESS_NETWORK:-onebrick-stack_private_net}"
+docker network inspect "${ingress_network}" >/dev/null 2>&1 || {
+  echo "Ingress stop condition: required Docker network ${ingress_network} is absent." >&2
+  exit 1
+}
+docker inspect reverse-proxy --format '{{json .NetworkSettings.Networks}}' \
+  | grep -Fq "\"${ingress_network}\"" || {
+    echo "Ingress stop condition: reverse-proxy is not attached to ${ingress_network}." >&2
+    exit 1
+  }
+
 hive_compose config --quiet
 hive_compose pull postgres redis minio minio-init
 hive_compose up -d --wait postgres redis minio minio-init relay

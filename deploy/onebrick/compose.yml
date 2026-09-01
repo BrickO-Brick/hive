@@ -70,7 +70,10 @@ services:
     restart: unless-stopped
     logging: *bounded-logging
     networks:
-      - hive-net
+      hive-net:
+      onebrick-ingress:
+        aliases:
+          - hive-relay
 
   postgres:
     <<: *default-security
@@ -236,3 +239,6 @@ networks:
     driver: bridge
     labels:
       io.onebrick.hive.network: private
+  onebrick-ingress:
+    external: true
+    name: ${ONEBRICK_INGRESS_NETWORK:-onebrick-stack_private_net}
