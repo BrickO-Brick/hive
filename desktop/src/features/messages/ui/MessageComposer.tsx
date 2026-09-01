@@ -870,7 +870,10 @@ function MessageComposerImpl({
               onOptionsRevealComplete={completeMentionOptionsReveal}
               onToggleAlwaysAddressAgent={
                 audienceScope && editTarget == null
-                  ? toggleAlwaysAddressAgent
+                  ? (suggestion) =>
+                      toggleAlwaysAddressAgent(suggestion, {
+                        preserveMention: true,
+                      })
                   : undefined
               }
               onFetchMore={mentions.fetchMoreSuggestions}

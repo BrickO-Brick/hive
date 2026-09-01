@@ -579,7 +579,7 @@ test("the mention button opens settings and can undo an address", async ({
       name: "Don't automatically mention Morgarita in this thread",
     })
     .click();
-  await expect(input).toHaveText("draft text");
+  await expect(input).toHaveText("@Morgarita draft text");
   await expect(
     composer.getByRole("button", { name: "Mention someone" }),
   ).toBeVisible();
