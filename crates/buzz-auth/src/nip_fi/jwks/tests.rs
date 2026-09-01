@@ -586,31 +586,19 @@ async fn resolve_ssrf_accepts_public_ipv6_fast_path() {
     assert_eq!(ip, "2606:4700::1".parse::<std::net::IpAddr>().unwrap());
 }
 
-/// The full URL→fetcher→resolver seam for a public IPv6 literal. A
-/// public IPv6 JWKS URI passes `validate_jwks_uri`, then `fetch_jwks_inner`
-/// must extract the bare host (not the bracketed `host_str()` form) before
-/// invoking `resolve_and_check_ssrf`. The SSRF check then fires on the bare
-/// address string — confirming the extraction happened — before any network
-/// I/O is attempted.
-///
-/// Mutation (correctness): restoring `parsed.host_str()` inside
-/// `fetch_jwks_inner` returns `"[::1]"` for an IPv6 URI. `"[::1]".parse::<IpAddr>()`
-/// fails (brackets are not valid for `IpAddr`), so the code falls to the DNS
-/// path. On most platforms `("[::1]", 443).to_socket_addrs()` succeeds and
-/// resolves to `::1`, which still triggers the SSRF check — so the loopback
-/// rejection test below stays green. However, for a *public* IPv6 target the
-/// bracket-stripped path is load-bearing: `reqwest`'s `.resolve(host, addr)`
-/// uses the raw host string as its override key; when the key is the
-/// bracketed form but the URL authority uses the bare form, the pin does not
-/// apply and the connection bypasses SSRF-resolved addressing. The boundary
-/// test below exercises the IPv6 URI → SSRF-check path end-to-end in a way
-/// that confirms the host extraction is bracket-free.
+/// The public fetcher rejects an IPv6 loopback JWKS URI before any network
+/// connection is attempted. `fetch_jwks_inner` calls `validate_jwks_uri` as
+/// its first step; `validate_jwks_uri` parses the URI, extracts the host via
+/// `Url::host()`, and rejects any non-globally-unicast address as
+/// `InvalidUri`. `::1` (loopback) never reaches the extraction or
+/// resolved-target enforcement stages. Bracket-free extraction and
+/// resolved-target value-flow evidence is covered by the dedicated
+/// `resolved_target_and_pin_key_seam_public_ipv6_and_fec0_rejection` test;
+/// connector-boundary behavior is a separate runtime concern.
 #[tokio::test]
 async fn http_fetcher_rejects_ipv6_loopback_uri_as_invalid() {
-    // https://[::1]/... must be rejected as InvalidUri (SSRF: loopback).
-    // That rejection requires the SSRF check to fire on the bare `::1`,
-    // which only happens when `fetch_jwks_inner` extracts the host via
-    // `Url::host()` (typed) rather than `host_str()` (bracketed).
+    // https://[::1]/... is rejected by validate_jwks_uri (SSRF: loopback)
+    // before extraction or resolved-target enforcement runs.
     let fetcher = HttpJwksFetcher::new();
     let err = fetcher
         .fetch_jwks("https://[::1]/.well-known/jwks.json")
