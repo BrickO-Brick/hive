@@ -127,6 +127,10 @@ test("automatic mention setting is visible by default without an options ingress
 
   assert.equal(view.queryByRole("button", { name: "Options" }), null);
   assert.ok(view.getByTestId("mention-options-settings"));
+  const settings = view.getByTestId("mention-options-settings");
+  assert.ok(settings.classList.contains("w-80"));
+  assert.ok(settings.classList.contains("max-w-full"));
+  assert.ok(settings.parentElement?.classList.contains("justify-end"));
   const toggle = view.getByRole("switch", {
     name: "Automatically mention agents",
   });

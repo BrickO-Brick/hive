@@ -153,10 +153,10 @@ export const MentionAutocomplete = React.memo(function MentionAutocomplete({
     >
       <div className="w-full max-w-2xl">
         {onKeepMentionedAgentsPinnedChange ? (
-          <div className="mb-2 flex w-80 max-w-full justify-end">
+          <div className="mb-2 flex justify-end">
             <div
               className={cn(
-                "w-full overflow-hidden rounded-xl text-popover-foreground ring-1 ring-border/50",
+                "w-80 max-w-full overflow-hidden rounded-xl text-popover-foreground ring-1 ring-border/50",
                 POPOVER_SURFACE_CLASS,
               )}
               data-testid="mention-options-settings"
