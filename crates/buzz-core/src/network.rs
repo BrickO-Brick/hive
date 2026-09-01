@@ -130,6 +130,7 @@ pub fn is_not_global_unicast(ip: &std::net::IpAddr) -> bool {
 
             s[0] & 0xfe00 == 0xfc00                          // fc00::/7 ULA
                 || s[0] & 0xffc0 == 0xfe80                   // fe80::/10 link-local
+                || s[0] & 0xffc0 == 0xfec0                   // fec0::/10 deprecated site-local (RFC 3879)
                 || s[0] & 0xff00 == 0xff00                   // ff00::/8 multicast
                 // 64:ff9b:1::/48 local-use NAT64 (RFC 8215)
                 || (s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 1)
@@ -266,6 +267,23 @@ mod tests {
     fn ula_v6() {
         assert!(blocked("fd00::1"));
         assert!(blocked("fc00::1"));
+    }
+
+    #[test]
+    fn deprecated_site_local_v6() {
+        // fec0::/10 — deprecated IPv6 site-local (RFC 3879), non-global.
+        assert!(blocked("fec0::1"));
+        assert!(blocked("fec0:ffff::1"));
+        assert!(blocked("feff:ffff::1")); // still within fec0::/10
+                                          // Verify the lower boundary: ff00 is multicast (also blocked), so
+                                          // confirm an address just below fec0 (in the fe80::/10 link-local
+                                          // block) is blocked for a different reason, and that an address
+                                          // just above feff (i.e. ff00::/8 multicast) is also blocked.
+        assert!(blocked("fe80::1")); // fe80::/10 link-local (different predicate)
+        assert!(blocked("ff00::1")); // ff00::/8 multicast (different predicate)
+                                     // Addresses outside both ranges (fe00::/8 through fe7f::/9) are not
+                                     // matched by the site-local or link-local predicates.
+        assert!(!blocked("fe00::1")); // fe00::/9 — not link-local, not site-local
     }
 
     #[test]

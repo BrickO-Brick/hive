@@ -290,12 +290,21 @@ async fn fetch_jwks_inner(uri: &str) -> Result<String, JwksFetchError> {
     validate_jwks_uri(uri)?;
 
     let parsed = Url::parse(uri).map_err(|_| JwksFetchError::InvalidUri)?;
-    let host = parsed.host_str().ok_or(JwksFetchError::InvalidUri)?;
+    let host = match parsed.host() {
+        Some(url::Host::Ipv4(addr)) => addr.to_string(),
+        // `host_str()` on an IPv6 literal includes brackets (e.g.
+        // `[2606:4700::1]`), which `IpAddr::parse` and reqwest's `resolve()`
+        // expect without them. Use the typed accessor to extract the bare
+        // address.
+        Some(url::Host::Ipv6(addr)) => addr.to_string(),
+        Some(url::Host::Domain(d)) => d.to_owned(),
+        None => return Err(JwksFetchError::InvalidUri),
+    };
     let port = parsed.port_or_known_default().unwrap_or(443);
 
     // Resolve and check every IP before sending. Pins DNS to the validated
     // address to prevent rebinding TOCTOU between check and connect.
-    let safe_ip = resolve_and_check_ssrf(host, port).await?;
+    let safe_ip = resolve_and_check_ssrf(&host, port).await?;
 
     // Build a per-request client that:
     // - denies redirects (a 3xx to an internal host bypasses the URI check);
@@ -304,7 +313,7 @@ async fn fetch_jwks_inner(uri: &str) -> Result<String, JwksFetchError> {
     let pinned_client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
-        .resolve(host, std::net::SocketAddr::new(safe_ip, port))
+        .resolve(&host, std::net::SocketAddr::new(safe_ip, port))
         .build()
         .map_err(|_| JwksFetchError::NetworkError)?;
 

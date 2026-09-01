@@ -52,6 +52,10 @@ use std::fmt;
 pub(crate) mod sealed {
     /// Private marker preventing external implementations of the key source.
     pub trait Sealed {}
+
+    // Blanket seal for `Arc<S>` so `Arc<ProductionJwksSource>` satisfies
+    // the sealed supertrait without requiring callers to implement it.
+    impl<S: Sealed> Sealed for std::sync::Arc<S> {}
 }
 
 /// One issuer's key source: a JWKS snapshot bound to the exact `iss` it
@@ -171,6 +175,25 @@ pub trait IssuerKeySource: sealed::Sealed {
     /// issuer has no available snapshot. Implementations MUST return only a
     /// snapshot whose [`AssertionKeySet::issuer`] equals `issuer`.
     fn key_set(&self, issuer: &str) -> Option<AssertionKeySet>;
+}
+
+/// Forwarding implementation so a single `Arc<S>` can be cheaply cloned and
+/// shared across multiple [`FederatedAssertionVerifier`] instances while all
+/// of them observe every refresh committed to the shared source.
+///
+/// This is the canonical sharing path for `ProductionJwksSource`, which is
+/// not itself `Clone` (its internal `RwLock`-protected state is not cheaply
+/// copyable). Wrap it in `Arc` at startup, then pass `Arc::clone(&source)` to
+/// each verifier — all verifiers read from the same underlying cache and see
+/// key rotations as soon as `get_snapshot` commits them.
+///
+/// The blanket seal (`impl<S: Sealed> Sealed for Arc<S>`) in the `sealed`
+/// module ensures this forwarding impl remains crate-owned: an external crate
+/// still cannot implement `IssuerKeySource` for its own type.
+impl<S: IssuerKeySource> IssuerKeySource for std::sync::Arc<S> {
+    fn key_set(&self, issuer: &str) -> Option<AssertionKeySet> {
+        (**self).key_set(issuer)
+    }
 }
 
 /// A fixed issuer→snapshot key source for the in-crate verifier tests,

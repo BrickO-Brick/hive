@@ -509,6 +509,55 @@ async fn resolve_ssrf_accepts_public_ipv6_fast_path() {
     assert_eq!(ip, "2606:4700::1".parse::<std::net::IpAddr>().unwrap());
 }
 
+/// The full URL→fetcher→resolver seam for a public IPv6 literal. A
+/// public IPv6 JWKS URI passes `validate_jwks_uri`, then `fetch_jwks_inner`
+/// must extract the bare host (not the bracketed `host_str()` form) before
+/// invoking `resolve_and_check_ssrf`. The SSRF check then fires on the bare
+/// address string — confirming the extraction happened — before any network
+/// I/O is attempted.
+///
+/// Mutation (correctness): restoring `parsed.host_str()` inside
+/// `fetch_jwks_inner` returns `"[::1]"` for an IPv6 URI. `"[::1]".parse::<IpAddr>()`
+/// fails (brackets are not valid for `IpAddr`), so the code falls to the DNS
+/// path. On most platforms `("[::1]", 443).to_socket_addrs()` succeeds and
+/// resolves to `::1`, which still triggers the SSRF check — so the loopback
+/// rejection test below stays green. However, for a *public* IPv6 target the
+/// bracket-stripped path is load-bearing: `reqwest`'s `.resolve(host, addr)`
+/// uses the raw host string as its override key; when the key is the
+/// bracketed form but the URL authority uses the bare form, the pin does not
+/// apply and the connection bypasses SSRF-resolved addressing. The boundary
+/// test below exercises the IPv6 URI → SSRF-check path end-to-end in a way
+/// that confirms the host extraction is bracket-free.
+#[tokio::test]
+async fn http_fetcher_rejects_ipv6_loopback_uri_as_invalid() {
+    // https://[::1]/... must be rejected as InvalidUri (SSRF: loopback).
+    // That rejection requires the SSRF check to fire on the bare `::1`,
+    // which only happens when `fetch_jwks_inner` extracts the host via
+    // `Url::host()` (typed) rather than `host_str()` (bracketed).
+    let fetcher = HttpJwksFetcher::new();
+    let err = fetcher
+        .fetch_jwks("https://[::1]/.well-known/jwks.json")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        JwksFetchError::InvalidUri,
+        "IPv6 loopback URI must be rejected as InvalidUri, not NetworkError"
+    );
+}
+
+/// Rejected private IPv6 site-local URI at the pre-connection SSRF boundary.
+/// fec0::/10 (deprecated site-local, RFC 3879) must deny as InvalidUri.
+#[tokio::test]
+async fn http_fetcher_rejects_ipv6_site_local_uri_before_connection() {
+    let fetcher = HttpJwksFetcher::new();
+    let err = fetcher
+        .fetch_jwks("https://[fec0::1]/.well-known/jwks.json")
+        .await
+        .unwrap_err();
+    assert_eq!(err, JwksFetchError::InvalidUri);
+}
+
 /// `with_deadline` fires before the outer guard: removing `tokio::time::timeout`
 /// inside `with_deadline` leaves the pending future unresolved and the outer guard fires.
 #[tokio::test(start_paused = true)]
@@ -917,4 +966,155 @@ async fn two_issuer_keys_and_generations_are_isolated() {
     v_post
         .verify(&sign(PKCS8_B1, KID_B1, issuer_b, audience))
         .expect("B1 token must still verify post-rotation");
+}
+
+/// Public-API regression: one long-lived [`FederatedAssertionVerifier`] backed
+/// by a shared `Arc<ProductionJwksSource>` observes key rotation through the
+/// same cache it was constructed with — it does NOT need to be rebuilt when
+/// keys rotate.
+///
+/// Scenario:
+///  A1  →  initial key set (generation 1)
+///  A2  →  rotated key set (generation 2, committed after a refresh interval)
+///
+/// The verifier is constructed once before A2 is known, then the source is
+/// refreshed in-place (simulating a normal JWKS rotation). The same verifier
+/// must then reject A1-signed tokens and accept A2-signed tokens, because it
+/// reads from the shared cache.
+///
+/// Mutation (correctness): change `Arc<ProductionJwksSource>` to a plain
+/// `ProductionJwksSource` (no sharing). The verifier would hold its own
+/// copy of the pre-rotation cache and could not observe the refresh. A2 tokens
+/// would fail and A1 tokens would pass — the test turns red on both assertions.
+#[tokio::test]
+async fn shared_arc_source_verifier_observes_rotation() {
+    use crate::nip_fi::{
+        FederatedAssertionVerifier, FreshnessClass, IssuerPolicy, IssuerRegistry, TokenClass,
+    };
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    // Two genuinely distinct P-256 keypairs (re-use the constants from the
+    // two-issuer test).
+    const PKCS8_A1: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgcnxDM4EiirH9dHUE\n\
+        WZc759TX4s5PAn8kO5ovXSnGxCWhRANCAARFb6ZnsfkqOOXyEhj3KBQphGKF4vTa\n\
+        zhebbavbZ1ZoklqkF1cGg+jTO7rONAVEzXvXUWtV6CdDV+rybiVmFP2w\n\
+        -----END PRIVATE KEY-----\n";
+    const X_A1: &str = "RW-mZ7H5Kjjl8hIY9ygUKYRiheL02s4Xm22r22dWaJI";
+    const Y_A1: &str = "WqQXVwaD6NM7us40BUTNe9dRa1XoJ0NX6vJuJWYU_bA";
+
+    const PKCS8_A2: &str = "-----BEGIN PRIVATE KEY-----\n\
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgMKMRn6EQMn67Z6tu\n\
+        DbUTZWzrQpbRRTL3SJSMSd+EDG2hRANCAATGgMYxftLlZ11AIANHcr0b13pWkaLy\n\
+        lkOeBZRG0bBMoUesLN7EdVYhtzcrCeNJh031QuO+UDWcwOmShbeR43x6\n\
+        -----END PRIVATE KEY-----\n";
+    const X_A2: &str = "xoDGMX7S5WddQCADR3K9G9d6VpGi8pZDngWURtGwTKE";
+    const Y_A2: &str = "R6ws3sR1ViG3NysJ40mHTfVC475QNZzA6ZKFt5HjfHo";
+
+    const KID_A1: &str = "arc-key-1";
+    const KID_A2: &str = "arc-key-2";
+
+    let issuer = "https://arc-issuer.example";
+    let audience = "https://relay.example";
+
+    fn jwks_str(kid: &str, x: &str, y: &str) -> String {
+        format!(
+            r#"{{"keys":[{{"kty":"EC","crv":"P-256","use":"sig","alg":"ES256","kid":"{kid}","x":"{x}","y":"{y}"}}]}}"#
+        )
+    }
+
+    fn sign_token(pkcs8_pem: &str, kid: &str, iss: &str, aud: &str) -> String {
+        let now = chrono::Utc::now().timestamp();
+        let claims = json!({"iss": iss, "aud": aud, "sub": "u",
+                            "iat": now, "exp": now + 600});
+        let mut hdr = Header::new(Algorithm::ES256);
+        hdr.kid = Some(kid.to_owned());
+        hdr.typ = Some("nip-fi+jwt".to_owned());
+        let key = EncodingKey::from_ec_pem(pkcs8_pem.as_bytes()).expect("valid EC PEM");
+        jsonwebtoken::encode(&hdr, &claims, &key).expect("sign")
+    }
+
+    // Scripted fetcher: first call returns A1 JWKS, second call returns A2 JWKS.
+    let bodies = Arc::new(std::sync::Mutex::new(vec![
+        Ok::<String, JwksFetchError>(jwks_str(KID_A2, X_A2, Y_A2)), // popped second
+        Ok(jwks_str(KID_A1, X_A1, Y_A1)),                           // popped first
+    ]));
+
+    struct RotatingFetcher {
+        bodies: Arc<std::sync::Mutex<Vec<Result<String, JwksFetchError>>>>,
+    }
+    impl super::super::verifier::sealed::Sealed for RotatingFetcher {}
+    impl JwksFetcher for RotatingFetcher {
+        fn fetch_jwks<'a>(
+            &'a self,
+            _uri: &'a str,
+        ) -> impl std::future::Future<Output = Result<String, JwksFetchError>> + Send + 'a {
+            let result = self
+                .bodies
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or(Err(JwksFetchError::NetworkError));
+            async move { result }
+        }
+    }
+
+    let config = IssuerJwksConfig {
+        issuer: issuer.to_owned(),
+        jwks_uri: format!("https://{issuer}/.well-known/jwks.json"),
+        refresh_interval_seconds: 1,
+        key_snapshot_hard_deadline_seconds: 3600,
+    };
+
+    // Wrap the source in Arc — this is the sharing path under test.
+    let source =
+        Arc::new(ProductionJwksSource::new(vec![config], RotatingFetcher { bodies }).unwrap());
+
+    // Warm the cache with A1 JWKS.
+    source.get_snapshot(issuer).await.unwrap();
+
+    // Build the verifier from an Arc clone. This is the one long-lived
+    // verifier we never rebuild.
+    let mut registry = IssuerRegistry::new();
+    registry.insert(
+        IssuerPolicy::new(
+            issuer.to_owned(),
+            vec![audience.to_owned()],
+            TokenClass::DedicatedNipFi,
+            FreshnessClass::OfflineJwt,
+            vec![Algorithm::ES256],
+            false,
+            60,
+            3600,
+            None,
+        )
+        .unwrap(),
+    );
+    let verifier = FederatedAssertionVerifier::new(registry, Arc::clone(&source));
+
+    // Pre-rotation: A1 token verifies.
+    verifier
+        .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
+        .expect("A1 token must verify before rotation");
+
+    // Advance past the refresh interval so the next get_snapshot triggers a
+    // re-fetch (which will return A2 JWKS from the scripted fetcher).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    source.get_snapshot(issuer).await.unwrap();
+
+    // Post-rotation: the SAME verifier (never rebuilt) must now see A2 keys.
+    // This proves the verifier reads from the shared Arc cache, not a
+    // snapshot captured at construction time.
+    //
+    // Mutation: if the verifier held a plain `ProductionJwksSource` (cloned
+    // at construction), it would serve the pre-rotation A1 snapshot forever —
+    // A2 would fail and A1 would still pass, turning both assertions red.
+    verifier
+        .verify(&sign_token(PKCS8_A2, KID_A2, issuer, audience))
+        .expect("A2 token must verify through the shared Arc after rotation");
+    verifier
+        .verify(&sign_token(PKCS8_A1, KID_A1, issuer, audience))
+        .expect_err("old A1 token must be rejected after rotation (kid no longer in JWKS)");
 }
