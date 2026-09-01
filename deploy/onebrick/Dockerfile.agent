@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+ARG RUST_IMAGE=rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+
+FROM ${RUST_IMAGE} AS rust-builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release --locked \
+      -p buzz-acp --bin buzz-acp \
+      -p buzz-cli --bin buzz
+
+FROM ${NODE_IMAGE} AS runtime
+ARG OCI_CREATED=unknown
+ARG HIVE_SOURCE_SHA=unknown
+LABEL org.opencontainers.image.title="Hive BrickO agent" \
+      org.opencontainers.image.description="OneBrick Buzz ACP to Codex runtime" \
+      org.opencontainers.image.source="https://github.com/BrickO-Brick/hive" \
+      org.opencontainers.image.created="${OCI_CREATED}" \
+      org.opencontainers.image.revision="${HIVE_SOURCE_SHA}" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git tini \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/bricko
+COPY deploy/onebrick/agent/package.json deploy/onebrick/agent/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts \
+    && npm cache clean --force \
+    && ln -s /opt/bricko/node_modules/.bin/codex-acp /usr/local/bin/codex-acp \
+    && ln -s /opt/bricko/node_modules/.bin/codex /usr/local/bin/codex
+COPY --from=rust-builder /build/target/release/buzz-acp /usr/local/bin/buzz-acp
+COPY --from=rust-builder /build/target/release/buzz /usr/local/bin/buzz
+COPY --chmod=0755 deploy/onebrick/agent/entrypoint.sh /usr/local/bin/bricko-entrypoint
+COPY --chmod=0644 deploy/onebrick/agent/config.toml /etc/bricko/codex-config.toml
+
+RUN useradd --system --uid 10001 --create-home --home-dir /var/lib/bricko bricko \
+    && mkdir -p /workspace /var/lib/bricko/.codex /var/lib/bricko/logs \
+    && cp /etc/bricko/codex-config.toml /var/lib/bricko/.codex/config.toml \
+    && chown -R bricko:bricko /workspace /var/lib/bricko
+
+USER bricko
+WORKDIR /workspace
+ENV CODEX_HOME=/var/lib/bricko/.codex
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/bricko-entrypoint"]

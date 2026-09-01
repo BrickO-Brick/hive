@@ -14,6 +14,10 @@ __pycache__/
 .env
 .env.local
 .env.*.local
+deploy/onebrick/.env
+deploy/onebrick/evidence/
+docs/evidence/*.local.txt
+docs/evidence/*.secret.*
 
 # Editor / IDE
 .idea/

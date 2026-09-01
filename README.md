@@ -1,3 +1,9 @@
+> **OneBrick deployment overlay:** this fork builds and operates
+> `hive.onebrick.io`. Buzz is the collaboration workspace, BrickO is the
+> internal bot, Codex is its initial processor, and BrickA remains separate.
+> Production files live in [`deploy/onebrick`](deploy/onebrick) with operator
+> guidance in [`docs`](docs).
+
 <h1 align="center">Buzz 🐝</h1>
 
 <p align="center">

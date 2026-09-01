@@ -1,0 +1,65 @@
+Hive OneBrick Phase 0 preflight (sanitized)
+Observed: 2026-09-01T08:09:28Z
+
+REPOSITORY BEFORE INITIALIZATION
+- Local path: /Users/bricko/Work/Hive
+- Initial state: empty directory; not a Git repository
+- BrickO-Brick/hive: did not exist at first inspection
+- block/buzz main: 571c1902d0ca55cfd4ccf6b91eeb731909cc10be
+
+REPOSITORY AFTER INITIALIZATION
+- Model: OneBrick-controlled public fork
+- origin: https://github.com/BrickO-Brick/hive.git
+- upstream: https://github.com/block/buzz.git
+- origin/main and upstream/main initially matched the upstream SHA above
+
+DNS
+- Local resolver returned no A or AAAA answer for hive.onebrick.io.
+- Direct SSH by the Hive hostname failed because it could not be resolved.
+- Candidate EC2 was discovered through the explicit local alias mantap-ec2.
+
+HOST
+- Hostname: ip-172-31-4-234
+- Public address observed from host: 15.232.20.96
+- OS: Ubuntu 22.04.5 LTS
+- Kernel: Linux 6.8.0-1060-aws
+- Architecture: x86_64
+- CPU: 8 logical CPUs
+- Memory: 30 GiB total; about 17 GiB available at observation
+- Swap: 8 GiB total; about 3.6-3.8 GiB used at observation
+- Root disk: 1.5 TiB total; 947 GiB used; 508 GiB available
+- Root inode use: 16%
+- Docker: 29.4.1
+- Docker Compose: 5.1.3
+
+LOAD/RISK SNAPSHOT
+- Load averages: 5.40, 3.98, 3.88
+- vmstat samples retained 39-84% CPU idle with one 16% I/O-wait sample.
+- n8n had a transient 304.10% CPU and 4.813 GiB memory sample.
+- Conclusion: capacity appears possible with conservative limits, but the
+  shared-host gate must be repeated immediately before build/deploy. Building
+  on this host while the transient load persists would risk Mantap.
+
+NETWORK/PROXY
+- Public listeners: 22, 80, 443.
+- Loopback listeners included 4873 and 8080; 3300 was free.
+- Existing reverse proxy: container reverse-proxy, caddy:2.11.4-alpine.
+- Caddy publishes 80/tcp and 443/tcp+udp.
+- Caddyfile bind mount: /srv/onebrick/stack/deploy/caddy/Caddyfile (read-only in container).
+- Compose project: onebrick-stack.
+- Caddy is not privileged.
+- Hive must use a separate network and must not overwrite this configuration.
+
+VALIDATION PERFORMED
+- The isolated Hive Caddy site block was parsed by caddy:2.11.4-alpine.
+- Result: Valid configuration.
+
+BLOCKERS
+- DNS record absent.
+- SaGad owner public key absent.
+- Repository-scoped GitHub read-only credential absent.
+- Persistent server-side Codex ChatGPT login absent.
+- No production image digest or coordinated backup exists yet.
+
+No secrets, private keys, tokens, chat IDs, cookies, or environment values are
+included in this evidence file.

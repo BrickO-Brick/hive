@@ -1,0 +1,5 @@
+cli_auth_credentials_store = "file"
+forced_login_method = "chatgpt"
+
+[sandbox_workspace_write]
+network_access = false

@@ -1,0 +1,238 @@
+name: hive
+
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-security: &default-security
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  init: true
+
+services:
+  relay:
+    <<: *default-security
+    image: ${HIVE_IMAGE:?set immutable HIVE_IMAGE with @sha256 digest}
+    environment:
+      BUZZ_BIND_ADDR: 0.0.0.0:3000
+      BUZZ_HEALTH_PORT: "8080"
+      BUZZ_METRICS_PORT: "9102"
+      DATABASE_URL: postgres://${POSTGRES_USER:-hive}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hive}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      BUZZ_S3_ENDPOINT: http://minio:9000
+      BUZZ_S3_ADDRESSING_STYLE: path
+      BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      BUZZ_S3_BUCKET: ${BUZZ_S3_BUCKET:-hive-media}
+      BUZZ_GIT_REPO_PATH: /data/git
+      RELAY_URL: ${RELAY_URL:-wss://hive.onebrick.io}
+      BUZZ_MEDIA_BASE_URL: ${BUZZ_MEDIA_BASE_URL:-https://hive.onebrick.io/media}
+      BUZZ_MEDIA_SERVER_DOMAIN: ${BUZZ_MEDIA_SERVER_DOMAIN:-hive.onebrick.io}
+      BUZZ_CORS_ORIGINS: ${BUZZ_CORS_ORIGINS:-https://hive.onebrick.io}
+      BUZZ_REQUIRE_AUTH_TOKEN: ${BUZZ_REQUIRE_AUTH_TOKEN:-true}
+      BUZZ_REQUIRE_RELAY_MEMBERSHIP: ${BUZZ_REQUIRE_RELAY_MEMBERSHIP:-true}
+      BUZZ_ALLOW_NIP_OA_AUTH: ${BUZZ_ALLOW_NIP_OA_AUTH:-true}
+      BUZZ_AUTO_MIGRATE: ${BUZZ_AUTO_MIGRATE:-true}
+      BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-false}
+      RELAY_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:?set RELAY_OWNER_PUBKEY}
+      BUZZ_RELAY_PRIVATE_KEY: ${BUZZ_RELAY_PRIVATE_KEY:?set BUZZ_RELAY_PRIVATE_KEY}
+      BUZZ_GIT_HOOK_HMAC_SECRET: ${BUZZ_GIT_HOOK_HMAC_SECRET:?set BUZZ_GIT_HOOK_HMAC_SECRET}
+      RUST_LOG: ${RUST_LOG:-buzz_relay=info,buzz_db=info,buzz_auth=info,buzz_pubsub=info,tower_http=info}
+    ports:
+      - ${HIVE_HTTP_BIND:-127.0.0.1:3300}:3000
+    volumes:
+      - git-data:/data/git
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 1536m
+    cpus: 2.0
+    pids_limit: 512
+    restart: unless-stopped
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+  postgres:
+    <<: *default-security
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hive}
+      POSTGRES_USER: ${POSTGRES_USER:-hive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 256
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    restart: unless-stopped
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+  redis:
+    <<: *default-security
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    restart: unless-stopped
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+  minio:
+    <<: *default-security
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: server /data --address :9000
+    environment:
+      MINIO_ROOT_USER: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    restart: unless-stopped
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+  minio-init:
+    <<: *default-security
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      BUZZ_S3_ACCESS_KEY: ${BUZZ_S3_ACCESS_KEY:?set BUZZ_S3_ACCESS_KEY}
+      BUZZ_S3_SECRET_KEY: ${BUZZ_S3_SECRET_KEY:?set BUZZ_S3_SECRET_KEY}
+      BUZZ_S3_BUCKET: ${BUZZ_S3_BUCKET:-hive-media}
+    entrypoint: >
+      /bin/sh -euc '
+        mc alias set local http://minio:9000 "$${BUZZ_S3_ACCESS_KEY}" "$${BUZZ_S3_SECRET_KEY}"
+        mc mb --ignore-existing "local/$${BUZZ_S3_BUCKET}"
+        mc anonymous set none "local/$${BUZZ_S3_BUCKET}"
+      '
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /.mc:rw,noexec,nosuid,size=16m
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 64
+    restart: "no"
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+  bricko-agent:
+    <<: *default-security
+    profiles: ["agent"]
+    image: ${HIVE_AGENT_IMAGE:?set immutable HIVE_AGENT_IMAGE with @sha256 digest}
+    environment:
+      BUZZ_RELAY_URL: ws://relay:3000
+      BUZZ_PRIVATE_KEY: ${BRICKO_PRIVATE_KEY:?set BRICKO_PRIVATE_KEY}
+      BUZZ_ACP_AGENT_COMMAND: codex-acp
+      BUZZ_ACP_AGENT_ARGS: ""
+      BUZZ_ACP_AGENTS: "1"
+      BUZZ_ACP_LAZY_POOL: "true"
+      BUZZ_ACP_SESSION_POLICY: thread
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_HEARTBEAT_INTERVAL: "0"
+      BUZZ_ACP_IDLE_TIMEOUT: ${BUZZ_ACP_IDLE_TIMEOUT:-620}
+      BUZZ_ACP_MAX_TURN_DURATION: ${BUZZ_ACP_MAX_TURN_DURATION:-7200}
+      INITIAL_AGENT_MODE: read-only
+      NO_BROWSER: "1"
+      CODEX_HOME: /var/lib/bricko/.codex
+      APP_SERVER_LOGS: /var/lib/bricko/logs
+    volumes:
+      - ${HIVE_CODEX_HOME:-/srv/hive/secrets/codex-home}:/var/lib/bricko/.codex
+      - ${HIVE_AGENT_WORKSPACE:-/srv/hive/agent-workspaces}:/workspace:ro
+      - ${HIVE_AGENT_LOGS:-/srv/hive/logs/bricko-agent}:/var/lib/bricko/logs
+    working_dir: /workspace
+    depends_on:
+      relay:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    mem_limit: 3g
+    cpus: 2.0
+    pids_limit: 512
+    restart: on-failure:3
+    stop_grace_period: 45s
+    logging: *bounded-logging
+    networks:
+      - hive-net
+
+volumes:
+  postgres-data:
+    labels: {io.onebrick.hive.volume: postgres}
+  redis-data:
+    labels: {io.onebrick.hive.volume: redis}
+  minio-data:
+    labels: {io.onebrick.hive.volume: minio}
+  git-data:
+    labels: {io.onebrick.hive.volume: git}
+
+networks:
+  hive-net:
+    driver: bridge
+    labels:
+      io.onebrick.hive.network: private

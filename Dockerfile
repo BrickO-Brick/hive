@@ -14,6 +14,9 @@
 ARG RUST_VERSION=1.95
 ARG NODE_VERSION=24
 ARG DEBIAN_VERSION=bookworm
+ARG RUST_IMAGE=rust:${RUST_VERSION}-${DEBIAN_VERSION}
+ARG NODE_IMAGE=node:${NODE_VERSION}-${DEBIAN_VERSION}-slim
+ARG DEBIAN_IMAGE=debian:${DEBIAN_VERSION}-slim
 
 # Optional extra CA bundle for builds behind a TLS-intercepting corporate proxy
 # (e.g. a Cloudflare/Zscaler gateway that re-signs TLS). Empty by default, so
@@ -28,7 +31,7 @@ ARG EXTRA_CA_CERTS=
 ARG NPM_REGISTRY=
 
 # ─── Stage 1: cargo-chef base ───────────────────────────────────────────────
-FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS chef
+FROM ${RUST_IMAGE} AS chef
 # Trust an optional corporate-proxy CA before any network fetch (no-op if unset).
 ARG EXTRA_CA_CERTS
 COPY --chmod=0644 ${EXTRA_CA_CERTS:-Dockerfile} /tmp/extra-ca/src
@@ -89,7 +92,7 @@ RUN strip target/release/buzz-relay \
 # ─── Stage 4: web bundle (pnpm + vite) ──────────────────────────────────────
 # Independent of the Rust layers so a CSS change doesn't bust Rust cache and
 # vice versa.
-FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS web-builder
+FROM ${NODE_IMAGE} AS web-builder
 WORKDIR /build
 # Trust an optional corporate-proxy CA so corepack + pnpm can fetch over an
 # intercepting TLS gateway (no-op if EXTRA_CA_CERTS is unset).
@@ -127,16 +130,23 @@ COPY admin-web/ admin-web/
 RUN pnpm -C web build && pnpm -C admin-web build
 
 # ─── Stage 5: shared runtime ────────────────────────────────────────────────
-FROM debian:${DEBIAN_VERSION}-slim AS runtime-base
+FROM ${DEBIAN_IMAGE} AS runtime-base
 
 # OCI annotations: required for GHCR to auto-link the image to this repo and
 # inherit its visibility. org.opencontainers.image.source is the load-bearing
 # one — without it GHCR keeps the image private even when the repo is public.
+ARG OCI_SOURCE="https://github.com/block/buzz"
+ARG OCI_URL="https://github.com/block/buzz"
+ARG OCI_DOCUMENTATION="https://github.com/block/buzz#readme"
+ARG OCI_CREATED="unknown"
+ARG BUZZ_SOURCE_SHA="unknown"
 LABEL org.opencontainers.image.title="Buzz" \
       org.opencontainers.image.description="WebSocket relay server for the Buzz communications platform" \
-      org.opencontainers.image.source="https://github.com/block/buzz" \
-      org.opencontainers.image.url="https://github.com/block/buzz" \
-      org.opencontainers.image.documentation="https://github.com/block/buzz#readme" \
+      org.opencontainers.image.source="${OCI_SOURCE}" \
+      org.opencontainers.image.url="${OCI_URL}" \
+      org.opencontainers.image.documentation="${OCI_DOCUMENTATION}" \
+      org.opencontainers.image.created="${OCI_CREATED}" \
+      org.opencontainers.image.revision="${BUZZ_SOURCE_SHA}" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apt-get update \
