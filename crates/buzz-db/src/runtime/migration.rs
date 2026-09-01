@@ -1824,6 +1824,9 @@ mod tests {
             );
         }
         let mut expected_fences = migration.fence_attachments.clone();
+        for later_migration in MIGRATOR.iter().filter(|migration| migration.version > 29) {
+            expected_fences.extend(surface(later_migration.sql.as_ref()).fence_attachments);
+        }
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
         assert_eq!(
