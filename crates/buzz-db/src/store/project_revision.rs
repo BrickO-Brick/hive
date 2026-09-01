@@ -178,7 +178,7 @@ impl Db {
                  WHERE cm.community_id=$1 AND cm.channel_id=$2 AND cm.pubkey=$3 \
                    AND cm.removed_at IS NULL AND c.deleted_at IS NULL \
                    AND c.archived_at IS NULL \
-                 FOR SHARE OF c",
+                 FOR SHARE OF c, cm",
             )
             .bind(community_id.as_uuid())
             .bind(home_channel_id)
