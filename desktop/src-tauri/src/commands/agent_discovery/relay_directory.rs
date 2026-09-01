@@ -538,6 +538,7 @@ mod real_relay_tests {
             &agent,
             "Agent Probe",
             None,
+            None,
             Some(&auth_tag),
         )
         .await
