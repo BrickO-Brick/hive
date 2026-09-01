@@ -42,15 +42,17 @@ async function createCanvasHarness() {
   const manifest = await readJson("manifest.json");
   const fixtureData = await readJson(manifest.data);
   const sent = [];
-  let listener = null;
+  // A real MessagePort dispatches to every listener in registration order —
+  // the host-owned SDK registers first, then canvas.js. Mirror that here.
+  const listeners = [];
   let started = false;
   const port = {
     addEventListener(type, nextListener) {
-      if (type === "message") listener = nextListener;
+      if (type === "message") listeners.push(nextListener);
     },
     emit(data) {
-      assert.ok(listener, "canvas registered its port listener");
-      listener({ data });
+      assert.ok(listeners.length > 0, "canvas registered its port listener");
+      for (const listener of [...listeners]) listener({ data });
     },
     postMessage(message) {
       sent.push(message);
@@ -69,9 +71,17 @@ async function createCanvasHarness() {
       packageBaseUrl: "buzz-canvas://localhost/template/package/",
       port,
       protocolVersion: 1,
+      sdk: {},
     }),
     writable: false,
   });
+  // The bootstrap loads the host-owned SDK before every package script.
+  dom.window.eval(
+    await readFile(
+      path.join(desktopRoot, "src-tauri/src/project_canvas_package/sdk.js"),
+      "utf8",
+    ),
+  );
   for (const scriptPath of manifest.scripts) {
     dom.window.eval(
       await readFile(path.join(templateDirectory, scriptPath), "utf8"),
@@ -80,14 +90,20 @@ async function createCanvasHarness() {
   return { dom, fixtureData, manifest, port, sent, started: () => started };
 }
 
+const ALL_CAPABILITIES = [
+  "project.metadata.read",
+  "project.channels.read",
+  "project.reviews.read",
+  "project.tasks.read",
+  "project.people.read",
+  "project.tasks.write",
+  "app.open",
+];
+
 function initMessage(fixtureData, overrides = {}) {
   return {
     canvasId: "canvas-1",
-    capabilities: [
-      "project.metadata.read",
-      "project.channels.read",
-      "project.reviews.read",
-    ],
+    capabilities: ALL_CAPABILITIES,
     data: fixtureData,
     loadId: "load-1",
     mode: "preview",
@@ -102,11 +118,7 @@ function initMessage(fixtureData, overrides = {}) {
 test("template manifest declares only local ordered resources and read capabilities", async () => {
   const manifest = await readJson("manifest.json");
   assert.deepEqual(manifest, {
-    capabilities: [
-      "project.metadata.read",
-      "project.channels.read",
-      "project.reviews.read",
-    ],
+    capabilities: ALL_CAPABILITIES,
     data: "data/dashboards.json",
     format: "buzz-project-canvas",
     protocolVersion: 1,
@@ -148,7 +160,7 @@ test("fixture assets are self-contained and every presentation file stays bounde
   const assetReferences = [
     ...serializedData.matchAll(/assets\/[a-z0-9.-]+/g),
   ].map(([match]) => match);
-  assert.ok(assetReferences.length >= 11);
+  assert.ok(assetReferences.length >= 7);
   for (const relativePath of new Set(assetReferences)) {
     assert.equal(
       (await stat(path.join(templateDirectory, relativePath))).isFile(),
@@ -263,136 +275,183 @@ test("package starts the paused host port and renders all named dashboards", asy
   );
 });
 
-test("authoritative snapshots override fixtures including ready empty arrays", async () => {
+test("live queries drive the dev widgets through the SDK", async () => {
   const harness = await createCanvasHarness();
   const { document } = harness.dom.window;
-  harness.port.emit(
-    initMessage(harness.fixtureData, {
-      snapshots: {
-        channels: { data: [], status: "ready" },
-        project: { data: { name: "my-dev-team" }, status: "ready" },
-        reviews: { data: null, status: "loading" },
-      },
-    }),
-  );
-  assert.equal(
-    document.querySelector("[data-snapshot-state='empty']")?.textContent,
-    "No channels to show",
-  );
-  assert.equal(
-    document.querySelector("[data-snapshot-state='loading']")?.textContent,
-    "Loading reviews…",
-  );
-  assert.equal(document.body.textContent.includes("launch-room"), false);
-  assert.equal(document.body.textContent.includes("canvas-navigation"), false);
+  harness.port.emit(initMessage(harness.fixtureData));
 
-  harness.port.emit({
-    loadId: "load-1",
-    nonce: "nonce-1",
-    protocolVersion: 1,
-    snapshots: {
-      channels: {
-        data: [
+  const subscribes = harness.sent.filter(
+    (message) => message.type === "canvas.subscribe",
+  );
+  const byQuery = Object.fromEntries(
+    subscribes.map((message) => [message.query.name, message]),
+  );
+  assert.deepEqual(Object.keys(byQuery).sort(), [
+    "project.channels.list",
+    "project.reviews.list",
+    "project.tasks.list",
+  ]);
+  for (const message of subscribes) {
+    assert.equal(message.loadId, "load-1");
+    assert.equal(message.nonce, "nonce-1");
+    assert.equal(message.protocolVersion, 1);
+  }
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(byQuery["project.reviews.list"].query.params), {
+    status: "Open",
+  });
+  assert.deepEqual(plain(byQuery["project.tasks.list"].query.params), {
+    limit: 8,
+  });
+  assert.equal(document.body.textContent.includes("Loading channels…"), true);
+
+  const update = (subscriptionId, result) =>
+    harness.port.emit({
+      loadId: "load-1",
+      nonce: "nonce-1",
+      protocolVersion: 1,
+      result,
+      subscriptionId,
+      type: "host.subscriptionUpdate",
+    });
+
+  update(byQuery["project.channels.list"].subscriptionId, {
+    data: [],
+    status: "ready",
+  });
+  assert.equal(document.body.textContent.includes("No channels to show"), true);
+
+  update(byQuery["project.channels.list"].subscriptionId, {
+    data: [
+      {
+        description: "Release candidate is ready",
+        id: "channel-1",
+        lastMessageAt: null,
+        memberCount: 8,
+        name: "real-release",
+        people: [
           {
-            description: "Release candidate is ready",
-            memberCount: 8,
-            name: "real-release",
-            people: [],
+            avatarDataUrl: "data:image/png;base64,AA==",
+            displayName: "Reviewer One",
+            pubkey: "a".repeat(64),
           },
         ],
-        status: "ready",
+        relationship: "home",
+        topic: null,
       },
-      project: { data: { name: "my-dev-team" }, status: "ready" },
-      reviews: { data: [], status: "ready" },
-    },
-    type: "host.dataChanged",
+    ],
+    status: "ready",
   });
-  assert.equal(document.body.textContent.includes("real-release"), true);
+  const channelRow = document.querySelector(
+    "[data-buzz-component='channel-row']",
+  );
+  assert.ok(channelRow);
+  assert.equal(channelRow.tagName, "BUTTON");
+  assert.equal(channelRow.textContent.includes("# real-release"), true);
   assert.equal(
-    document.body.textContent.includes("Release candidate is ready"),
+    channelRow.textContent.includes("Release candidate is ready"),
     true,
   );
-  assert.equal(document.body.textContent.includes("No reviews to show"), true);
+  assert.equal(
+    channelRow
+      .querySelector("[data-buzz-component='avatar'] img")
+      ?.getAttribute("src"),
+    "data:image/png;base64,AA==",
+  );
+  channelRow.click();
+  const open = harness.sent.find((message) => message.type === "canvas.open");
+  assert.ok(open);
+  assert.deepEqual(plain(open.target), { id: "channel-1", type: "channel" });
 
-  harness.port.emit({
-    loadId: "load-1",
-    nonce: "nonce-1",
-    protocolVersion: 1,
-    snapshots: {
-      channels: {
-        data: [
-          {
-            description: "Shipping the local Canvas runtime",
-            lastMessageAt: "2026-08-28T02:00:00.000Z",
-            memberCount: 1,
-            name: "real-release",
-            people: [
-              {
-                avatarDataUrl: "data:image/png;base64,AA==",
-                displayName: "Reviewer One",
-                pubkey: "a".repeat(64),
-              },
-            ],
-          },
-        ],
-        status: "ready",
+  update(byQuery["project.reviews.list"].subscriptionId, {
+    data: [
+      {
+        author: "a".repeat(64),
+        branch: "feat/real-canvas",
+        displayId: "1a2b3c4d",
+        id: "1a2b3c4d".repeat(8),
+        status: "Open",
+        title: "Render actual review state",
+        updatedAt: 1,
       },
-      reviews: {
-        data: [
-          {
-            agentName: "Reviewer One",
-            agentPubkey: "a".repeat(64),
-            branch: "feat/real-canvas",
-            displayId: "1a2b3c4d",
-            id: "1a2b3c4d".repeat(8),
-            status: "Approved",
-            title: "Render actual review state",
-          },
-        ],
-        status: "ready",
-      },
-    },
-    type: "host.dataChanged",
+    ],
+    status: "ready",
   });
-  assert.equal(document.body.textContent.includes("PR #1a2b3c4d"), false);
-  assert.equal(document.body.textContent.includes("1a2b3c4d"), true);
   assert.equal(
     document.body.textContent.includes("Render actual review state"),
     true,
   );
-  assert.equal(
-    document
-      .querySelector(
-        "[data-testid='project-canvas-review-agent-approved-video']",
-      )
-      ?.getAttribute("aria-hidden"),
-    "true",
+  assert.equal(document.body.textContent.includes("1 open"), true);
+  const reviewRow = document.querySelector(
+    "[data-buzz-component='review-row']",
   );
+  assert.ok(reviewRow);
   assert.equal(
-    document
-      .querySelector("[data-testid='project-canvas-review-1'] .review-status")
-      ?.getAttribute("aria-label"),
-    "Reviewer One, approved",
+    reviewRow.querySelector(".buzz-status-pill")?.dataset.status,
+    "open",
   );
-  assert.equal(
-    document
-      .querySelector(
-        `[data-testid='project-canvas-active-member-${"a".repeat(64)}']`,
-      )
-      ?.getAttribute("src"),
-    "data:image/png;base64,AA==",
+
+  update(byQuery["project.tasks.list"].subscriptionId, {
+    data: [
+      {
+        assignees: [],
+        category: "Bug",
+        commentCount: 2,
+        displayId: "#42",
+        id: "b".repeat(64),
+        status: "Triage",
+        title: "Fix the flaky test",
+        updatedAt: 1,
+      },
+    ],
+    status: "ready",
+  });
+  const buttons = () => [...document.querySelectorAll("button")];
+  const markDone = buttons().find(
+    (button) => button.textContent === "Mark done",
   );
+  assert.ok(markDone);
+  markDone.click();
+  const command = harness.sent.find(
+    (message) => message.type === "canvas.command",
+  );
+  assert.ok(command);
+  assert.deepEqual(plain(command.command), {
+    name: "tasks.setStatus",
+    params: { id: "b".repeat(64), status: "done" },
+  });
+  assert.equal(markDone.disabled, true);
+  harness.port.emit({
+    commandId: command.commandId,
+    loadId: "load-1",
+    nonce: "nonce-1",
+    protocolVersion: 1,
+    result: { ok: true },
+    type: "host.commandResult",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(markDone.disabled, false);
+
+  const assignToMe = buttons().find(
+    (button) => button.textContent === "Assign to me",
+  );
+  assert.ok(assignToMe);
+  assignToMe.click();
+  const assign = harness.sent
+    .filter((message) => message.type === "canvas.command")
+    .at(-1);
+  assert.deepEqual(plain(assign.command), {
+    name: "tasks.assign",
+    params: { id: "b".repeat(64) },
+  });
 });
 
-test("missing capability snapshots never reveal bundled demo rows", async () => {
+test("missing capabilities render unavailable states and never subscribe", async () => {
   const harness = await createCanvasHarness();
   const { document } = harness.dom.window;
   harness.port.emit(
     initMessage(harness.fixtureData, {
       capabilities: ["project.metadata.read"],
-      snapshots: {
-        project: { data: { name: "my-dev-team" }, status: "ready" },
-      },
     }),
   );
 
@@ -404,8 +463,14 @@ test("missing capability snapshots never reveal bundled demo rows", async () => 
     document.body.textContent.includes("Reviews access unavailable"),
     true,
   );
-  assert.equal(document.body.textContent.includes("launch-room"), false);
-  assert.equal(document.body.textContent.includes("canvas-navigation"), false);
+  assert.equal(
+    document.body.textContent.includes("Tasks access unavailable"),
+    true,
+  );
+  assert.equal(
+    harness.sent.some((message) => message.type === "canvas.subscribe"),
+    false,
+  );
 });
 
 test("mode updates change package layout state without drawing a second fold marker", async () => {

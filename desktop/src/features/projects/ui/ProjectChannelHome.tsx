@@ -21,6 +21,7 @@ import {
 import { ProjectSelectionProvider } from "@/features/projects/lib/useProjectSelection";
 import { useChannelProjectFeatures } from "@/features/projects/useChannelProjectFeatures";
 import { useHealProjectHomeRepositories } from "@/features/projects/useHealProjectHomeRepositories";
+import { useLiveProjectWorkItems } from "@/features/projects/useLiveProjectWorkItems";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import { getAvatarSnapshotUrl } from "@/shared/lib/animatedAvatar";
@@ -30,7 +31,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
 import { ProjectChannelResourcesView } from "./ProjectChannelResourcesView";
 import { ProjectCanvasSurface } from "./project-canvas/ProjectCanvasSurface";
+import type { ProjectCanvasOpenTarget } from "./project-canvas/projectCanvasBroker";
 import type { ProjectCanvasSnapshots } from "./project-canvas/projectCanvasProtocol";
+import { useProjectCanvasBroker } from "./project-canvas/useProjectCanvasBroker";
 import {
   ProjectChannelTabs,
   projectChannelViewEnabled,
@@ -82,7 +85,7 @@ export function ProjectChannelHome({
   targetMessageEvents?: RelayEvent[];
   targetMessageId?: string | null;
 }) {
-  const { goChannel, goProject } = useAppNavigation();
+  const { goChannel, goProfile, goProject } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
   const profileQuery = useProfileQuery();
@@ -101,6 +104,12 @@ export function ProjectChannelHome({
     React.useState<ProjectHomeWorkspaceCreateAction | null>(null);
   const [workspaceDetail, setWorkspaceDetail] =
     React.useState<ProjectHomeWorkspaceDetail | null>(null);
+  const [canvasWorkspaceSelection, setCanvasWorkspaceSelection] =
+    React.useState<{
+      issueId?: string;
+      pullRequestId?: string;
+      seq: number;
+    } | null>(null);
   const channelFeatures = useChannelProjectFeatures({
     channel,
     currentPubkey: identityQuery.data?.pubkey,
@@ -375,6 +384,44 @@ export function ProjectChannelHome({
     }
   }, [activeView, channelFeatures.enabled, selectView]);
 
+  useLiveProjectWorkItems(project);
+  const handleCanvasOpenTarget = React.useCallback(
+    (target: ProjectCanvasOpenTarget) => {
+      if (target.type === "channel") {
+        void goChannel(target.id);
+        return;
+      }
+      if (target.type === "user") {
+        void goProfile(target.pubkey);
+        return;
+      }
+      setCanvasWorkspaceSelection((current) => ({
+        ...(target.type === "task"
+          ? { issueId: target.id }
+          : { pullRequestId: target.id }),
+        seq: (current?.seq ?? 0) + 1,
+      }));
+      selectView(target.type === "task" ? "issues" : "reviews");
+    },
+    [goChannel, goProfile, selectView],
+  );
+  const canvasBroker = useProjectCanvasBroker({
+    identityPubkey: identityQuery.data?.pubkey,
+    issues: {
+      data: channelFeatures.issuesQuery.data,
+      isError: channelFeatures.issuesQuery.isError,
+      isPending: channelFeatures.issuesQuery.isPending,
+    },
+    onOpenTarget: handleCanvasOpenTarget,
+    primaryRepository: channelFeatures.primaryRepository,
+    reviews: {
+      data: canvasReviewsQuery.data,
+      isError: canvasReviewsQuery.isError,
+      isPending: canvasReviewsQuery.isPending,
+    },
+    snapshots: canvasSnapshots,
+  });
+
   const handleOpenRepository = React.useCallback(
     (repositoryId: string) => {
       void goProject(project.id, { repositoryId });
@@ -498,8 +545,12 @@ export function ProjectChannelHome({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <ProjectHomeWorkspaceSheet
-            key={`${workspaceTab}:${workspaceRepository.id}`}
+            key={`${workspaceTab}:${workspaceRepository.id}:${canvasWorkspaceSelection?.seq ?? 0}`}
             identityPubkey={identityQuery.data?.pubkey}
+            initialIssueId={canvasWorkspaceSelection?.issueId ?? null}
+            initialPullRequestId={
+              canvasWorkspaceSelection?.pullRequestId ?? null
+            }
             onCreateActionChange={setWorkspaceCreateAction}
             onDetailChange={setWorkspaceDetail}
             onOpenCommit={handleOpenCommit}
@@ -591,6 +642,7 @@ export function ProjectChannelHome({
                       mainColumnHeader:
                         activeView === "chat" || activeView === "canvas" ? (
                           <ProjectCanvasSurface
+                            broker={canvasBroker}
                             communityId={activeCommunity?.id ?? null}
                             full={activeView === "canvas"}
                             onShowFullCanvas={() => selectView("canvas")}

@@ -77,6 +77,14 @@ pub(super) fn route(
             "text/javascript; charset=utf-8",
             bootstrap(&load).map_err(internal_error)?,
         )),
+        ["__buzz", "sdk.js"] => Ok((
+            "text/javascript; charset=utf-8",
+            include_str!("sdk.js").as_bytes().to_vec(),
+        )),
+        ["__buzz", "sdk.css"] => Ok((
+            "text/css; charset=utf-8",
+            include_str!("sdk.css").as_bytes().to_vec(),
+        )),
         ["package", rest @ ..] if !rest.is_empty() => serve_package_file(&load, rest),
         _ => Err((StatusCode::NOT_FOUND, "not found".to_string())),
     }
@@ -102,19 +110,25 @@ fn shell() -> Vec<u8> {
 fn bootstrap(load: &ActiveLoad) -> Result<Vec<u8>, String> {
     let nonce = serde_json::to_string(&load.nonce)
         .map_err(|error| format!("encode project canvas nonce: {error}"))?;
-    let scripts = load
-        .manifest
-        .scripts
-        .iter()
-        .map(|script| serde_json::to_string(&package_url(script)))
+    // The host-owned SDK loads before every package resource so packages can
+    // rely on `window.buzzCanvas.sdk` from their first statement.
+    let scripts = std::iter::once(Ok("\"./__buzz/sdk.js\"".to_string()))
+        .chain(
+            load.manifest
+                .scripts
+                .iter()
+                .map(|script| serde_json::to_string(&package_url(script))),
+        )
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("encode project canvas script URL: {error}"))?
         .join(",");
-    let styles = load
-        .manifest
-        .styles
-        .iter()
-        .map(|style| serde_json::to_string(&package_url(style)))
+    let styles = std::iter::once(Ok("\"./__buzz/sdk.css\"".to_string()))
+        .chain(
+            load.manifest
+                .styles
+                .iter()
+                .map(|style| serde_json::to_string(&package_url(style))),
+        )
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("encode project canvas style URL: {error}"))?
         .join(",");
@@ -143,6 +157,7 @@ fn bootstrap(load: &ActiveLoad) -> Result<Vec<u8>, String> {
         packageBaseUrl: new URL("./package/", location.href).href,
         protocolVersion,
         port,
+        sdk: {{}},
       }}),
       configurable: false,
       enumerable: false,

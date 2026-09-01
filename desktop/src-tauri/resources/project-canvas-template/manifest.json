@@ -18,6 +18,10 @@
   "capabilities": [
     "project.metadata.read",
     "project.channels.read",
-    "project.reviews.read"
+    "project.reviews.read",
+    "project.tasks.read",
+    "project.people.read",
+    "project.tasks.write",
+    "app.open"
   ]
 }

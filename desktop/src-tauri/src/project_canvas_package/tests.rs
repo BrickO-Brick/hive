@@ -521,7 +521,81 @@ fn bootstrap_is_host_owned_and_loads_only_declared_scripts_after_connect() {
     assert!(bootstrap.contains("window, \"buzzCanvas\""));
     assert!(bootstrap.contains("packageBaseUrl"));
     assert!(bootstrap.contains("new URL(\"./package/\", location.href).href"));
+    assert!(bootstrap.contains("sdk: {}"));
     assert!(!protocol::DOCUMENT_CSP.contains("'unsafe-inline'"));
+
+    // The host SDK loads before any package resource so packages can use
+    // window.buzzCanvas.sdk from their first statement.
+    let scripts_list = bootstrap
+        .split("const scripts = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap();
+    assert!(scripts_list.starts_with("\"./__buzz/sdk.js\","));
+    let styles_list = bootstrap
+        .split("const styles = [")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap();
+    assert!(styles_list.starts_with("\"./__buzz/sdk.css\","));
+}
+
+#[test]
+fn host_sdk_routes_serve_the_bundled_sources() {
+    let temp = TempDir::new().unwrap();
+    let binding = ProjectBinding::parse(request()).unwrap();
+    let source = source_root(&temp, &binding);
+    write_package(&source, "sdk");
+    let snapshot = prepare_snapshot(&temp.path().join("CANVASES"), &binding, None).unwrap();
+    let runtime = ProjectCanvasRuntime::with_root(temp.path().join("CANVASES"));
+    let descriptor = runtime.issue_load(binding, snapshot).unwrap();
+
+    let (content_type, sdk_js) =
+        protocol::route(&runtime, &format!("/{}/__buzz/sdk.js", descriptor.load_id)).unwrap();
+    assert_eq!(content_type, "text/javascript; charset=utf-8");
+    let sdk_js = String::from_utf8(sdk_js).unwrap();
+    assert!(sdk_js.contains("canvas.subscribe"));
+    assert!(sdk_js.contains("host.subscriptionUpdate"));
+    // The SDK must not start the port: the package entry owns port.start(),
+    // and starting it early would drop host.init for later listeners.
+    assert!(!sdk_js.contains("port.start()"));
+
+    let (content_type, sdk_css) =
+        protocol::route(&runtime, &format!("/{}/__buzz/sdk.css", descriptor.load_id)).unwrap();
+    assert_eq!(content_type, "text/css; charset=utf-8");
+    assert!(String::from_utf8(sdk_css)
+        .unwrap()
+        .contains("--buzz-background"));
+}
+
+#[test]
+fn manifest_accepts_the_full_capability_set_and_rejects_unknown_ones() {
+    let temp = TempDir::new().unwrap();
+    let template = temp.path().join("template");
+    write_package(&template, "capabilities");
+    let manifest_path = template.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    // Must accept every capability the desktop protocol schema recognizes.
+    manifest["capabilities"] = serde_json::json!([
+        "project.metadata.read",
+        "project.channels.read",
+        "project.reviews.read",
+        "project.tasks.read",
+        "project.people.read",
+        "project.tasks.write",
+        "app.open"
+    ]);
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let binding = ProjectBinding::parse(request()).unwrap();
+    assert!(prepare_snapshot(&temp.path().join("CANVASES"), &binding, Some(&template)).is_ok());
+
+    manifest["capabilities"] = serde_json::json!(["network"]);
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    // Fresh root: prepare_snapshot only seeds from the template on first use.
+    let error =
+        prepare_snapshot(&temp.path().join("CANVASES2"), &binding, Some(&template)).unwrap_err();
+    assert!(error.contains("unsupported project canvas capability"));
 }
 
 #[test]

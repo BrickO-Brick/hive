@@ -3,9 +3,11 @@ import { Maximize2 } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { ProjectCanvasHost } from "./ProjectCanvasHost";
+import type { ProjectCanvasBroker } from "./projectCanvasBroker";
 import type { ProjectCanvasSnapshots } from "./projectCanvasProtocol";
 
 export function ProjectCanvasSurface({
+  broker,
   communityId,
   full,
   onShowFullCanvas,
@@ -14,6 +16,7 @@ export function ProjectCanvasSurface({
   projectNames,
   snapshots,
 }: {
+  broker: ProjectCanvasBroker | null;
   communityId: string | null;
   full: boolean;
   onShowFullCanvas: () => void;
@@ -48,6 +51,7 @@ export function ProjectCanvasSurface({
     >
       <div className="min-h-0 flex-1">
         <ProjectCanvasHost
+          broker={broker}
           communityId={communityId}
           full={full}
           projectId={projectId}

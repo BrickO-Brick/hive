@@ -6,153 +6,210 @@
       clientTime: renderClientTime,
       meetings: renderMeetings,
       reviews: renderReviews,
+      tasks: renderTasks,
     },
   };
 
-  function renderActiveChannels(data, api) {
-    const { element, icon } = api;
+  // One live subscription per widget type: re-rendering a widget replaces its
+  // subscription instead of leaking the previous one.
+  const liveStops = new Map();
+
+  function sdkApi() {
+    const sdk = window.buzzCanvas?.sdk;
+    return sdk?.data && typeof sdk.data.liveQuery === "function" ? sdk : null;
+  }
+
+  function startLiveList(options, element) {
+    const previousStop = liveStops.get(options.key);
+    if (previousStop) previousStop();
+    const sdk = sdkApi();
+    if (!sdk?.capabilities().includes(options.capability)) {
+      liveStops.delete(options.key);
+      options.container.replaceChildren(
+        renderSnapshotState("unavailable", options.noun, element),
+      );
+      return;
+    }
+    options.container.replaceChildren(
+      renderSnapshotState("loading", options.noun, element),
+    );
+    const stop = sdk.data.liveQuery(options.query, options.params, (result) => {
+      if (!result || result.status === "loading") {
+        options.container.replaceChildren(
+          renderSnapshotState("loading", options.noun, element),
+        );
+        return;
+      }
+      if (result.status === "error") {
+        options.container.replaceChildren(
+          renderSnapshotState("error", options.noun, element),
+        );
+        return;
+      }
+      const rows = Array.isArray(result.data) ? result.data : [];
+      if (rows.length === 0) {
+        options.container.replaceChildren(
+          renderSnapshotState("empty", options.noun, element),
+        );
+        return;
+      }
+      options.container.replaceChildren();
+      options.render(rows, options.container, sdk);
+    });
+    liveStops.set(options.key, stop);
+  }
+
+  function renderActiveChannels(_data, api) {
+    const { element } = api;
     const list = element("div", "active-channels", {
       testId: "project-canvas-active-channels",
     });
-    if (data.snapshotState && data.snapshotState !== "ready") {
-      list.append(renderSnapshotState(data.snapshotState, "channels", element));
-      return list;
-    }
-    for (const channel of data.channels) {
-      const row = element("section", "channel-row", {
-        testId: `project-canvas-active-channel-${channel.name}`,
-      });
-      const details = element("div", "channel-details");
-      details.append(
-        element("strong", "channel-name", { text: `# ${channel.name}` }),
-      );
-      const updates = element("ul", "channel-updates", {
-        ariaLabel: `${channel.name} updates`,
-      });
-      channel.updates.forEach((update) => {
-        const item = element("li", "", { text: update });
-        item.prepend(icon("✓"));
-        updates.append(item);
-      });
-      details.append(updates);
-      const people = renderChannelPeople(channel, api);
-      row.append(details, people);
-      list.append(row);
-    }
+    startLiveList(
+      {
+        capability: "project.channels.read",
+        container: list,
+        key: "activeChannels",
+        noun: "channels",
+        params: {},
+        query: "project.channels.list",
+        render: (channels, container, sdk) => {
+          for (const channel of channels) {
+            container.append(sdk.ui.channelRow({ channel }));
+          }
+        },
+      },
+      element,
+    );
     return list;
   }
 
-  function renderChannelPeople(channel, { element, state }) {
-    const people = element("div", "channel-people", {
-      ariaLabel: `${channel.people.length} channel members`,
-    });
-    channel.people.forEach((active, index) => {
-      const inline = active.inlinePerson || {};
-      const person = state().data.people[active.id] || {
-        color: inline.color || "#64748b",
-        name: inline.displayName || inline.name || "Project member",
-        pubkey: inline.pubkey || active.id,
-      };
-      const wrapper = element("span", "active-person", {
-        ariaLabel: `${person.name}, channel member`,
-        role: "img",
-        testId: `project-canvas-active-channel-${channel.name}-person-${index + 1}`,
-      });
-      wrapper.dataset.pubkey = person.pubkey;
-      const safeAvatar =
-        typeof inline.avatarDataUrl === "string" &&
-        inline.avatarDataUrl.startsWith("data:image/")
-          ? inline.avatarDataUrl
-          : avatarDataUri(person);
-      wrapper.append(
-        element("img", "avatar-image", {
-          alt: `${person.name} avatar`,
-          src: safeAvatar,
-          testId: `project-canvas-active-member-${person.pubkey}`,
-        }),
-      );
-      people.append(wrapper);
-    });
-    return people;
-  }
-
-  function avatarDataUri(person) {
-    const initials = person.name
-      .split(/\s+/)
-      .map((part) => part[0])
-      .join("")
-      .slice(0, 2);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" rx="20" fill="${person.color}"/><text x="20" y="25" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="white">${initials}</text></svg>`;
-    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-  }
-
-  function renderReviews(data, { element, resolveAsset }) {
+  function renderReviews(_data, api) {
+    const { element } = api;
     const section = element("section", "reviews", {
-      ariaLabel: "Reviews you are waiting on",
+      ariaLabel: "Reviews waiting on the team",
       testId: "project-canvas-reviews",
     });
-    const intro = element("header", "reviews-intro");
-    intro.append(
-      element("div", "", { text: "Waiting on review" }),
-      element("strong", "count-badge", { text: `${data.reviews.length} open` }),
+    startLiveList(
+      {
+        capability: "project.reviews.read",
+        container: section,
+        key: "reviews",
+        noun: "reviews",
+        params: { status: "Open" },
+        query: "project.reviews.list",
+        render: (reviews, container, sdk) => {
+          const intro = element("header", "reviews-intro");
+          intro.append(
+            element("div", "", { text: "Waiting on review" }),
+            element("strong", "count-badge", {
+              text: `${reviews.length} open`,
+            }),
+          );
+          container.append(intro);
+          for (const review of reviews) {
+            container.append(sdk.ui.reviewRow({ review }));
+          }
+        },
+      },
+      element,
     );
-    section.append(intro);
-    if (data.snapshotState && data.snapshotState !== "ready") {
-      section.append(
-        renderSnapshotState(data.snapshotState, "reviews", element),
-      );
-      return section;
-    }
-    data.reviews.forEach((review, index) => {
-      const row = element("article", "review-row", {
-        testId: `project-canvas-review-${index + 1}`,
-      });
-      const summary = element("div", "review-summary");
-      summary.append(
-        element("span", "review-number", { text: review.displayId }),
-        element("strong", "", { text: review.title }),
-        element("code", "", { text: review.branch }),
-      );
-      const status = element("div", "review-status");
-      const reviewerName =
-        review.agentName ||
-        (review.agentPubkey
-          ? `${review.agentPubkey.slice(0, 8)}…`
-          : "Reviewer");
-      status.setAttribute(
-        "aria-label",
-        `${reviewerName}, ${review.status.toLowerCase()}`,
-      );
-      const video = element("video", "review-gloopie", {
-        "aria-hidden": "true",
-        autoplay: "",
-        loop: "",
-        muted: "",
-        playsinline: "",
-        poster: resolveAsset(review.poster),
-        testId:
-          review.status === "Approved"
-            ? "project-canvas-review-agent-approved-video"
-            : "project-canvas-review-agent-working-video",
-      });
-      video.dataset.berdAvatarId = `gloopies-${review.avatarId}`;
-      video.dataset.decorative = "true";
-      video.muted = true;
-      video.src = resolveAsset(review.gloopie);
-      status.append(
-        video,
-        element(
-          "span",
-          `status-pill ${review.status.toLowerCase().replaceAll(" ", "-")}`,
-          {
-            text: review.status === "Approved" ? "✓" : review.status,
-          },
+    return section;
+  }
+
+  function renderTasks(_data, api) {
+    const { element } = api;
+    const section = element("section", "tasks", {
+      ariaLabel: "Project tasks",
+      testId: "project-canvas-tasks",
+    });
+    startLiveList(
+      {
+        capability: "project.tasks.read",
+        container: section,
+        key: "tasks",
+        noun: "tasks",
+        params: { limit: 8 },
+        query: "project.tasks.list",
+        render: (tasks, container, sdk) => {
+          for (const task of tasks) {
+            container.append(renderTaskRow(task, sdk, element));
+          }
+        },
+      },
+      element,
+    );
+    return section;
+  }
+
+  function renderTaskRow(task, sdk, element) {
+    const title = String(task.title || "Untitled task");
+    const status = String(task.status || "Triage");
+    const row = element("article", "task-row", {
+      testId: `project-canvas-task-${task.displayId || task.id.slice(0, 8)}`,
+    });
+    const summary = element("div", "task-summary");
+    summary.append(
+      element("span", "task-id", { text: task.displayId }),
+      element("strong", "task-title", { text: title }),
+    );
+    const pill = element("span", "status-pill", { text: status });
+    pill.dataset.status = status.toLowerCase().replaceAll(" ", "-");
+    row.append(summary, pill);
+
+    const actions = element("div", "task-actions");
+    if (sdk.capabilities().includes("app.open")) {
+      actions.append(
+        taskActionButton(element, `Open ${title}`, "Open", () =>
+          sdk.app.open({ id: task.id, type: "task" }),
         ),
       );
-      row.append(summary, status);
-      section.append(row);
+    }
+    if (sdk.capabilities().includes("project.tasks.write")) {
+      const finished = status === "Done" || status === "Closed";
+      actions.append(
+        taskActionButton(
+          element,
+          finished ? `Reopen ${title}` : `Mark ${title} done`,
+          finished ? "Reopen" : "Mark done",
+          () =>
+            sdk.data.command("tasks.setStatus", {
+              id: task.id,
+              status: finished ? "open" : "done",
+            }),
+        ),
+      );
+      if (!finished && (task.assignees || []).length === 0) {
+        actions.append(
+          taskActionButton(
+            element,
+            `Assign ${title} to me`,
+            "Assign to me",
+            () => sdk.data.command("tasks.assign", { id: task.id }),
+          ),
+        );
+      }
+    }
+    if (actions.childElementCount > 0) row.append(actions);
+    return row;
+  }
+
+  function taskActionButton(element, ariaLabel, label, run) {
+    const button = element("button", "small-button", {
+      ariaLabel,
+      text: label,
+      type: "button",
     });
-    return section;
+    button.addEventListener("click", () => {
+      button.disabled = true;
+      // Failures surface through the host's command toast; re-enable so the
+      // action stays retryable.
+      run()
+        .catch(() => {})
+        .finally(() => {
+          button.disabled = false;
+        });
+    });
+    return button;
   }
 
   function renderSnapshotState(status, noun, element) {

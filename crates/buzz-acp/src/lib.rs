@@ -5128,6 +5128,19 @@ mod agent_draft_prompt_tests {
         assert!(prompt.contains("--change presentation"));
         assert!(prompt.contains("Never edit `index.json` or anything under `.runtime/`"));
     }
+
+    #[test]
+    fn shared_base_prompt_documents_the_canvas_sdk_surface() {
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("window.buzzCanvas.sdk"));
+        assert!(prompt.contains("sdk.data.liveQuery"));
+        assert!(prompt.contains("tasks.setStatus"));
+        assert!(prompt.contains("sdk.capabilities()"));
+        assert!(prompt.contains("project.tasks.write"));
+        assert!(prompt.contains("`app.open`"));
+        assert!(prompt.contains("rate-limited"));
+        assert!(prompt.contains("sdk.ui.avatar"));
+    }
 }
 
 fn default_heartbeat_prompt() -> String {

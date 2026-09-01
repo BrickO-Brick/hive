@@ -45,6 +45,16 @@ test("project canvas uses one sandboxed frame across preview and full modes", as
   const { iframe, root } = await expectCanvasReady(page);
   const initialSource = await iframe.getAttribute("src");
   expect(initialSource).toMatch(/^data:text\/html/);
+
+  // Read-only packages show their granted capabilities and never prompt for
+  // consent — the banner is reserved for tasks.write/app.open requests.
+  const capabilityBadge = page.getByTestId("project-canvas-capability-badge");
+  await expect(capabilityBadge).toHaveAttribute(
+    "data-capabilities",
+    "project.metadata.read project.channels.read project.reviews.read",
+  );
+  await expect(capabilityBadge).toHaveText("Local Canvas · 3 capabilities");
+  await expect(page.getByTestId("project-canvas-consent")).toHaveCount(0);
   await expect(root).toHaveAttribute("data-parent-dom", "blocked");
   await expect(root).toHaveAttribute("data-tauri-ipc", "blocked");
   await expect(root).toHaveAttribute("data-popup", "blocked");

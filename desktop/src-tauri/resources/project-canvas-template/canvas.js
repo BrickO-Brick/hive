@@ -50,7 +50,6 @@
     }
     if (message.type === "host.dataChanged" && matchesSession(message)) {
       state.snapshots = message.snapshots || {};
-      renderSnapshotWidgets();
     }
     if (message.type === "host.widgetDataChanged" && matchesSession(message)) {
       applyWidgetDataUpdate(message.widgetId, message.data);
@@ -225,6 +224,7 @@
         clientTime: "◷",
         meetings: "□",
         reviews: "↗",
+        tasks: "☑",
       }[type] || "•"
     );
   }
@@ -232,8 +232,7 @@
   function renderWidgetContent(widget) {
     const renderer = widgetRenderers[widget.type];
     const content = element("div", "widget-content");
-    if (renderer)
-      content.append(renderWith(renderer, resolveWidgetData(widget)));
+    if (renderer) content.append(renderWith(renderer, widget.data));
     else
       content.append(
         element("p", "empty-state", { text: "Widget unavailable" }),
@@ -264,10 +263,10 @@
     const content = group?.querySelector(".widget-content");
     if (!content) return;
 
-    const previousData = resolveWidgetData(currentWidget);
+    const previousData = currentWidget.data;
     state.data = data;
     currentWidget.data = nextWidget.data;
-    const nextData = resolveWidgetData(currentWidget);
+    const nextData = currentWidget.data;
     const renderer = widgetRenderers[currentWidget.type];
     if (
       renderer &&
@@ -285,117 +284,6 @@
       return;
     }
     content.replaceChildren(renderWith(renderer, nextData));
-  }
-
-  function resolveWidgetData(widget) {
-    if (widget.type === "activeChannels") {
-      return resolveSnapshotWidgetData(
-        "channels",
-        widget.data,
-        normalizeChannels,
-      );
-    }
-    if (widget.type === "reviews") {
-      return resolveSnapshotWidgetData(
-        "reviews",
-        widget.data,
-        normalizeReviews,
-      );
-    }
-    return widget.data;
-  }
-
-  function renderSnapshotWidgets() {
-    const snapshotTypes = new Set(["activeChannels", "reviews"]);
-    for (const widget of state.dashboard.widgets) {
-      if (!snapshotTypes.has(widget.type)) continue;
-      const group = [...root.querySelectorAll("[data-widget-id]")].find(
-        (candidate) => candidate.dataset.widgetId === widget.id,
-      );
-      const content = group?.querySelector(".widget-content");
-      if (content) content.replaceChildren(renderWidgetContent(widget));
-    }
-  }
-
-  function resolveSnapshotWidgetData(key, fixture, normalize) {
-    if (!state.snapshots || !Object.hasOwn(state.snapshots, key)) {
-      return { ...fixture, snapshotState: "unavailable", [key]: [] };
-    }
-    const snapshot = state.snapshots[key];
-    if (!snapshot || snapshot.status === "loading") {
-      return { ...fixture, snapshotState: "loading", [key]: [] };
-    }
-    if (snapshot.status === "error") {
-      return { ...fixture, snapshotState: "error", [key]: [] };
-    }
-    const rows = Array.isArray(snapshot.data) ? snapshot.data : [];
-    return {
-      ...fixture,
-      snapshotState: rows.length ? "ready" : "empty",
-      [key]: normalize(rows),
-    };
-  }
-
-  function normalizeChannels(channels) {
-    return channels.map((channel) => {
-      const updates = Array.isArray(channel.updates)
-        ? channel.updates.slice(0, 3).map(String)
-        : [
-            channel.topic || channel.description,
-            formatLastActivity(channel.lastMessageAt),
-            channel.memberCount ? `${channel.memberCount} members` : null,
-          ]
-            .filter(Boolean)
-            .map(String);
-      const people = Array.isArray(channel.people)
-        ? channel.people
-            .filter((person) => person?.pubkey)
-            .slice(0, 5)
-            .map((person) => ({
-              id: person.pubkey,
-              inlinePerson: person,
-            }))
-        : [];
-      return {
-        name: channel.name || channel.displayName || "channel",
-        people,
-        updates: updates.length ? updates : ["No recent updates"],
-      };
-    });
-  }
-
-  function formatLastActivity(value) {
-    if (!value) return null;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return null;
-    return `Last activity ${new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(date)}`;
-  }
-
-  function normalizeReviews(reviews) {
-    return reviews.map((review, index) => ({
-      agentName: review.agentName || null,
-      agentPubkey: review.agentPubkey || null,
-      avatarId: review.avatarId || (index % 2 === 0 ? 14 : 19),
-      branch: review.branch || review.ref || "review",
-      displayId:
-        review.displayId || (review.number ? `PR #${review.number}` : "Review"),
-      gloopie:
-        index % 2 === 0 ? "assets/gloopies-14.webm" : "assets/gloopies-19.webm",
-      poster:
-        index % 2 === 0 ? "assets/gloopies-14.png" : "assets/gloopies-19.png",
-      status: [
-        "Approved",
-        "Changes requested",
-        "Requested",
-        "Reviewing",
-      ].includes(review.status)
-        ? review.status
-        : "Requested",
-      title: review.title || "Review awaiting response",
-    }));
   }
 
   function renderCompanion(widget) {

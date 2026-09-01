@@ -9,6 +9,11 @@ export const PROJECT_CANVAS_MAX_PENDING_UPDATES_BYTES = 640 * 1_024;
 export const PROJECT_CANVAS_MAX_INIT_MESSAGE_BYTES = 2 * 1_024 * 1_024;
 export const PROJECT_CANVAS_MESSAGE_RATE_LIMIT = 60;
 export const PROJECT_CANVAS_MESSAGE_RATE_WINDOW_MS = 10_000;
+export const PROJECT_CANVAS_MAX_CONCURRENT_SUBSCRIPTIONS = 16;
+export const PROJECT_CANVAS_COMMAND_RATE_LIMIT = 10;
+export const PROJECT_CANVAS_COMMAND_RATE_WINDOW_MS = 60_000;
+export const PROJECT_CANVAS_OPEN_RATE_LIMIT = 3;
+export const PROJECT_CANVAS_OPEN_RATE_WINDOW_MS = 10_000;
 
 const MAX_IDENTIFIER_LENGTH = 1_024;
 const MAX_NONCE_LENGTH = 256;
@@ -19,9 +24,33 @@ const capabilitySchema = z.enum([
   "project.metadata.read",
   "project.channels.read",
   "project.reviews.read",
+  "project.tasks.read",
+  "project.people.read",
+  "project.tasks.write",
+  "app.open",
 ]);
 
 export type ProjectCanvasCapability = z.infer<typeof capabilitySchema>;
+
+/**
+ * Capabilities with user-visible side effects (writes and navigation). They
+ * are granted only after an explicit per-revision approval; denying them
+ * degrades the canvas to its read capabilities instead of blocking it.
+ */
+export const PROJECT_CANVAS_CONSENT_CAPABILITIES = [
+  "project.tasks.write",
+  "app.open",
+] as const satisfies readonly ProjectCanvasCapability[];
+
+export function projectCanvasConsentCapabilities(
+  requested: readonly string[],
+): ProjectCanvasCapability[] {
+  return grantedProjectCanvasCapabilities(requested).filter((capability) =>
+    (PROJECT_CANVAS_CONSENT_CAPABILITIES as readonly string[]).includes(
+      capability,
+    ),
+  );
+}
 export type ProjectCanvasDataStatus = "loading" | "ready" | "error";
 
 export type ProjectCanvasDataState<T> = {
@@ -137,15 +166,80 @@ const childBindingSchema = {
   protocolVersion: z.literal(PROJECT_CANVAS_PROTOCOL_VERSION),
 } as const;
 
-const childMessageSchema = z
+const rpcIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
+
+const rpcQuerySchema = z
   .object({
-    ...childBindingSchema,
-    dashboard: z.string().min(1).max(128),
-    type: z.literal("canvas.rendered"),
+    name: z.string().min(1).max(64),
+    params: z.unknown().optional(),
   })
   .strict();
 
+const childMessageSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      ...childBindingSchema,
+      dashboard: z.string().min(1).max(128),
+      type: z.literal("canvas.rendered"),
+    })
+    .strict(),
+  z
+    .object({
+      ...childBindingSchema,
+      query: rpcQuerySchema,
+      queryId: rpcIdSchema,
+      type: z.literal("canvas.query"),
+    })
+    .strict(),
+  z
+    .object({
+      ...childBindingSchema,
+      query: rpcQuerySchema,
+      subscriptionId: rpcIdSchema,
+      type: z.literal("canvas.subscribe"),
+    })
+    .strict(),
+  z
+    .object({
+      ...childBindingSchema,
+      subscriptionId: rpcIdSchema,
+      type: z.literal("canvas.unsubscribe"),
+    })
+    .strict(),
+  z
+    .object({
+      ...childBindingSchema,
+      command: rpcQuerySchema,
+      commandId: rpcIdSchema,
+      type: z.literal("canvas.command"),
+    })
+    .strict(),
+  z
+    .object({
+      ...childBindingSchema,
+      openId: rpcIdSchema,
+      target: z.unknown(),
+      type: z.literal("canvas.open"),
+    })
+    .strict(),
+]);
+
 export type ProjectCanvasChildMessage = z.infer<typeof childMessageSchema>;
+
+export type ProjectCanvasRpcErrorCode =
+  | "failed"
+  | "forbidden"
+  | "invalid-params"
+  | "not-found"
+  | "rate-limited"
+  | "too-large"
+  | "unavailable"
+  | "unsupported";
+
+export type ProjectCanvasRpcError = {
+  code: ProjectCanvasRpcErrorCode;
+  message: string;
+};
 
 function serializedByteLength(value: unknown): number | null {
   try {
@@ -294,7 +388,19 @@ export function parseProjectCanvasChildMessage(
   ) {
     return null;
   }
-  return parsed.data;
+  const message = parsed.data;
+  const unknownPayloads =
+    message.type === "canvas.query" || message.type === "canvas.subscribe"
+      ? [message.query.params]
+      : message.type === "canvas.command"
+        ? [message.command.params]
+        : message.type === "canvas.open"
+          ? [message.target]
+          : [];
+  for (const payload of unknownPayloads) {
+    if (payload !== undefined && !isBoundedJsonValue(payload)) return null;
+  }
+  return message;
 }
 
 export function grantedProjectCanvasCapabilities(
@@ -327,11 +433,21 @@ export function selectGrantedProjectCanvasSnapshots(
 
 export class ProjectCanvasMessageRateLimiter {
   private acceptedAt: number[] = [];
+  private readonly limit: number;
+  private readonly windowMs: number;
+
+  constructor(
+    limit = PROJECT_CANVAS_MESSAGE_RATE_LIMIT,
+    windowMs = PROJECT_CANVAS_MESSAGE_RATE_WINDOW_MS,
+  ) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+  }
 
   accept(now: number): boolean {
-    const cutoff = now - PROJECT_CANVAS_MESSAGE_RATE_WINDOW_MS;
+    const cutoff = now - this.windowMs;
     this.acceptedAt = this.acceptedAt.filter((timestamp) => timestamp > cutoff);
-    if (this.acceptedAt.length >= PROJECT_CANVAS_MESSAGE_RATE_LIMIT) {
+    if (this.acceptedAt.length >= this.limit) {
       return false;
     }
     this.acceptedAt.push(now);

@@ -10,9 +10,16 @@ import {
   RefreshCw,
 } from "lucide-react";
 import * as React from "react";
+import { toast } from "sonner";
 
+import type { ProjectCanvasBroker } from "./projectCanvasBroker";
 import {
-  grantedProjectCanvasCapabilities,
+  effectiveProjectCanvasCapabilities,
+  readProjectCanvasConsent,
+  writeProjectCanvasConsent,
+  type ProjectCanvasConsentDecision,
+} from "./projectCanvasConsent";
+import {
   isMessageWithinSizeLimit,
   parseProjectCanvasChildMessage,
   parseProjectCanvasPackageDescriptor,
@@ -23,16 +30,23 @@ import {
   PROJECT_CANVAS_HANDSHAKE_TIMEOUT_MS,
   PROJECT_CANVAS_MAX_INIT_MESSAGE_BYTES,
   PROJECT_CANVAS_PROTOCOL_VERSION,
+  projectCanvasConsentCapabilities,
   ProjectCanvasMessageRateLimiter,
   selectGrantedProjectCanvasSnapshots,
+  type ProjectCanvasCapability,
   type ProjectCanvasPackageDescriptor,
   type ProjectCanvasPendingUpdates,
   type ProjectCanvasSnapshots,
 } from "./projectCanvasProtocol";
+import {
+  createProjectCanvasRpcSession,
+  type ProjectCanvasRpcSession,
+} from "./projectCanvasRpc";
 
 type ProjectCanvasMode = "preview" | "full";
 
 type ProjectCanvasHostProps = {
+  broker: ProjectCanvasBroker | null;
   communityId: string | null;
   full: boolean;
   projectName: string;
@@ -40,6 +54,18 @@ type ProjectCanvasHostProps = {
   projectId: string;
   snapshots: ProjectCanvasSnapshots;
 };
+
+const CONSENT_CAPABILITY_LABELS: Record<string, string> = {
+  "app.open": "open channels, people, and work items",
+  "project.tasks.write": "update project tasks",
+};
+
+function commandToastLabel(commandName: string): string {
+  if (commandName === "tasks.setStatus") return "updated a task's status";
+  if (commandName === "tasks.assign") return "assigned a task";
+  if (commandName === "tasks.unassign") return "unassigned a task";
+  return "ran a task command";
+}
 
 type PackageRequest = {
   communityId: string;
@@ -83,6 +109,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function ProjectCanvasHost({
+  broker,
   communityId,
   full,
   projectId,
@@ -92,6 +119,7 @@ export function ProjectCanvasHost({
 }: ProjectCanvasHostProps) {
   const [descriptor, setDescriptor] =
     React.useState<ProjectCanvasPackageDescriptor | null>(null);
+  const [consentVersion, setConsentVersion] = React.useState(0);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [reloading, setReloading] = React.useState(false);
   const [dataUpdate, setDataUpdate] =
@@ -369,6 +397,55 @@ export function ProjectCanvasHost({
     }
   }, [communityId, projectId]);
 
+  const requestedConsentCapabilities = React.useMemo(
+    () => projectCanvasConsentCapabilities(descriptor?.capabilities ?? []),
+    [descriptor?.capabilities],
+  );
+  const consentDecision = React.useMemo(() => {
+    void consentVersion;
+    if (!communityId || !descriptor) return null;
+    return readProjectCanvasConsent(
+      communityId,
+      projectId,
+      descriptor.revision,
+    );
+  }, [communityId, consentVersion, descriptor, projectId]);
+  const consentPending =
+    requestedConsentCapabilities.length > 0 && consentDecision === null;
+  const capabilities = React.useMemo(
+    () =>
+      effectiveProjectCanvasCapabilities(
+        descriptor?.capabilities ?? [],
+        consentDecision,
+      ),
+    [consentDecision, descriptor?.capabilities],
+  );
+  const decideConsent = React.useCallback(
+    (decision: ProjectCanvasConsentDecision) => {
+      if (!communityId || !descriptor) return;
+      writeProjectCanvasConsent(
+        communityId,
+        projectId,
+        descriptor.revision,
+        decision,
+      );
+      setConsentVersion((version) => version + 1);
+    },
+    [communityId, descriptor, projectId],
+  );
+  const handleCommandSettled = React.useCallback(
+    (commandName: string, commandError: string | null) => {
+      if (commandError) {
+        toast.error("Canvas task update failed", {
+          description: commandError,
+        });
+        return;
+      }
+      toast.success(`Canvas ${commandToastLabel(commandName)}`);
+    },
+    [],
+  );
+
   return (
     <section
       aria-busy={!descriptor && !loadError}
@@ -378,10 +455,13 @@ export function ProjectCanvasHost({
     >
       {descriptor ? (
         <ProjectCanvasFrame
+          broker={broker}
+          capabilities={capabilities}
           descriptor={descriptor}
           dataUpdate={dataUpdate}
-          key={descriptor.loadId}
+          key={`${descriptor.loadId}:${consentDecision ?? "pending"}`}
           mode={full ? "full" : "preview"}
+          onCommandSettled={handleCommandSettled}
           onFailure={handleFrameFailure}
           onRendered={handleFrameRendered}
           projectId={projectId}
@@ -464,9 +544,62 @@ export function ProjectCanvasHost({
           </div>
         </div>
       ) : null}
+      {descriptor && consentPending ? (
+        <div className="absolute inset-x-14 bottom-3 z-40 flex justify-center">
+          <section
+            aria-label="Canvas permission request"
+            className="flex max-w-xl flex-wrap items-center gap-3 rounded-sm border border-border/80 bg-background/95 px-3 py-2 text-xs shadow-sm"
+            data-testid="project-canvas-consent"
+          >
+            <span className="min-w-0 flex-1 break-words text-muted-foreground">
+              This Canvas asks to{" "}
+              {requestedConsentCapabilities
+                .map(
+                  (capability) =>
+                    CONSENT_CAPABILITY_LABELS[capability] ?? capability,
+                )
+                .join(" and ")}
+              . Denying keeps the read-only canvas running.
+            </span>
+            <div className="flex shrink-0 gap-1">
+              <Button
+                data-testid="project-canvas-consent-deny"
+                onClick={() => decideConsent("denied")}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Don't allow
+              </Button>
+              <Button
+                data-testid="project-canvas-consent-approve"
+                onClick={() => decideConsent("approved")}
+                size="sm"
+                type="button"
+              >
+                Allow
+              </Button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {descriptor ? (
-        <div className="pointer-events-none absolute bottom-3 left-3 z-40 rounded-sm border border-border/70 bg-background/90 px-2 py-1 text-3xs font-medium text-muted-foreground shadow-sm">
+        <div
+          className="pointer-events-none absolute bottom-3 left-3 z-40 rounded-sm border border-border/70 bg-background/90 px-2 py-1 text-3xs font-medium text-muted-foreground shadow-sm"
+          data-capabilities={capabilities.join(" ")}
+          data-testid="project-canvas-capability-badge"
+          title={
+            capabilities.length > 0
+              ? `Granted capabilities: ${capabilities.join(", ")}`
+              : "No capabilities granted"
+          }
+        >
           Local Canvas
+          {capabilities.length > 0
+            ? ` · ${capabilities.length} ${
+                capabilities.length === 1 ? "capability" : "capabilities"
+              }`
+            : ""}
         </div>
       ) : null}
     </section>
@@ -500,9 +633,12 @@ function CanvasFailure({
 }
 
 function ProjectCanvasFrame({
+  broker,
+  capabilities,
   dataUpdate,
   descriptor,
   mode,
+  onCommandSettled,
   onFailure,
   onRendered,
   projectId,
@@ -510,9 +646,12 @@ function ProjectCanvasFrame({
   projectNames,
   snapshots,
 }: {
+  broker: ProjectCanvasBroker | null;
+  capabilities: readonly ProjectCanvasCapability[];
   dataUpdate: ProjectCanvasPendingUpdates["data"];
   descriptor: ProjectCanvasPackageDescriptor;
   mode: ProjectCanvasMode;
+  onCommandSettled: (commandName: string, error: string | null) => void;
   onFailure: (loadId: string, message: string) => void;
   onRendered: (loadId: string) => void;
   projectId: string;
@@ -522,10 +661,14 @@ function ProjectCanvasFrame({
 }) {
   const frameRef = React.useRef<HTMLIFrameElement>(null);
   const portRef = React.useRef<MessagePort | null>(null);
+  const rpcRef = React.useRef<ProjectCanvasRpcSession | null>(null);
   const modeRef = React.useRef(mode);
   const snapshotsRef = React.useRef(snapshots);
   const projectNameRef = React.useRef(projectName);
   const projectNamesRef = React.useRef(projectNames);
+  const capabilitiesRef = React.useRef(capabilities);
+  const brokerRef = React.useRef(broker);
+  const onCommandSettledRef = React.useRef(onCommandSettled);
   const connectedRef = React.useRef(false);
   const loadCountRef = React.useRef(0);
   const lastSnapshotsJsonRef = React.useRef<string | null>(null);
@@ -539,10 +682,15 @@ function ProjectCanvasFrame({
   snapshotsRef.current = snapshots;
   projectNameRef.current = projectName;
   projectNamesRef.current = projectNames;
+  capabilitiesRef.current = capabilities;
+  brokerRef.current = broker;
+  onCommandSettledRef.current = onCommandSettled;
 
   const fail = React.useCallback(
     (message: string) => {
       connectedRef.current = false;
+      rpcRef.current?.dispose();
+      rpcRef.current = null;
       portRef.current?.close();
       portRef.current = null;
       setConnected(false);
@@ -562,9 +710,7 @@ function ProjectCanvasFrame({
       return;
     }
 
-    const capabilities = grantedProjectCanvasCapabilities(
-      descriptor.capabilities,
-    );
+    const grantedCapabilities = [...capabilitiesRef.current];
     const rateLimiter = new ProjectCanvasMessageRateLimiter();
     let invalidMessageCount = 0;
     let handshakeComplete = false;
@@ -604,11 +750,11 @@ function ProjectCanvasFrame({
       const channel = new MessageChannel();
       const grantedSnapshots = selectGrantedProjectCanvasSnapshots(
         snapshotsRef.current,
-        capabilities,
+        grantedCapabilities,
       );
       const initMessage = {
         canvasId: projectId,
-        capabilities,
+        capabilities: grantedCapabilities,
         data: descriptor.data,
         loadId: descriptor.loadId,
         mode: modeRef.current,
@@ -634,6 +780,24 @@ function ProjectCanvasFrame({
         stop("Canvas initialization exceeds the host size limit.");
         return;
       }
+
+      const rpcSession = createProjectCanvasRpcSession({
+        broker: brokerRef.current,
+        capabilities: grantedCapabilities,
+        loadId: descriptor.loadId,
+        nonce: descriptor.nonce,
+        onCommandSettled: (commandName, commandError) => {
+          if (!stopped) {
+            onCommandSettledRef.current(commandName, commandError);
+          }
+        },
+        post: (message) => {
+          if (!stopped && portRef.current === channel.port1) {
+            channel.port1.postMessage(message);
+          }
+        },
+      });
+      rpcRef.current = rpcSession;
 
       channel.port1.addEventListener("message", (portEvent) => {
         if (!rateLimiter.accept(performance.now())) {
@@ -668,8 +832,9 @@ function ProjectCanvasFrame({
             .catch((error: unknown) => {
               stop(errorMessage(error));
             });
+          return;
         }
-        // canvas.rendered is the only child-to-host message in this POC.
+        rpcSession.handle(message);
       });
       channel.port1.addEventListener("messageerror", () => {
         stop("Canvas sent an unreadable message.");
@@ -702,6 +867,8 @@ function ProjectCanvasFrame({
       window.clearTimeout(timeoutId);
       window.removeEventListener("message", handleReady);
       connectedRef.current = false;
+      rpcRef.current?.dispose();
+      rpcRef.current = null;
       portRef.current?.close();
       portRef.current = null;
     };
@@ -721,9 +888,6 @@ function ProjectCanvasFrame({
   React.useEffect(() => {
     const port = portRef.current;
     if (!connected || !port) return;
-    const capabilities = grantedProjectCanvasCapabilities(
-      descriptor.capabilities,
-    );
     const grantedSnapshots = selectGrantedProjectCanvasSnapshots(
       snapshots,
       capabilities,
@@ -745,7 +909,7 @@ function ProjectCanvasFrame({
     }
     port.postMessage(message);
     lastSnapshotsJsonRef.current = serialized;
-  }, [connected, descriptor, fail, snapshots]);
+  }, [capabilities, connected, descriptor, fail, snapshots]);
 
   React.useEffect(() => {
     const port = portRef.current;

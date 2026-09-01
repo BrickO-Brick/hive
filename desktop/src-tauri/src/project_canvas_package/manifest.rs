@@ -13,10 +13,16 @@ const MAX_JSON_NODES: usize = 10_000;
 
 const FORMAT: &str = "buzz-project-canvas";
 const PROTOCOL_VERSION: u32 = 1;
+// Must stay in sync with `capabilitySchema` in
+// desktop/src/features/projects/ui/project-canvas/projectCanvasProtocol.ts.
 const ALLOWED_CAPABILITIES: &[&str] = &[
     "project.metadata.read",
     "project.channels.read",
     "project.reviews.read",
+    "project.tasks.read",
+    "project.people.read",
+    "project.tasks.write",
+    "app.open",
 ];
 
 #[derive(Clone, Debug)]

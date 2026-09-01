@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { effectiveProjectCanvasCapabilities } from "./projectCanvasConsent.ts";
 import {
   grantedProjectCanvasCapabilities,
   parseProjectCanvasChildMessage,
@@ -10,6 +11,7 @@ import {
   PROJECT_CANVAS_MAX_INIT_MESSAGE_BYTES,
   PROJECT_CANVAS_MESSAGE_RATE_LIMIT,
   PROJECT_CANVAS_MESSAGE_RATE_WINDOW_MS,
+  projectCanvasConsentCapabilities,
   ProjectCanvasMessageRateLimiter,
   selectGrantedProjectCanvasSnapshots,
 } from "./projectCanvasProtocol.ts";
@@ -189,7 +191,7 @@ test("child messages are bound to the native load before action fields are accep
   );
 });
 
-test("capabilities are intersected with the fixed host read set", () => {
+test("capabilities are intersected with the fixed host set", () => {
   assert.deepEqual(
     grantedProjectCanvasCapabilities([
       "project.metadata.read",
@@ -198,9 +200,56 @@ test("capabilities are intersected with the fixed host read set", () => {
       "project.metadata.read",
       "project.reviews.read",
       "filesystem",
+      "project.tasks.read",
+      "project.people.read",
+      "project.tasks.write",
+      "app.open",
     ]),
-    ["project.metadata.read", "project.channels.read", "project.reviews.read"],
+    [
+      "project.metadata.read",
+      "project.channels.read",
+      "project.reviews.read",
+      "project.tasks.read",
+      "project.people.read",
+      "project.tasks.write",
+      "app.open",
+    ],
   );
+});
+
+test("consent capabilities are the consequential subset of a request", () => {
+  assert.deepEqual(
+    projectCanvasConsentCapabilities([
+      "project.metadata.read",
+      "project.tasks.write",
+      "app.open",
+      "network",
+    ]),
+    ["project.tasks.write", "app.open"],
+  );
+  assert.deepEqual(
+    projectCanvasConsentCapabilities(["project.metadata.read"]),
+    [],
+  );
+});
+
+test("effective capabilities withhold consequential ones until approval", () => {
+  const requested = [
+    "project.metadata.read",
+    "project.tasks.write",
+    "app.open",
+  ];
+  assert.deepEqual(effectiveProjectCanvasCapabilities(requested, null), [
+    "project.metadata.read",
+  ]);
+  assert.deepEqual(effectiveProjectCanvasCapabilities(requested, "denied"), [
+    "project.metadata.read",
+  ]);
+  assert.deepEqual(effectiveProjectCanvasCapabilities(requested, "approved"), [
+    "project.metadata.read",
+    "project.tasks.write",
+    "app.open",
+  ]);
 });
 
 test("snapshot selection omits every capability the package was not granted", () => {
@@ -237,4 +286,110 @@ test("message rate limiting uses a bounded rolling window", () => {
   }
   assert.equal(limiter.accept(PROJECT_CANVAS_MESSAGE_RATE_LIMIT), false);
   assert.equal(limiter.accept(PROJECT_CANVAS_MESSAGE_RATE_WINDOW_MS + 1), true);
+});
+
+test("rate limiter tiers honor their configured limit and window", () => {
+  const limiter = new ProjectCanvasMessageRateLimiter(3, 10_000);
+  assert.equal(limiter.accept(0), true);
+  assert.equal(limiter.accept(1), true);
+  assert.equal(limiter.accept(2), true);
+  assert.equal(limiter.accept(3), false);
+  assert.equal(limiter.accept(9_999), false);
+  assert.equal(limiter.accept(10_001), true);
+});
+
+test("rpc child messages parse strictly and reject malformed ids and payloads", () => {
+  const binding = { loadId: LOAD_ID, nonce: NONCE };
+  const base = { loadId: LOAD_ID, nonce: NONCE, protocolVersion: 1 };
+  const query = {
+    ...base,
+    query: { name: "project.tasks.list", params: { limit: 8 } },
+    queryId: "q-1",
+    type: "canvas.query",
+  };
+  assert.deepEqual(parseProjectCanvasChildMessage(query, binding), query);
+
+  const subscribe = {
+    ...base,
+    query: { name: "project.channels.list" },
+    subscriptionId: "s-1",
+    type: "canvas.subscribe",
+  };
+  assert.deepEqual(
+    parseProjectCanvasChildMessage(subscribe, binding),
+    subscribe,
+  );
+  assert.deepEqual(
+    parseProjectCanvasChildMessage(
+      { ...base, subscriptionId: "s-1", type: "canvas.unsubscribe" },
+      binding,
+    ),
+    { ...base, subscriptionId: "s-1", type: "canvas.unsubscribe" },
+  );
+
+  const command = {
+    ...base,
+    command: {
+      name: "tasks.setStatus",
+      params: { id: "a".repeat(64), status: "done" },
+    },
+    commandId: "c-1",
+    type: "canvas.command",
+  };
+  assert.deepEqual(parseProjectCanvasChildMessage(command, binding), command);
+
+  const open = {
+    ...base,
+    openId: "o-1",
+    target: { id: "channel-1", type: "channel" },
+    type: "canvas.open",
+  };
+  assert.deepEqual(parseProjectCanvasChildMessage(open, binding), open);
+
+  // Malformed ids, oversized names, unknown fields, and unbounded payloads.
+  assert.equal(
+    parseProjectCanvasChildMessage(
+      { ...query, queryId: "bad id with spaces" },
+      binding,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectCanvasChildMessage(
+      { ...query, queryId: "q".repeat(65) },
+      binding,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectCanvasChildMessage(
+      { ...query, query: { name: "n".repeat(65) } },
+      binding,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectCanvasChildMessage({ ...query, extra: true }, binding),
+    null,
+  );
+  assert.equal(
+    parseProjectCanvasChildMessage(
+      {
+        ...query,
+        query: {
+          name: "project.tasks.list",
+          params: { value: Number.POSITIVE_INFINITY },
+        },
+      },
+      binding,
+    ),
+    null,
+  );
+  assert.equal(
+    parseProjectCanvasChildMessage(
+      { ...open, target: { date: new Date() } },
+      binding,
+    ),
+    null,
+  );
 });
