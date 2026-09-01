@@ -1,8 +1,11 @@
-# Required environment-owned values are deliberately invalid/empty here. A
-# production renderer must inject all of them; CI proves omission fails.
+# The immutable gateway image was reviewed from the successful multi-arch main
+# build at source 4a9de1a3a121285ef475d630b2b5764044c02cde. Its SLSA
+# provenance was verified against block/buzz/.github/workflows/docker.yml.
 image:
   tag: ""
-  digest: ""
+  digest: sha256:3936cad2d5cb0f6711c749024b96e56969d7e4506eb35d3519e3ef126fa6636d
+# Environment-owned values remain deliberately invalid/empty. A production
+# renderer must inject all of them; CI proves omission fails.
 profiles:
   dogfood:
     appAttestAppId: ""
