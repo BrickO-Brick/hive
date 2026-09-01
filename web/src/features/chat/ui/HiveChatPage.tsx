@@ -284,10 +284,10 @@ export function HiveChatPage() {
   })();
 
   const toneClasses = {
-    emerald: "bg-emerald-400 shadow-emerald-400/40",
-    violet: "animate-pulse bg-violet-400 shadow-violet-400/40",
-    amber: "bg-amber-400 shadow-amber-400/40",
-    slate: "bg-slate-500 shadow-slate-500/30",
+    emerald: "bg-[#1FA971] shadow-[#1FA971]/30",
+    violet: "animate-pulse bg-[#2F6FED] shadow-[#2F6FED]/30",
+    amber: "bg-[#D9861C] shadow-[#D9861C]/30",
+    slate: "bg-[#8491A4] shadow-[#8491A4]/30",
   }[agentState.tone];
 
   const send = async (event: FormEvent) => {
@@ -330,136 +330,163 @@ export function HiveChatPage() {
   let previousDay = "";
 
   return (
-    <div className="relative flex h-dvh overflow-hidden bg-[#070910] text-slate-100 selection:bg-violet-400/30">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_70%_-10%,rgba(124,58,237,0.16),transparent_38%),radial-gradient(circle_at_8%_90%,rgba(14,165,233,0.08),transparent_32%)]" />
-
-      <aside className="relative hidden w-72 shrink-0 flex-col border-r border-white/[0.07] bg-[#0b0e17]/90 px-4 py-5 backdrop-blur-xl md:flex">
-        <div className="flex items-center gap-3 px-2">
-          <div className="grid size-10 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-indigo-600 shadow-lg shadow-violet-950/40">
-            <Sparkles size={19} />
+    <div className="flex h-dvh overflow-hidden bg-white text-[#172033] selection:bg-[#FF6F52]/20">
+      <aside className="hidden w-[260px] shrink-0 flex-col border-r border-[#D8DEE8] bg-white md:flex">
+        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-[#D8DEE8] px-5">
+          <div className="grid size-8 place-items-center rounded bg-[#FF6F52] text-white">
+            <Sparkles size={16} strokeWidth={2.4} />
           </div>
-          <div>
-            <div className="text-base font-semibold tracking-tight">Hive</div>
-            <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-500">
-              OneBrick AI workspace
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-extrabold tracking-[0.22em] text-[#10233F]">
+                BRICK
+              </span>
+              <span className="rounded border border-[#FFD3C9] bg-[#FFF3EF] px-1.5 py-0.5 text-[9px] font-extrabold tracking-[0.12em] text-[#E35E43]">
+                HIVE
+              </span>
             </div>
+            <p className="mt-0.5 text-[10px] font-medium text-[#607086]">
+              AI operations workspace
+            </p>
           </div>
         </div>
 
-        <div className="mt-8 px-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600">
-          Percakapan
+        <div className="px-4 pt-5 text-[10px] font-extrabold uppercase tracking-[0.12em] text-[#607086]">
+          Workspace
         </div>
-        <div className="mt-2 flex items-center gap-3 rounded-2xl border border-violet-400/15 bg-violet-400/[0.08] p-3.5 shadow-inner shadow-violet-500/[0.03]">
-          <div className="grid size-9 place-items-center rounded-xl bg-violet-400/15 text-violet-300">
-            <Hash size={17} />
+        <div className="mx-3 mt-2 flex items-center gap-3 rounded border border-[#FFD3C9] bg-[#FFF7F4] p-3 shadow-[inset_3px_0_0_#FF6F52]">
+          <div className="grid size-8 place-items-center rounded border border-[#FFD3C9] bg-white text-[#FF6F52]">
+            <Hash size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">bricko-lab</div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-              <ShieldCheck size={11} /> Privat
+            <div className="truncate text-[13px] font-bold text-[#10233F]">
+              bricko-lab
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#607086]">
+              <ShieldCheck size={11} /> Private channel
             </div>
           </div>
         </div>
 
-        <div className="mt-7 px-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600">
-          Asisten
+        <div className="px-4 pt-6 text-[10px] font-extrabold uppercase tracking-[0.12em] text-[#607086]">
+          Agent activity
         </div>
-        <div className="mt-2 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
+        <section
+          className="mx-3 mt-2 rounded border border-[#D8DEE8] bg-[#F7FAFC] p-3.5"
+          aria-label="Status BrickO"
+        >
           <div className="flex items-start gap-3">
-            <div className="relative grid size-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-slate-700 to-slate-900 ring-1 ring-white/10">
-              <Bot size={20} className="text-violet-300" />
+            <div className="relative grid size-9 shrink-0 place-items-center rounded bg-[#10213F] text-white">
+              <Bot size={18} />
               <span
-                className={`absolute -bottom-0.5 -right-0.5 size-3 rounded-full border-2 border-[#10131d] shadow-[0_0_10px] ${toneClasses}`}
+                className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
               />
             </div>
-            <div className="min-w-0">
-              <div className="text-sm font-semibold">BrickO</div>
-              <div className="mt-0.5 text-xs leading-5 text-slate-400">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[13px] font-bold text-[#10233F]">
+                  BrickO
+                </span>
+                <span className="rounded-full border border-[#D8DEE8] bg-white px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-[0.08em] text-[#526178]">
+                  Agent
+                </span>
+              </div>
+              <div className="mt-1 text-xs font-semibold text-[#344054]">
                 {agentState.label}
               </div>
             </div>
           </div>
-          <div className="mt-3 border-t border-white/[0.06] pt-3 text-[11px] leading-4 text-slate-500">
+          <div className="mt-3 border-t border-[#D8DEE8] pt-3 text-[11px] leading-[1.5] text-[#607086]">
             {agentState.detail}
           </div>
-        </div>
+        </section>
 
-        <div className="mt-auto rounded-2xl border border-white/[0.06] bg-white/[0.025] p-3.5">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            {connected ? (
-              <Wifi size={13} className="text-emerald-400" />
-            ) : (
-              <WifiOff size={13} className="text-amber-400" />
-            )}
-            {connected ? "Realtime tersambung" : "Sedang menyambung"}
-          </div>
-          <div className="mt-3 truncate border-t border-white/[0.06] pt-3 text-xs text-slate-500">
-            {identity.email}
+        <div className="mt-auto border-t border-[#D8DEE8] bg-[#F7FAFC] p-3">
+          <div className="rounded border border-[#D8DEE8] bg-white p-3">
+            <div className="flex items-center gap-2 text-xs font-semibold text-[#42526B]">
+              {connected ? (
+                <Wifi size={13} className="text-[#1FA971]" />
+              ) : (
+                <WifiOff size={13} className="text-[#D9861C]" />
+              )}
+              {connected ? "Realtime tersambung" : "Sedang menyambung"}
+            </div>
+            <div className="mt-2 truncate border-t border-[#E2E8F0] pt-2 text-[11px] text-[#607086]">
+              {identity.email}
+            </div>
           </div>
         </div>
       </aside>
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
-        <header className="z-10 flex h-[72px] shrink-0 items-center justify-between border-b border-white/[0.07] bg-[#090c14]/80 px-4 backdrop-blur-xl sm:px-6">
+      <main className="flex min-w-0 flex-1 flex-col bg-white">
+        <header className="z-10 flex h-14 shrink-0 items-center justify-between border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-violet-500 text-white shadow-lg shadow-violet-950/30 md:hidden">
-              <Sparkles size={17} />
+            <div className="grid size-8 shrink-0 place-items-center rounded bg-[#FF6F52] text-white md:hidden">
+              <Sparkles size={15} />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="truncate text-sm font-semibold sm:text-base">
+                <h1 className="truncate text-[15px] font-bold text-[#10233F]">
                   BrickO
                 </h1>
                 <span
-                  className={`size-1.5 rounded-full shadow-[0_0_8px] ${toneClasses}`}
+                  className={`size-2 rounded-full shadow-sm ${toneClasses}`}
                 />
-                <span className="truncate text-xs text-slate-400">
+                <span className="hidden truncate text-xs font-medium text-[#526178] sm:inline">
                   {agentState.label}
                 </span>
               </div>
-              <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-                <Hash size={11} /> bricko-lab
-                <span className="text-slate-700">•</span>
-                <ShieldCheck size={11} /> privat
+              <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-[#607086]">
+                <Hash size={10} /> bricko-lab
+                <span className="text-[#B6C0CE]">•</span>
+                <ShieldCheck size={10} /> private
               </p>
             </div>
           </div>
-          <div className="flex gap-1">
+          <div className="flex items-center overflow-hidden rounded border border-[#D8DEE8] bg-white">
+            <div className="hidden min-h-9 items-center gap-2 border-r border-[#D8DEE8] px-3 sm:flex">
+              <div className="grid size-6 place-items-center rounded-full bg-[#10213F] text-[9px] font-extrabold text-white">
+                {identity.email.slice(0, 2).toUpperCase()}
+              </div>
+              <span className="max-w-40 truncate text-[11px] font-semibold text-[#42526B]">
+                {identity.email}
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => void refresh()}
-              className="rounded-xl p-2.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-200"
+              className="grid size-9 place-items-center text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#FF6F52]"
               aria-label="Muat ulang"
             >
-              <RefreshCw size={17} />
+              <RefreshCw size={15} />
             </button>
             <button
               type="button"
               onClick={logout}
-              className="rounded-xl p-2.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-200"
+              className="grid size-9 place-items-center border-l border-[#D8DEE8] text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#C93F4A]"
               aria-label="Keluar"
             >
-              <LogOut size={17} />
+              <LogOut size={15} />
             </button>
           </div>
         </header>
 
         {(waiting || typingVisible || !connected) && (
           <div
-            className="mx-4 mt-4 flex shrink-0 items-center gap-3 rounded-2xl border border-violet-400/10 bg-violet-400/[0.06] px-4 py-3 sm:mx-6"
+            className="mx-3 mt-3 flex shrink-0 items-center gap-3 rounded border border-[#D8DEE8] bg-[#F7FAFC] px-3.5 py-2.5 sm:mx-5"
             aria-live="polite"
           >
-            <div className="relative grid size-8 place-items-center rounded-xl bg-violet-400/10 text-violet-300">
+            <div className="relative grid size-8 place-items-center rounded bg-[#EAF1F8] text-[#2F6FED]">
               {connected ? <Activity size={16} /> : <WifiOff size={15} />}
               {connected && (
-                <span className="absolute inset-0 animate-ping rounded-xl border border-violet-400/20" />
+                <span className="absolute inset-0 animate-ping rounded border border-[#2F6FED]/25" />
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-medium text-violet-200">
+              <div className="text-xs font-bold text-[#10233F]">
                 {agentState.label}
               </div>
-              <div className="mt-0.5 truncate text-[11px] text-slate-500">
+              <div className="mt-0.5 truncate text-[11px] text-[#607086]">
                 {agentState.detail}
               </div>
             </div>
@@ -468,7 +495,7 @@ export function HiveChatPage() {
                 {[0, 1, 2].map((dot) => (
                   <span
                     key={dot}
-                    className="size-1.5 animate-bounce rounded-full bg-violet-300"
+                    className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
                     style={{ animationDelay: `${dot * 120}ms` }}
                   />
                 ))}
@@ -477,18 +504,18 @@ export function HiveChatPage() {
           </div>
         )}
 
-        <section className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-5 sm:px-6">
+        <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
           <div className="mx-auto max-w-3xl">
             {messages.length === 0 && !error && (
               <div className="grid min-h-[45vh] place-items-center text-center">
                 <div>
-                  <div className="mx-auto grid size-16 place-items-center rounded-3xl border border-violet-400/15 bg-violet-400/[0.07] text-violet-300">
+                  <div className="mx-auto grid size-14 place-items-center rounded border border-[#FFD3C9] bg-[#FFF3EF] text-[#FF6F52]">
                     <MessageCircleMore size={27} />
                   </div>
-                  <h2 className="mt-5 text-base font-semibold">
+                  <h2 className="mt-4 text-base font-bold text-[#10233F]">
                     Mulai percakapan dengan BrickO
                   </h2>
-                  <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">
+                  <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
                     Tanyakan pekerjaan, status sistem, atau minta bantuan pada
                     workspace OneBrick ini.
                   </p>
@@ -504,20 +531,20 @@ export function HiveChatPage() {
               return (
                 <div key={message.id}>
                   {showDay && (
-                    <div className="my-7 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-white/[0.06]" />
-                      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-slate-600">
+                    <div className="my-6 flex items-center gap-3">
+                      <div className="h-px flex-1 bg-[#D8DEE8]" />
+                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#607086]">
                         {day}
                       </span>
-                      <div className="h-px flex-1 bg-white/[0.06]" />
+                      <div className="h-px flex-1 bg-[#D8DEE8]" />
                     </div>
                   )}
                   <article
                     className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
                   >
                     {!mine && (
-                      <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 ring-1 ring-white/10">
-                        <Bot size={16} className="text-violet-300" />
+                      <div className="grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
+                        <Bot size={15} />
                       </div>
                     )}
                     <div
@@ -526,28 +553,30 @@ export function HiveChatPage() {
                       <div
                         className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
                       >
-                        <span className="text-[11px] font-medium text-slate-400">
+                        <span className="text-[11px] font-bold text-[#42526B]">
                           {mine ? "Anda" : "BrickO"}
                         </span>
-                        <time className="text-[10px] text-slate-600">
+                        <time className="text-[10px] text-[#607086]">
                           {formatMessageTime(message.created_at)}
                         </time>
                       </div>
                       <div
-                        className={`rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${
+                        className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
                           mine
-                            ? "rounded-br-md bg-gradient-to-br from-violet-600 to-indigo-600 text-white shadow-violet-950/20"
-                            : "rounded-bl-md border border-white/[0.07] bg-white/[0.045] text-slate-200"
+                            ? "bg-[#FF6F52] text-white shadow-[#FF6F52]/10"
+                            : "border border-[#D8DEE8] bg-white text-[#172033]"
                         }`}
                       >
-                        <div className="prose prose-sm prose-invert max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-black/30 prose-a:text-violet-300">
+                        <div
+                          className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-invert prose-a:text-white" : "prose-a:text-[#E35E43]"}`}
+                        >
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {message.content}
                           </ReactMarkdown>
                         </div>
                       </div>
                       {mine && (
-                        <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-slate-600">
+                        <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
                           <CheckCircle2 size={10} /> Terkirim
                         </div>
                       )}
@@ -559,18 +588,18 @@ export function HiveChatPage() {
 
             {typingVisible && (
               <div className="mb-5 flex items-end gap-2.5" aria-live="polite">
-                <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-slate-700 to-slate-900 ring-1 ring-white/10">
-                  <Bot size={16} className="text-violet-300" />
+                <div className="grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
+                  <Bot size={15} />
                 </div>
                 <div>
-                  <div className="mb-1.5 px-1 text-[11px] font-medium text-slate-400">
+                  <div className="mb-1.5 px-1 text-[11px] font-bold text-[#42526B]">
                     BrickO
                   </div>
-                  <div className="flex h-11 items-center gap-1 rounded-2xl rounded-bl-md border border-white/[0.07] bg-white/[0.045] px-4">
+                  <div className="flex h-11 items-center gap-1 rounded border border-[#D8DEE8] bg-white px-4">
                     {[0, 1, 2].map((dot) => (
                       <span
                         key={dot}
-                        className="size-1.5 animate-bounce rounded-full bg-slate-400"
+                        className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
                         style={{ animationDelay: `${dot * 120}ms` }}
                       />
                     ))}
@@ -584,19 +613,19 @@ export function HiveChatPage() {
 
         <form
           onSubmit={send}
-          className="shrink-0 border-t border-white/[0.06] bg-[#090c14]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 backdrop-blur-xl sm:px-6"
+          className="shrink-0 border-t border-[#D8DEE8] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5"
         >
           <div className="mx-auto max-w-3xl">
             {error && (
               <div
-                className="mb-3 flex items-center gap-2 rounded-xl border border-rose-400/15 bg-rose-400/[0.06] px-3 py-2 text-xs text-rose-300"
+                className="mb-3 flex items-center gap-2 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"
                 role="alert"
               >
                 <WifiOff size={13} className="shrink-0" />
                 <span className="truncate">{error}</span>
               </div>
             )}
-            <div className="flex items-end gap-2 rounded-2xl border border-white/[0.09] bg-white/[0.045] p-2 shadow-2xl shadow-black/20 transition focus-within:border-violet-400/30 focus-within:bg-white/[0.06] focus-within:ring-4 focus-within:ring-violet-500/[0.05]">
+            <div className="flex items-end gap-2 rounded border border-[#D8DEE8] bg-white p-2 shadow-[0_8px_24px_rgba(16,35,63,0.08)] transition focus-within:border-[#FF6F52]/60 focus-within:ring-4 focus-within:ring-[#FF6F52]/10">
               <textarea
                 ref={composerRef}
                 value={text}
@@ -605,12 +634,12 @@ export function HiveChatPage() {
                 maxLength={65_536}
                 rows={1}
                 placeholder="Ketik pesan untuk BrickO…"
-                className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-slate-100 outline-none placeholder:text-slate-600"
+                className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"
               />
               <button
                 type="submit"
                 disabled={busy || !text.trim() || !connected}
-                className="grid size-11 shrink-0 place-items-center rounded-xl bg-violet-500 text-white shadow-lg shadow-violet-950/30 transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500 disabled:shadow-none"
+                className="grid size-11 shrink-0 place-items-center rounded bg-[#FF6F52] text-white transition hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#8491A4]"
                 aria-label="Kirim"
               >
                 {busy ? (
@@ -620,7 +649,7 @@ export function HiveChatPage() {
                 )}
               </button>
             </div>
-            <div className="mt-2 flex items-center justify-between px-1 text-[10px] text-slate-600">
+            <div className="mt-2 flex items-center justify-between px-1 text-[10px] text-[#607086]">
               <span className="flex items-center gap-1.5">
                 <Clock3 size={10} /> Enter untuk kirim · Shift+Enter untuk baris
                 baru
