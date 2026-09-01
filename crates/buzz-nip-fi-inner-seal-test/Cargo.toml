@@ -1,0 +1,15 @@
+[package]
+name = "buzz-nip-fi-inner-seal-test"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Intra-boundary compile-fail tests: proves seal_inline pub(super) wall holds independently of the outer module wall"
+publish = false
+
+[dev-dependencies]
+trybuild = "1"
+# The nip-fi-boundary-test feature dissolves nip_fi and context module walls
+# so fixtures reach seal_inline directly and get E0624 (not E0603).
+buzz-relay = { path = "../buzz-relay", features = ["nip-fi-boundary-test"] }

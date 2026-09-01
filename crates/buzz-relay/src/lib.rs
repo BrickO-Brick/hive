@@ -4,6 +4,17 @@
 
 mod admission;
 mod build_info;
+/// NIP-FI PostgreSQL-final authority: sealed request context and admission
+/// orchestration.  All construction paths are private to this module;
+/// external crates cannot mint a sealed context or produce an admission result.
+#[cfg(not(feature = "nip-fi-boundary-test"))]
+mod nip_fi;
+/// NIP-FI module exposed for boundary-test compile-fail fixtures only.
+/// Dissolves the outer module wall so the inner `pub(super)` constructor walls
+/// (`seal_inline`, `CommittedAuthorization` fields) can be exercised
+/// independently by `buzz-nip-fi-seal-test`.  Never enabled in production.
+#[cfg(feature = "nip-fi-boundary-test")]
+pub mod nip_fi;
 mod rejection;
 
 /// REST API route handlers.

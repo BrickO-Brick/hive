@@ -3,6 +3,8 @@ members = [
     "crates/buzz-relay",
     "crates/buzz-core",
     "crates/buzz-conformance",
+    "crates/buzz-nip-fi-seal-test",
+    "crates/buzz-nip-fi-inner-seal-test",
     "crates/buzz-push-gateway",
     "crates/buzz-db",
     "crates/buzz-pubsub",

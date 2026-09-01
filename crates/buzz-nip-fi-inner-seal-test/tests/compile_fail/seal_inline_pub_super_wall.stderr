@@ -1,0 +1,16 @@
+error[E0624]: associated function `seal_inline` is private
+  --> tests/compile_fail/seal_inline_pub_super_wall.rs:19:64
+   |
+19 |       let _ = buzz_relay::nip_fi::context::SealedRequestContext::seal_inline;
+   |                                                                  ^^^^^^^^^^^ private associated function
+   |
+  ::: $WORKSPACE/crates/buzz-relay/src/nip_fi/context.rs
+   |
+   | /     pub(super) fn seal_inline(
+   | |         transport: ProofTransport,
+   | |         proof_event_id: [u8; 32],
+   | |         proof_expires_at: DateTime<Utc>,
+...  |
+   | |         operation_id: Uuid,
+   | |     ) -> Self {
+   | |_____________- private associated function defined here
