@@ -32,6 +32,7 @@ COPY --from=rust-builder /build/target/release/buzz-acp /usr/local/bin/buzz-acp
 COPY --from=rust-builder /build/target/release/buzz /usr/local/bin/buzz
 COPY --chmod=0755 deploy/onebrick/agent/entrypoint.sh /usr/local/bin/bricko-entrypoint
 COPY --chmod=0644 deploy/onebrick/agent/config.toml /etc/bricko/codex-config.toml
+RUN chmod 0755 /etc/bricko
 
 RUN useradd --system --uid 10001 --create-home --home-dir /var/lib/bricko bricko \
     && mkdir -p /workspace /var/lib/bricko/.codex /var/lib/bricko/logs \

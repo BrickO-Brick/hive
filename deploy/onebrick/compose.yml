@@ -216,6 +216,9 @@ services:
       BUZZ_ACP_MAX_TURN_DURATION: ${BUZZ_ACP_MAX_TURN_DURATION:-7200}
       NO_BROWSER: "1"
       CODEX_HOME: /var/lib/bricko/.codex
+      # Read the immutable policy from the approved repository clone. This
+      # avoids relying on the image's root-owned /etc directory traversal.
+      BRICKO_CODEX_CONFIG_SOURCE: /workspace/hive/deploy/onebrick/agent/config.toml
       APP_SERVER_LOGS: /var/lib/bricko/logs
     volumes:
       - ${HIVE_CODEX_HOME:-/srv/hive/secrets/codex-home}:/var/lib/bricko/.codex
