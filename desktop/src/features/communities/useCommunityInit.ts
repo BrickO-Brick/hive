@@ -24,6 +24,10 @@ import { resetRenderScopedReactionHydration } from "@/features/messages/lib/rend
 import { resetBackgroundMediaUploads } from "@/features/messages/lib/backgroundMediaUploadStore";
 import { resetLinkPreviewPreparations } from "@/features/messages/lib/linkPreviewPreparationStore";
 import { resetPersistentAgentAudienceStore } from "@/features/messages/lib/persistentAgentAudience";
+import {
+  resetDetachedToastScope,
+  setDetachedToastScope,
+} from "@/features/messages/lib/detachedToastScope";
 import { resetDetachedAgentStarts } from "@/features/messages/ui/useDetachedAgentStart";
 import {
   resetActiveAgentTurnsStore,
@@ -80,6 +84,7 @@ async function resetCommunityState({
   resetLinkPreviewPreparations();
   resetPersistentAgentAudienceStore();
   resetDetachedAgentStarts();
+  resetDetachedToastScope();
   clearSearchHitEventCache();
   clearMarkdownNodeCache();
   resetMessageLinkMetadataCache();
@@ -343,6 +348,12 @@ export function useCommunityInit(
         // trip). This runs after applyCommunity succeeds and before the app
         // renders so components see the restored timers on first render.
         restoreActiveAgentTurnsForCommunity(activeCommunity.id);
+        // From here this community's UI is what renders, so warnings from
+        // detached agent wakes captured under this scope may deliver again.
+        setDetachedToastScope({
+          relayUrl: activeCommunity.relayUrl,
+          signerPubkey: identityPubkey,
+        });
         // Prime the ref so the NEXT switch saves this community's state.
         prevCommunityIdRef.current = activeCommunity.id;
         setResult({
