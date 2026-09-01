@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -129,7 +129,7 @@ pub(super) struct ValidatedSnapshot {
     pub(super) data: serde_json::Value,
 }
 
-struct ValidatedPackage {
+pub(super) struct ValidatedPackage {
     files: BTreeMap<String, Vec<u8>>,
     revision: String,
     manifest: ValidatedManifest,
@@ -262,7 +262,7 @@ pub(super) fn snapshot_for_revision(
 pub(super) fn prepare_snapshot(
     canvas_root: &Path,
     binding: &ProjectBinding,
-    template: Option<&Path>,
+    template: Option<&ValidatedPackage>,
 ) -> Result<ValidatedSnapshot, String> {
     let canvas_root = canonical_canvas_root(canvas_root, true)?
         .ok_or_else(|| "project canvas root was not created".to_string())?;
@@ -597,7 +597,7 @@ fn validate_index(canvas_root: &Path, index: &CanvasIndex) -> Result<(), String>
 fn seed_if_missing(
     canvas_root: &Path,
     project_root: &Path,
-    template: Option<&Path>,
+    template: Option<&ValidatedPackage>,
 ) -> Result<(), String> {
     if project_root.join("manifest.json").is_file() {
         ensure_secure_descendant(canvas_root, project_root, false)?;
@@ -619,8 +619,7 @@ fn seed_if_missing(
             .map_err(|error| format!("remove empty project canvas directory: {error}"))?;
     }
 
-    let template = template.ok_or_else(|| "project canvas template is unavailable".to_string())?;
-    let package = scan_package(template, template)?;
+    let package = template.ok_or_else(|| "project canvas template is unavailable".to_string())?;
     let parent = project_root
         .parent()
         .ok_or_else(|| "project canvas directory has no parent".to_string())?;
@@ -642,14 +641,53 @@ fn seed_if_missing(
 }
 
 fn scan_package(trusted_root: &Path, root: &Path) -> Result<ValidatedPackage, String> {
-    ensure_no_symlink(root)?;
-    if !root.is_dir() {
+    ensure_package_dir(root)?;
+    validate_package_files(read_package_tree(trusted_root, root)?)
+}
+
+#[cfg(test)]
+pub(super) fn scan_package_for_test(trusted_root: &Path, root: &Path) -> Result<(), String> {
+    scan_package(trusted_root, root).map(|_| ())
+}
+
+/// One non-following inspection covering existence, symlink, and directory.
+///
+/// `symlink_metadata` names the path it failed on, where the previous
+/// `ensure_no_symlink` + `Path::is_dir()` pair died inside the metadata call
+/// with an unnamed `os error 2`. It is also strictly stronger: the directory
+/// test now reads off the non-following metadata rather than `Path::is_dir()`,
+/// which follows links.
+fn ensure_package_dir(root: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(format!(
+                "project canvas package directory does not exist: {}",
+                root.display()
+            ))
+        }
+        Err(error) => return Err(format!("inspect project canvas path: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
         return Err(format!(
-            "project canvas package directory does not exist: {}",
+            "project canvas paths cannot be symlinks: {}",
             root.display()
         ));
     }
-    let files = read_package_tree(trusted_root, root)?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "project canvas package is not a directory: {}",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The single validation gate for every canvas package, read off disk or
+/// embedded in the binary. There is no second, weaker path.
+pub(super) fn validate_package_files(
+    files: BTreeMap<String, Vec<u8>>,
+) -> Result<ValidatedPackage, String> {
     if files.len() > MAX_PACKAGE_FILES {
         return Err(format!(
             "project canvas package exceeds {MAX_PACKAGE_FILES} files"

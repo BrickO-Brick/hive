@@ -52,7 +52,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": ["resources/project-canvas-template/**/*"],
     "externalBin": [
       "binaries/buzz-acp",
       "binaries/buzz-agent",

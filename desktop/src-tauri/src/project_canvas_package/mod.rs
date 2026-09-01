@@ -3,6 +3,7 @@ mod manifest;
 mod path_security;
 mod protocol;
 mod storage;
+mod template;
 
 #[cfg(test)]
 mod tests;
@@ -22,7 +23,9 @@ use storage::{
     active_snapshot, clear_committed_updates, commit_snapshot, pending_updates, prepare_snapshot,
     project_source_location, prune_revisions, record_pending_update, record_source_binding,
     snapshot_for_revision, validate_widget_id, ProjectBinding, ProjectCanvasSourceLocation,
+    ValidatedPackage,
 };
+use template::bundled_template;
 
 const MAX_ACTIVE_LOADS: usize = 64;
 
@@ -65,7 +68,7 @@ impl ProjectCanvasRuntime {
     fn get_or_activate(
         &self,
         request: ProjectCanvasPackageRequest,
-        template: &std::path::Path,
+        template: Option<&ValidatedPackage>,
     ) -> Result<ProjectCanvasPackageDescriptor, String> {
         let binding = ProjectBinding::parse(request)?;
         ensure_supported_platform()?;
@@ -77,7 +80,7 @@ impl ProjectCanvasRuntime {
         let root = self.root()?;
         let snapshot = match active_snapshot(&root, &binding)? {
             Some(snapshot) => snapshot,
-            None => prepare_snapshot(&root, &binding, Some(template))?,
+            None => prepare_snapshot(&root, &binding, template)?,
         };
         let mut retained = self.referenced_revisions(&binding)?;
         retained.insert(snapshot.revision.clone());
@@ -91,7 +94,7 @@ impl ProjectCanvasRuntime {
     fn activate(
         &self,
         request: ProjectCanvasPackageRequest,
-        template: &std::path::Path,
+        template: Option<&ValidatedPackage>,
     ) -> Result<ProjectCanvasPackageDescriptor, String> {
         let binding = ProjectBinding::parse(request)?;
         ensure_supported_platform()?;
@@ -100,7 +103,7 @@ impl ProjectCanvasRuntime {
             .lock()
             .map_err(|_| "project canvas activation lock is unavailable".to_string())?;
         let root = self.root()?;
-        let snapshot = prepare_snapshot(&root, &binding, Some(template))?;
+        let snapshot = prepare_snapshot(&root, &binding, template)?;
         let mut retained = self.referenced_revisions(&binding)?;
         retained.insert(snapshot.revision.clone());
         prune_revisions(&root, &binding, &retained)?;
@@ -395,12 +398,14 @@ struct ProjectCanvasPendingPresentation {
 #[tauri::command]
 pub(crate) async fn get_project_canvas_package(
     request: ProjectCanvasPackageRequest,
-    app: AppHandle,
     runtime: State<'_, ProjectCanvasRuntime>,
 ) -> Result<ProjectCanvasPackageDescriptor, String> {
-    let template = template_path(&app)?;
     let runtime = runtime.inner().clone();
-    run_blocking(move || runtime.get_or_activate(request, &template)).await
+    run_blocking(move || {
+        let template = bundled_template()?;
+        runtime.get_or_activate(request, Some(&template))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -415,12 +420,14 @@ pub(crate) async fn get_project_canvas_updates(
 #[tauri::command]
 pub(crate) async fn activate_project_canvas_package(
     request: ProjectCanvasPackageRequest,
-    app: AppHandle,
     runtime: State<'_, ProjectCanvasRuntime>,
 ) -> Result<ProjectCanvasPackageDescriptor, String> {
-    let template = template_path(&app)?;
     let runtime = runtime.inner().clone();
-    run_blocking(move || runtime.activate(request, &template)).await
+    run_blocking(move || {
+        let template = bundled_template()?;
+        runtime.activate(request, Some(&template))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -472,38 +479,6 @@ pub(crate) fn handle_request(
 
 pub(crate) fn start_agent_update_listener(app: AppHandle) -> Result<(), String> {
     ipc::start(app)
-}
-
-fn template_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let resource_root = app.path().resource_dir().map_err(|error| error.to_string());
-    let dev_exe_dir = if cfg!(debug_assertions) {
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
-    } else {
-        None
-    };
-    template_path_from(resource_root, dev_exe_dir)
-}
-
-/// Joins the bundled `project-canvas-template` resource against the app's
-/// resource root.
-///
-/// Dev builds run the bare executable out of the cargo target directory,
-/// where `tauri-build` copies `bundle.resources` next to the binary — but
-/// Tauri only recognizes that layout when the directory is literally named
-/// `target`, so a redirected CARGO_TARGET_DIR makes `resource_dir()` fail
-/// with "unknown path" even though the resources are present. Fall back to
-/// the executable's directory there; release builds pass `dev_exe_dir: None`
-/// and keep failing loudly.
-fn template_path_from(
-    resource_root: Result<PathBuf, String>,
-    dev_exe_dir: Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    resource_root
-        .or_else(|error| dev_exe_dir.ok_or(error))
-        .map(|root| root.join("resources").join("project-canvas-template"))
-        .map_err(|error| format!("resolve project canvas template: {error}"))
 }
 
 async fn run_blocking<T, F>(task: F) -> Result<T, String>
