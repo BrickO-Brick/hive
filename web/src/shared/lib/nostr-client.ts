@@ -26,6 +26,12 @@ export type NostrEvent = SignedNostrEvent;
 const QUERY_TIMEOUT_MS = 10_000;
 const SUBSCRIPTION_RECONNECT_MS = 1_000;
 
+export type NostrSubscriptionState =
+  | "connecting"
+  | "authenticating"
+  | "connected"
+  | "reconnecting";
+
 /**
  * Keep a NIP-01 subscription open after EOSE so new events arrive in real time.
  * The returned cleanup function closes the socket and disables reconnects.
@@ -35,15 +41,19 @@ export function subscribeEvents(
   filter: NostrFilter,
   onEvent: (event: NostrEvent) => void,
   onError: (error: Error) => void,
+  onStateChange?: (state: NostrSubscriptionState) => void,
 ): () => void {
   const subId = `s-${Date.now().toString(36)}`;
   let disposed = false;
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let unauthenticatedReqTimer: ReturnType<typeof setTimeout> | null = null;
+  let hasConnected = false;
 
   const connect = () => {
     if (disposed) return;
+
+    onStateChange?.(hasConnected ? "reconnecting" : "connecting");
 
     const socket = new WebSocket(wsUrl);
     ws = socket;
@@ -54,6 +64,8 @@ export function subscribeEvents(
       if (!reqSent && socket.readyState === WebSocket.OPEN) {
         reqSent = true;
         socket.send(JSON.stringify(["REQ", subId, filter]));
+        hasConnected = true;
+        onStateChange?.("connected");
       }
     };
 
@@ -71,6 +83,7 @@ export function subscribeEvents(
       if (!Array.isArray(data)) return;
 
       if (data[0] === "AUTH" && typeof data[1] === "string") {
+        onStateChange?.("authenticating");
         if (unauthenticatedReqTimer) {
           clearTimeout(unauthenticatedReqTimer);
           unauthenticatedReqTimer = null;
@@ -125,6 +138,7 @@ export function subscribeEvents(
         unauthenticatedReqTimer = null;
       }
       if (!disposed && ws === socket) {
+        onStateChange?.("reconnecting");
         reconnectTimer = setTimeout(connect, SUBSCRIPTION_RECONNECT_MS);
       }
     });

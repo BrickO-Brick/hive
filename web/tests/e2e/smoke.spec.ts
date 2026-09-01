@@ -375,3 +375,227 @@ test("invite download falls back for mobile and non-desktop devices", async ({
     await context.close();
   }
 });
+
+test("Hive shows BrickO realtime activity from relay signals", async ({
+  page,
+}, testInfo) => {
+  await page.addInitScript(() => {
+    const userPubkey =
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    const agentPubkey = "22".repeat(32);
+    const channelId = "62ae672f-ab7b-4619-b013-13eec0111943";
+    localStorage.setItem("hive.mantap.nostr-secret.v1", `${"00".repeat(31)}01`);
+    localStorage.setItem(
+      "hive.mantap.identity.v1",
+      JSON.stringify({
+        email: "bricki@onebrick.io",
+        pubkey: userPubkey,
+        channelId,
+        role: "owner",
+      }),
+    );
+
+    type Filter = {
+      kinds?: number[];
+      authors?: string[];
+      "#h"?: string[];
+    };
+    type HiveWindow = Window & {
+      __hiveEmit?: (event: Record<string, unknown>) => void;
+      __hiveSockets?: MockWebSocket[];
+    };
+
+    class MockWebSocket extends EventTarget {
+      static readonly CONNECTING = 0;
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      static readonly CLOSED = 3;
+      readonly url: string;
+      readyState = MockWebSocket.CONNECTING;
+      readonly subscriptions = new Map<string, Filter>();
+
+      constructor(url: string | URL) {
+        super();
+        this.url = String(url);
+        const hiveWindow = window as HiveWindow;
+        hiveWindow.__hiveSockets ??= [];
+        hiveWindow.__hiveSockets.push(this);
+        setTimeout(() => {
+          this.readyState = MockWebSocket.OPEN;
+          this.dispatchEvent(new Event("open"));
+          this.message(["AUTH", "test-challenge"]);
+        }, 0);
+      }
+
+      private message(payload: unknown) {
+        this.dispatchEvent(
+          new MessageEvent("message", { data: JSON.stringify(payload) }),
+        );
+      }
+
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        if (typeof data !== "string") return;
+        const frame = JSON.parse(data) as unknown[];
+        if (frame[0] === "AUTH") {
+          const auth = frame[1] as { id: string };
+          this.message(["OK", auth.id, true, ""]);
+          return;
+        }
+        if (frame[0] === "REQ") {
+          const subscriptionId = String(frame[1]);
+          const filter = frame[2] as Filter;
+          this.subscriptions.set(subscriptionId, filter);
+          if (filter.kinds?.includes(9)) {
+            const now = Math.floor(Date.now() / 1000);
+            const events = [
+              {
+                id: "a1".repeat(32),
+                pubkey: userPubkey,
+                created_at: now - 60,
+                kind: 9,
+                tags: [["h", channelId]],
+                content: "BrickO, apakah koneksi realtime sudah aktif?",
+                sig: "00".repeat(64),
+              },
+              {
+                id: "b2".repeat(32),
+                pubkey: agentPubkey,
+                created_at: now - 52,
+                kind: 9,
+                tags: [["h", channelId]],
+                content:
+                  "**Sudah aktif.** Balasan sekarang muncul otomatis tanpa refresh manual.",
+                sig: "00".repeat(64),
+              },
+            ];
+            for (const event of events) {
+              this.message(["EVENT", subscriptionId, event]);
+            }
+          } else if (filter.kinds?.includes(40902)) {
+            this.message([
+              "EVENT",
+              subscriptionId,
+              {
+                id: "c3".repeat(32),
+                pubkey: "33".repeat(32),
+                created_at: 1_788_301_210,
+                kind: 20001,
+                tags: [["p", agentPubkey]],
+                content: "online",
+                sig: "00".repeat(64),
+              },
+            ]);
+          }
+          this.message(["EOSE", subscriptionId]);
+          return;
+        }
+        if (frame[0] === "CLOSE") {
+          this.subscriptions.delete(String(frame[1]));
+          return;
+        }
+        if (frame[0] === "EVENT") {
+          const event = frame[1] as { id: string };
+          this.message(["OK", event.id, true, ""]);
+        }
+      }
+
+      close() {
+        if (this.readyState === MockWebSocket.CLOSED) return;
+        this.readyState = MockWebSocket.CLOSED;
+        this.dispatchEvent(new CloseEvent("close"));
+      }
+    }
+
+    const hiveWindow = window as HiveWindow;
+    hiveWindow.__hiveEmit = (event) => {
+      for (const socket of hiveWindow.__hiveSockets ?? []) {
+        for (const [subscriptionId, filter] of socket.subscriptions) {
+          const kind = Number(event.kind);
+          const pubkey = String(event.pubkey);
+          const tags = event.tags as string[][];
+          const channel = tags.find((tag) => tag[0] === "h")?.[1];
+          if (filter.kinds && !filter.kinds.includes(kind)) continue;
+          if (filter.authors && !filter.authors.includes(pubkey)) continue;
+          if (filter["#h"] && !filter["#h"].includes(channel ?? "")) continue;
+          socket.dispatchEvent(
+            new MessageEvent("message", {
+              data: JSON.stringify(["EVENT", subscriptionId, event]),
+            }),
+          );
+        }
+      }
+    };
+    window.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  });
+
+  await page.goto("/app");
+  await expect(page.getByText("Realtime tersambung")).toBeVisible();
+  await expect(page.getByText("Online dan siap").first()).toBeVisible();
+  await expect(page.getByText("Sudah aktif.")).toBeVisible();
+
+  const composer = page.getByPlaceholder("Ketik pesan untuk BrickO…");
+  await composer.fill("Tolong cek status Hive sekarang");
+  await composer.press("Enter");
+  await expect(page.getByText("Tolong cek status Hive sekarang")).toBeVisible();
+  await expect(
+    page.getByText("Sedang menyiapkan jawaban…").first(),
+  ).toBeVisible();
+
+  await page.evaluate(
+    ({ agentPubkey, channelId }) => {
+      (
+        window as Window & {
+          __hiveEmit?: (event: Record<string, unknown>) => void;
+        }
+      ).__hiveEmit?.({
+        id: "d4".repeat(32),
+        pubkey: agentPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 20002,
+        tags: [["h", channelId]],
+        content: "",
+        sig: "00".repeat(64),
+      });
+    },
+    {
+      agentPubkey: "22".repeat(32),
+      channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+    },
+  );
+  await expect(page.getByText("Sedang menjawab…").first()).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("hive-activity.png"),
+    fullPage: true,
+  });
+
+  await page.evaluate(
+    ({ agentPubkey, channelId }) => {
+      (
+        window as Window & {
+          __hiveEmit?: (event: Record<string, unknown>) => void;
+        }
+      ).__hiveEmit?.({
+        id: "e5".repeat(32),
+        pubkey: agentPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 9,
+        tags: [["h", channelId]],
+        content: "Semua sistem Hive siap dan koneksi realtime stabil.",
+        sig: "00".repeat(64),
+      });
+    },
+    {
+      agentPubkey: "22".repeat(32),
+      channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+    },
+  );
+  await expect(
+    page.getByText("Semua sistem Hive siap dan koneksi realtime stabil."),
+  ).toBeVisible();
+  await expect(page.getByText("Online dan siap").first()).toBeVisible();
+
+  await page.screenshot({
+    path: testInfo.outputPath("hive-polished.png"),
+    fullPage: true,
+  });
+});
