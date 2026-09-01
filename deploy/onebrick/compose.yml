@@ -192,10 +192,15 @@ services:
 
   bricko-agent:
     <<: *default-security
+    # The image already runs tini as PID 1. Disable Compose's second init.
+    init: false
     profiles: ["agent"]
     image: ${HIVE_AGENT_IMAGE:?set immutable HIVE_AGENT_IMAGE with @sha256 digest}
     environment:
-      BUZZ_RELAY_URL: ws://relay:3000
+      # The relay binds communities from the WebSocket Host header. Use the
+      # canonical public authority; the internal `relay` hostname is not a
+      # configured tenant and correctly fails closed with HTTP 404.
+      BUZZ_RELAY_URL: ${BRICKO_RELAY_URL:-wss://hive.onebrick.io}
       BUZZ_PRIVATE_KEY: ${BRICKO_PRIVATE_KEY:?set BRICKO_PRIVATE_KEY}
       BUZZ_ACP_AGENT_COMMAND: codex-acp
       BUZZ_ACP_AGENT_ARGS: ""
@@ -203,10 +208,12 @@ services:
       BUZZ_ACP_LAZY_POOL: "true"
       BUZZ_ACP_SESSION_POLICY: thread
       BUZZ_ACP_RESPOND_TO: owner-only
+      # Never auto-approve an ACP permission request. Codex itself is also
+      # pinned to its read-only sandbox in agent/config.toml.
+      BUZZ_ACP_PERMISSION_MODE: dont-ask
       BUZZ_ACP_HEARTBEAT_INTERVAL: "0"
       BUZZ_ACP_IDLE_TIMEOUT: ${BUZZ_ACP_IDLE_TIMEOUT:-620}
       BUZZ_ACP_MAX_TURN_DURATION: ${BUZZ_ACP_MAX_TURN_DURATION:-7200}
-      INITIAL_AGENT_MODE: read-only
       NO_BROWSER: "1"
       CODEX_HOME: /var/lib/bricko/.codex
       APP_SERVER_LOGS: /var/lib/bricko/logs
