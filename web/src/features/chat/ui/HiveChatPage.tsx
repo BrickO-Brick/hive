@@ -5,13 +5,15 @@ import {
   Clock3,
   Hash,
   LogOut,
+  Menu,
   MessageCircleMore,
+  PanelLeftClose,
   RefreshCw,
   Send,
   ShieldCheck,
-  Sparkles,
   Wifi,
   WifiOff,
+  X,
 } from "lucide-react";
 import {
   type FormEvent,
@@ -45,6 +47,7 @@ import { relayWsUrl } from "@/shared/lib/relay-url";
 type Presence = "online" | "away" | "offline" | "unknown";
 
 const TYPING_VISIBLE_MS = 7_000;
+const SIDEBAR_STATE_STORAGE_KEY = "hive.navigation.collapsed.v1";
 
 function eventTag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
@@ -84,6 +87,13 @@ export function HiveChatPage() {
   const [typingAt, setTypingAt] = useState(0);
   const [typingVisible, setTypingVisible] = useState(false);
   const [pendingSince, setPendingSince] = useState<number | null>(null);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const stored = window.localStorage.getItem(SIDEBAR_STATE_STORAGE_KEY);
+    if (stored !== null) return stored === "true";
+    return window.innerWidth >= 768 && window.innerWidth < 1024;
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -228,6 +238,22 @@ export function HiveChatPage() {
     }
   }, [identity]);
 
+  useEffect(() => {
+    window.localStorage.setItem(
+      SIDEBAR_STATE_STORAGE_KEY,
+      String(sidebarCollapsed),
+    );
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!mobileNavigationOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setMobileNavigationOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mobileNavigationOpen]);
+
   if (!identity || !hasMantapBrowserIdentity()) return null;
 
   const connected = connection === "connected";
@@ -329,105 +355,219 @@ export function HiveChatPage() {
 
   let previousDay = "";
 
-  return (
-    <div className="flex h-dvh overflow-hidden bg-white text-[#172033] selection:bg-[#FF6F52]/20">
-      <aside className="hidden w-[260px] shrink-0 flex-col border-r border-[#D8DEE8] bg-white md:flex">
-        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-[#D8DEE8] px-5">
-          <div className="grid size-8 place-items-center rounded bg-[#FF6F52] text-white">
-            <Sparkles size={16} strokeWidth={2.4} />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-extrabold tracking-[0.22em] text-[#10233F]">
-                BRICK
-              </span>
-              <span className="rounded border border-[#FFD3C9] bg-[#FFF3EF] px-1.5 py-0.5 text-[9px] font-extrabold tracking-[0.12em] text-[#E35E43]">
-                HIVE
-              </span>
-            </div>
-            <p className="mt-0.5 text-[10px] font-medium text-[#607086]">
-              AI operations workspace
-            </p>
-          </div>
-        </div>
-
-        <div className="px-4 pt-5 text-[10px] font-extrabold uppercase tracking-[0.12em] text-[#607086]">
-          Workspace
-        </div>
-        <div className="mx-3 mt-2 flex items-center gap-3 rounded border border-[#FFD3C9] bg-[#FFF7F4] p-3 shadow-[inset_3px_0_0_#FF6F52]">
-          <div className="grid size-8 place-items-center rounded border border-[#FFD3C9] bg-white text-[#FF6F52]">
-            <Hash size={15} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-bold text-[#10233F]">
-              bricko-lab
-            </div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#607086]">
-              <ShieldCheck size={11} /> Private channel
-            </div>
-          </div>
-        </div>
-
-        <div className="px-4 pt-6 text-[10px] font-extrabold uppercase tracking-[0.12em] text-[#607086]">
-          Agent activity
-        </div>
-        <section
-          className="mx-3 mt-2 rounded border border-[#D8DEE8] bg-[#F7FAFC] p-3.5"
-          aria-label="Status BrickO"
+  const navigationPanel = (collapsed: boolean, mobile = false) => (
+    <>
+      <div
+        className={`flex shrink-0 items-center border-b border-[#D8DEE8] ${
+          collapsed ? "h-[60px] justify-center" : "h-[72px] px-4"
+        }`}
+      >
+        {!collapsed && (
+          <img
+            src="/logo.svg"
+            alt="Brick"
+            className="h-auto w-[92px] shrink-0"
+          />
+        )}
+        <button
+          type="button"
+          data-testid={mobile ? "mobile-navigation-close" : "sidebar-toggle"}
+          onClick={() =>
+            mobile
+              ? setMobileNavigationOpen(false)
+              : setSidebarCollapsed((current) => !current)
+          }
+          className={`grid size-8 shrink-0 place-items-center rounded border border-[#D8DEE8] bg-white text-[#526178] transition hover:border-[#FF6F52]/50 hover:bg-[#F7FAFC] hover:text-[#FF6F52] ${
+            collapsed ? "" : "ml-auto"
+          }`}
+          aria-label={
+            mobile
+              ? "Tutup menu navigasi"
+              : collapsed
+                ? "Tampilkan menu navigasi"
+                : "Sembunyikan menu navigasi"
+          }
+          title={
+            mobile
+              ? "Tutup menu"
+              : collapsed
+                ? "Tampilkan menu"
+                : "Sembunyikan menu"
+          }
         >
-          <div className="flex items-start gap-3">
-            <div className="relative grid size-9 shrink-0 place-items-center rounded bg-[#10213F] text-white">
-              <Bot size={18} />
+          {mobile ? (
+            <X size={17} />
+          ) : collapsed ? (
+            <Menu size={17} />
+          ) : (
+            <PanelLeftClose size={17} />
+          )}
+        </button>
+      </div>
+
+      <nav
+        className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden ${
+          collapsed ? "px-2 py-3" : "px-3 py-4"
+        }`}
+        aria-label="Navigasi Hive"
+      >
+        {!collapsed && (
+          <div className="mb-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#607086]">
+            Percakapan
+          </div>
+        )}
+        <button
+          type="button"
+          className={`flex h-9 w-full items-center rounded border border-[#BFD4FF] bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED] ${
+            collapsed ? "justify-center px-0" : "gap-2 px-2.5"
+          }`}
+          aria-current="page"
+          title="bricko-lab"
+        >
+          <Hash size={15} className="shrink-0" />
+          {!collapsed && (
+            <span className="min-w-0 flex-1 truncate text-left text-[13px] font-bold">
+              bricko-lab
+            </span>
+          )}
+        </button>
+
+        {!collapsed && (
+          <div className="mb-2 mt-5 px-1 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#607086]">
+            Agent activity
+          </div>
+        )}
+        <section
+          className={`mt-2 rounded border border-[#D8DEE8] bg-[#F7FAFC] ${
+            collapsed ? "grid h-10 place-items-center p-0" : "p-3"
+          }`}
+          aria-label="Status BrickO"
+          title={
+            collapsed ? `${agentState.label} — ${agentState.detail}` : undefined
+          }
+        >
+          <div className={`flex items-start ${collapsed ? "" : "gap-2.5"}`}>
+            <div className="relative grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
+              <Bot size={16} />
               <span
                 className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
               />
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[13px] font-bold text-[#10233F]">
-                  BrickO
-                </span>
-                <span className="rounded-full border border-[#D8DEE8] bg-white px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-[0.08em] text-[#526178]">
-                  Agent
-                </span>
+            {!collapsed && (
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[13px] font-bold text-[#10233F]">
+                    BrickO
+                  </span>
+                  <span className="rounded-full border border-[#D8DEE8] bg-white px-1.5 py-0.5 text-[8px] font-extrabold uppercase tracking-[0.08em] text-[#526178]">
+                    Agent
+                  </span>
+                </div>
+                <div className="mt-1 truncate text-[11px] font-semibold text-[#344054]">
+                  {agentState.label}
+                </div>
               </div>
-              <div className="mt-1 text-xs font-semibold text-[#344054]">
-                {agentState.label}
-              </div>
+            )}
+          </div>
+          {!collapsed && (
+            <div className="mt-2.5 border-t border-[#D8DEE8] pt-2.5 text-[10px] leading-[1.5] text-[#607086]">
+              {agentState.detail}
             </div>
-          </div>
-          <div className="mt-3 border-t border-[#D8DEE8] pt-3 text-[11px] leading-[1.5] text-[#607086]">
-            {agentState.detail}
-          </div>
+          )}
         </section>
+      </nav>
 
-        <div className="mt-auto border-t border-[#D8DEE8] bg-[#F7FAFC] p-3">
-          <div className="rounded border border-[#D8DEE8] bg-white p-3">
-            <div className="flex items-center gap-2 text-xs font-semibold text-[#42526B]">
-              {connected ? (
-                <Wifi size={13} className="text-[#1FA971]" />
-              ) : (
-                <WifiOff size={13} className="text-[#D9861C]" />
-              )}
-              {connected ? "Realtime tersambung" : "Sedang menyambung"}
-            </div>
-            <div className="mt-2 truncate border-t border-[#E2E8F0] pt-2 text-[11px] text-[#607086]">
+      <div
+        className={`shrink-0 border-t border-[#D8DEE8] bg-[#F7FAFC] ${
+          collapsed ? "p-2" : "p-3"
+        }`}
+      >
+        <div
+          className={`rounded border border-[#D8DEE8] bg-white ${
+            collapsed ? "grid h-9 place-items-center" : "p-2.5"
+          }`}
+          title={connected ? "Realtime tersambung" : "Sedang menyambung"}
+        >
+          <div
+            className={`flex items-center text-[11px] font-semibold text-[#42526B] ${
+              collapsed ? "justify-center" : "gap-2"
+            }`}
+          >
+            {connected ? (
+              <Wifi size={13} className="text-[#1FA971]" />
+            ) : (
+              <WifiOff size={13} className="text-[#D9861C]" />
+            )}
+            {!collapsed &&
+              (connected ? "Realtime tersambung" : "Sedang menyambung")}
+          </div>
+          {!collapsed && (
+            <div className="mt-2 truncate border-t border-[#E2E8F0] pt-2 text-[10px] text-[#607086]">
               {identity.email}
             </div>
-          </div>
+          )}
         </div>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="flex h-dvh overflow-hidden bg-white text-[#172033] selection:bg-[#FF6F52]/20">
+      <aside
+        data-testid="desktop-navigation"
+        className={`hidden shrink-0 flex-col border-r border-[#D8DEE8] bg-white transition-[width] duration-150 md:flex ${
+          sidebarCollapsed ? "w-[52px]" : "w-[200px]"
+        }`}
+      >
+        {navigationPanel(sidebarCollapsed)}
       </aside>
+
+      {mobileNavigationOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <button
+            type="button"
+            data-testid="mobile-navigation-backdrop"
+            className="absolute inset-0 bg-[#10213F]/35 backdrop-blur-[1px]"
+            onClick={() => setMobileNavigationOpen(false)}
+            aria-label="Tutup menu navigasi"
+          />
+          <aside
+            data-testid="mobile-navigation"
+            className="relative flex h-full w-[min(280px,86vw)] flex-col border-r border-[#D8DEE8] bg-white shadow-[16px_0_40px_rgba(16,35,63,0.18)]"
+          >
+            {navigationPanel(false, true)}
+          </aside>
+        </div>
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col bg-white">
         <header className="z-10 flex h-14 shrink-0 items-center justify-between border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="grid size-8 shrink-0 place-items-center rounded bg-[#FF6F52] text-white md:hidden">
-              <Sparkles size={15} />
-            </div>
-            <div className="min-w-0">
+            <button
+              type="button"
+              data-testid="mobile-navigation-open"
+              onClick={() => setMobileNavigationOpen(true)}
+              className="grid size-8 shrink-0 place-items-center rounded border border-[#FF6F52] bg-[#FF6F52] text-white shadow-[0_6px_14px_rgba(255,111,82,0.22)] transition hover:bg-[#E35E43] md:hidden"
+              aria-label="Buka menu navigasi"
+            >
+              <Menu size={17} />
+            </button>
+            <img
+              src="/logo.svg"
+              alt="Brick"
+              className="h-auto w-[92px] shrink-0 md:hidden"
+            />
+            {sidebarCollapsed && (
+              <img
+                src="/logo.svg"
+                alt="Brick"
+                className="hidden h-auto w-[92px] shrink-0 md:block"
+              />
+            )}
+            <div className="hidden min-w-0 sm:block">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-[15px] font-bold text-[#10233F]">
-                  BrickO
+                  Hive
                 </h1>
                 <span
                   className={`size-2 rounded-full shadow-sm ${toneClasses}`}

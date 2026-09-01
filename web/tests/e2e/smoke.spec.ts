@@ -598,4 +598,74 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("hive-polished.png"),
     fullPage: true,
   });
+
+  const desktopNavigation = page.getByTestId("desktop-navigation");
+  await expect(desktopNavigation).toHaveCSS("width", "200px");
+  await expect(
+    desktopNavigation.getByRole("img", { name: "Brick" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("01-desktop-navigation-expanded.png"),
+    fullPage: true,
+  });
+
+  await page.getByTestId("sidebar-toggle").click();
+  await expect(desktopNavigation).toHaveCSS("width", "52px");
+  await expect(
+    desktopNavigation.getByRole("img", { name: "Brick" }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("02-desktop-navigation-collapsed.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 820, height: 1024 });
+  await page.evaluate(
+    (storageKey) => localStorage.removeItem(storageKey),
+    "hive.navigation.collapsed.v1",
+  );
+  await page.reload();
+  await expect(desktopNavigation).toHaveCSS("width", "52px");
+  await page.screenshot({
+    path: testInfo.outputPath("03-tablet-navigation-collapsed.png"),
+    fullPage: true,
+  });
+
+  await page.getByTestId("sidebar-toggle").click();
+  await expect(desktopNavigation).toHaveCSS("width", "200px");
+  await page.screenshot({
+    path: testInfo.outputPath("04-tablet-navigation-expanded.png"),
+    fullPage: true,
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await expect(page.getByTestId("mobile-navigation-open")).toBeVisible();
+  await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("05-mobile-navigation-closed.png"),
+    fullPage: true,
+  });
+
+  await page.getByTestId("mobile-navigation-open").click();
+  await expect(page.getByTestId("mobile-navigation")).toBeVisible();
+  await expect(
+    page.getByTestId("mobile-navigation").getByRole("img", { name: "Brick" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("06-mobile-navigation-open.png"),
+    fullPage: true,
+  });
+  await page.getByTestId("mobile-navigation-close").click();
+  await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+
+  await page.getByTestId("mobile-navigation-open").click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+
+  await page.getByTestId("mobile-navigation-open").click();
+  await page
+    .getByTestId("mobile-navigation-backdrop")
+    .click({ position: { x: 350, y: 80 } });
+  await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
 });
