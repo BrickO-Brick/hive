@@ -532,13 +532,22 @@ fn validate_widget_in_data(data: &serde_json::Value, widget_id: &str) -> Result<
     }
 }
 
-pub(crate) fn allow_webview_navigation(url: &tauri::Url) -> bool {
+/// Decides whether the main webview may commit a top-level navigation.
+///
+/// `dev_url` is the dev server origin the app was actually built against
+/// (`webview.config().build.dev_url`). Every `just` desktop recipe derives a
+/// per-worktree Vite port via `scripts/instance-env.sh`, so the origin cannot
+/// be hardcoded — and because the dev server load *is* the initial navigation,
+/// cancelling it leaves a blank window rather than a blocked link.
+pub(crate) fn allow_webview_navigation(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> bool {
     match url.scheme() {
         "about" => url.as_str() == "about:blank",
         "buzz-canvas" => url.host_str() == Some("localhost"),
         "tauri" => url.host_str() == Some("localhost"),
+        // Debug builds serve the frontend from a dev server; release builds
+        // have none, so plain http stays blocked there.
         "http" if cfg!(debug_assertions) => {
-            url.host_str() == Some("localhost") && url.port() == Some(1420)
+            dev_url.is_some_and(|dev_url| dev_url.origin() == url.origin())
         }
         _ => false,
     }

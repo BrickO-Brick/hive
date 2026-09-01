@@ -640,19 +640,62 @@ fn protocol_security_policy_has_no_network_or_tauri_ipc_source() {
 #[test]
 fn native_navigation_policy_blocks_external_document_navigation() {
     assert!(super::allow_webview_navigation(
-        &"buzz-canvas://localhost/load/".parse().unwrap()
+        &"buzz-canvas://localhost/load/".parse().unwrap(),
+        None
     ));
     assert!(super::allow_webview_navigation(
-        &"tauri://localhost/".parse().unwrap()
+        &"tauri://localhost/".parse().unwrap(),
+        None
     ));
     assert!(super::allow_webview_navigation(
-        &"about:blank".parse().unwrap()
+        &"about:blank".parse().unwrap(),
+        None
     ));
     assert!(!super::allow_webview_navigation(
-        &"https://example.com/leak?snapshot=secret".parse().unwrap()
+        &"https://example.com/leak?snapshot=secret".parse().unwrap(),
+        None
     ));
     assert!(!super::allow_webview_navigation(
-        &"file:///tmp/secret".parse().unwrap()
+        &"file:///tmp/secret".parse().unwrap(),
+        None
+    ));
+}
+
+// The dev server load is the webview's *initial* navigation, so a policy that
+// does not recognise the configured origin opens a blank window. Every `just`
+// desktop recipe derives a per-worktree Vite port, so the origin the app is
+// launched on is never the `tauri.conf.json` default.
+#[test]
+fn native_navigation_policy_allows_the_configured_dev_server() {
+    let dev_url: tauri::Url = "http://localhost:30164".parse().unwrap();
+
+    assert!(super::allow_webview_navigation(
+        &"http://localhost:30164/".parse().unwrap(),
+        Some(&dev_url)
+    ));
+    assert!(super::allow_webview_navigation(
+        &"http://localhost:30164/index.html".parse().unwrap(),
+        Some(&dev_url)
+    ));
+}
+
+#[test]
+fn native_navigation_policy_blocks_other_localhost_origins() {
+    let dev_url: tauri::Url = "http://localhost:30164".parse().unwrap();
+
+    // Some other server on the loopback interface is not the frontend.
+    assert!(!super::allow_webview_navigation(
+        &"http://localhost:1420/".parse().unwrap(),
+        Some(&dev_url)
+    ));
+    assert!(!super::allow_webview_navigation(
+        &"http://127.0.0.1:30164/".parse().unwrap(),
+        Some(&dev_url)
+    ));
+    // Release builds have no dev server, so plain http stays blocked.
+    assert!(!super::allow_webview_navigation(
+        &"http://localhost:30164/".parse().unwrap(),
+        None
     ));
 }
 

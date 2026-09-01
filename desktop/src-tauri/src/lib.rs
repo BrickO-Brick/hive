@@ -139,7 +139,12 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(
         tauri::plugin::Builder::<_, ()>::new("navigation-policy")
-            .on_navigation(|_, url| project_canvas_package::allow_webview_navigation(url))
+            .on_navigation(|webview, url| {
+                project_canvas_package::allow_webview_navigation(
+                    url,
+                    webview.config().build.dev_url.as_ref(),
+                )
+            })
             .build(),
     );
     let builder = builder
