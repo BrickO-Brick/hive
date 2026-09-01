@@ -96,6 +96,14 @@ pub(crate) fn event_replacement_lock_key(
     hash as i64
 }
 
+fn same_related_channel_membership(left: &[Uuid], right: &[Uuid]) -> bool {
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort_unstable();
+    right.sort_unstable();
+    left == right
+}
+
 /// Replace a parameterized event in a caller-owned transaction.
 ///
 /// This function acquires a transaction-scoped advisory lock but never commits
@@ -271,7 +279,10 @@ async fn replace_parameterized_event_in_transaction_impl(
                 .into_iter()
                 .filter(|channel| Some(*channel) != home)
                 .collect();
-            if existing.is_some() && base_id != revision_id && incoming != effective_for_home {
+            if existing.is_some()
+                && base_id != revision_id
+                && !same_related_channel_membership(&incoming, &effective_for_home)
+            {
                 return Ok(ParameterizedReplaceResult::new(
                     event,
                     received_at,
@@ -647,6 +658,17 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn related_channel_membership_ignores_tag_order() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert!(same_related_channel_membership(
+            &[first, second],
+            &[second, first]
+        ));
+        assert!(!same_related_channel_membership(&[first], &[first, second]));
+    }
     use crate::{event, migration, replaceable};
     use sqlx::postgres::PgPoolOptions;
     use sqlx::{Acquire, PgPool};

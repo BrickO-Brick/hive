@@ -2,7 +2,7 @@
 
 use buzz_core::kind::KIND_PROJECT;
 use buzz_core::project_revision::{apply_project_revision, can_manage_project, ProjectRevision};
-use buzz_core::CommunityId;
+use buzz_core::{CommunityId, StoredEvent};
 use chrono::Utc;
 use nostr::Event;
 use sqlx::Row;
@@ -30,12 +30,14 @@ pub enum ProjectRevisionApplyStatus {
 }
 
 /// Result of a Project revision attempt.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ProjectRevisionApplyResult {
     /// Outcome category.
     pub status: ProjectRevisionApplyStatus,
     /// Human-readable detail suitable for a relay rejection.
     pub message: Option<String>,
+    /// The committed event when the revision was applied.
+    pub stored_event: Option<StoredEvent>,
 }
 
 impl ProjectRevisionApplyResult {
@@ -43,6 +45,15 @@ impl ProjectRevisionApplyResult {
         Self {
             status,
             message: None,
+            stored_event: None,
+        }
+    }
+
+    fn applied(stored_event: StoredEvent) -> Self {
+        Self {
+            status: ProjectRevisionApplyStatus::Applied,
+            message: None,
+            stored_event: Some(stored_event),
         }
     }
 
@@ -50,6 +61,7 @@ impl ProjectRevisionApplyResult {
         Self {
             status: ProjectRevisionApplyStatus::InvalidMutation,
             message: Some(message.into()),
+            stored_event: None,
         }
     }
 }
@@ -207,7 +219,8 @@ impl Db {
             return Ok(ProjectRevisionApplyResult::invalid(message));
         }
 
-        let (_, inserted) = insert_event_in_transaction(&mut tx, community_id, event, None).await?;
+        let (stored_event, inserted) =
+            insert_event_in_transaction(&mut tx, community_id, event, None).await?;
         if !inserted {
             tx.rollback().await?;
             return Ok(ProjectRevisionApplyResult::status(
@@ -233,9 +246,7 @@ impl Db {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(ProjectRevisionApplyResult::status(
-            ProjectRevisionApplyStatus::Applied,
-        ))
+        Ok(ProjectRevisionApplyResult::applied(stored_event))
     }
 }
 
@@ -412,13 +423,12 @@ mod tests {
             related_a,
         );
         let parsed = ProjectRevision::parse(&add).unwrap();
-        assert_eq!(
-            db.apply_project_revision(community, &add, &parsed)
-                .await
-                .unwrap()
-                .status,
-            ProjectRevisionApplyStatus::Applied
-        );
+        let applied = db
+            .apply_project_revision(community, &add, &parsed)
+            .await
+            .unwrap();
+        assert_eq!(applied.status, ProjectRevisionApplyStatus::Applied);
+        assert_eq!(applied.stored_event.unwrap().event.id, add.id);
         assert_eq!(
             db.apply_project_revision(community, &add, &parsed)
                 .await

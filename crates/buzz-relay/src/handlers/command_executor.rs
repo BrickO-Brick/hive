@@ -97,20 +97,9 @@ async fn handle_project_revision(
         })?;
     match result.status {
         ProjectRevisionApplyStatus::Applied => {
-            let stored = state
-                .db
-                .get_event_by_id(tenant.community(), event.id.as_bytes())
-                .await
-                .map_err(|error| {
-                    IngestError::Internal(format!(
-                        "error: loading applied Project revision: {error}"
-                    ))
-                })?
-                .ok_or_else(|| {
-                    IngestError::Internal(
-                        "error: applied Project revision was not persisted".into(),
-                    )
-                })?;
+            let stored = result
+                .stored_event
+                .expect("an applied Project revision includes its committed event");
             super::event::dispatch_persistent_event(
                 tenant,
                 state,
