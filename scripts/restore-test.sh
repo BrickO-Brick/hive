@@ -11,6 +11,8 @@ test_project="hive-restore-${test_suffix}"
 test_ingress="${test_project}-ingress"
 test_env="$(mktemp)"
 cleanup() {
+  HIVE_PROJECT="${test_project}" HIVE_ENV_FILE="${test_env}" \
+  ONEBRICK_INGRESS_NETWORK="${test_ingress}" hive_compose down >/dev/null 2>&1 || true
   rm -f "${test_env}" "${test_env}.bak"
   docker network rm "${test_ingress}" >/dev/null 2>&1 || true
 }

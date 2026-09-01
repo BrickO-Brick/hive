@@ -237,6 +237,27 @@ services:
     networks:
       - hive-net
 
+  relay-data-init:
+    image: ${HIVE_IMAGE:?set immutable HIVE_IMAGE with @sha256 digest}
+    profiles: ["operations"]
+    user: "0:0"
+    entrypoint: ["/bin/chown", "-R", "1000:1000", "/data/git"]
+    volumes:
+      - git-data:/data/git
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    read_only: true
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    restart: "no"
+    logging: *bounded-logging
+
 volumes:
   postgres-data:
     labels: {io.onebrick.hive.volume: postgres}

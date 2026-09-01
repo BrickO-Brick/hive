@@ -32,21 +32,31 @@ if [[ "$(hive_compose ps --status running -q bricko-agent)" != "" ]]; then
   agent_was_running=true
 fi
 hive_compose stop bricko-agent relay
+hive_compose exec -T postgres dropdb \
+  --username "${POSTGRES_USER:-hive}" \
+  --force \
+  --if-exists \
+  "${POSTGRES_DB:-hive}"
+hive_compose exec -T postgres createdb \
+  --username "${POSTGRES_USER:-hive}" \
+  --owner "${POSTGRES_USER:-hive}" \
+  "${POSTGRES_DB:-hive}"
 hive_compose exec -T postgres pg_restore \
   --username "${POSTGRES_USER:-hive}" \
   --dbname "${POSTGRES_DB:-hive}" \
-  --clean --if-exists < "${backup_path}/postgres.dump"
+  --exit-on-error < "${backup_path}/postgres.dump"
 
 hive_compose stop redis minio
 hive_compose run --rm --no-deps --entrypoint /bin/sh redis -euc \
-  'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
-hive_compose run --rm --no-deps --entrypoint /bin/sh minio -euc \
-  'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+  'busybox find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+hive_compose run --rm --no-deps --entrypoint /bin/bash minio -euc \
+  'shopt -s dotglob nullglob; entries=(/data/*); ((${#entries[@]} == 0)) || /usr/bin/rm -rf -- "${entries[@]}"'
 hive_compose run --rm --no-deps --entrypoint /bin/bash relay -euc \
   'find /data/git -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
 hive_compose cp "${backup_path}/redis-data/." redis:/data
 hive_compose cp "${backup_path}/minio-data/." minio:/data
 hive_compose cp "${backup_path}/git-data/." relay:/data/git
+hive_compose --profile operations run --rm --no-deps relay-data-init
 hive_compose up -d --wait postgres redis minio minio-init relay
 "${SCRIPT_DIR}/healthcheck.sh"
 if [[ "${agent_was_running}" == true ]]; then
