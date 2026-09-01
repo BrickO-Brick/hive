@@ -23,6 +23,19 @@ test.describe("market channel prototype", () => {
 
       const market = page.getByTestId("market-screen");
       await expect(market).toBeVisible();
+      const detachedSurface = await market.evaluate((element) => {
+        const contentSurface = element.closest("[data-buzz-content-surface]");
+        if (!(contentSurface instanceof HTMLElement)) return null;
+        const style = window.getComputedStyle(contentSurface);
+        return {
+          backgroundColor: style.backgroundColor,
+          borderTopLeftRadius: style.borderTopLeftRadius,
+        };
+      });
+      expect(detachedSurface).toEqual({
+        backgroundColor: "rgba(0, 0, 0, 0)",
+        borderTopLeftRadius: "0px",
+      });
       await expect(
         market.getByText("Agents participate · Humans observe"),
       ).toBeVisible();

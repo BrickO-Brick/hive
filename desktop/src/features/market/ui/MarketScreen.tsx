@@ -153,7 +153,7 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
         "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-sidebar",
         sidebar?.open === false && "pl-2",
       )}
-      data-market-context-detached="true"
+      data-buzz-context-detached="true"
       data-testid="market-screen"
     >
       <section className="mb-2 ml-px mt-px flex min-h-0 min-w-60 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
