@@ -311,11 +311,13 @@ test("addRepositoryToProject promotes a legacy repository route to a project coo
     legacyProject,
     attachedRepository,
     300,
+    "f".repeat(64),
   );
 
   assert.equal(updated.id, `30621:${PROJECT_OWNER}:sprout`);
   assert.equal(updated.legacy, false);
   assert.equal(updated.repositories.length, 2);
+  assert.equal(updated.effectiveRevisionId, "f".repeat(64));
 });
 
 test("selectProjectRepository honors a request and falls back to primary", () => {

@@ -82,12 +82,12 @@ test("buildProjectHomeFromFetcher scopes startup lookup to the active channel", 
     extraFilter: { "#buzz-channel": [channelId] },
   });
   assert.deepEqual(calls[1], {
-    kinds: [47001],
-    extraFilter: undefined,
-  });
-  assert.deepEqual(calls[2], {
     kinds: [30617],
     extraFilter: { "#buzz-channel": [channelId] },
+  });
+  assert.deepEqual(calls[2], {
+    kinds: [47001],
+    extraFilter: { "#a": [`30621:${owner}:relay`] },
   });
   assert.deepEqual(calls[3], {
     kinds: [5],
@@ -253,6 +253,31 @@ test("buildProjectsFromFetcher scopes the tombstone fetch to announcement coordi
   assert.deepEqual(deletionCalls[0], {
     "#a": [`30621:${OWNER}:proj`, `30617:${OWNER}:repo`],
   });
+});
+
+test("buildProjectsFromFetcher scopes revisions to announced Project coordinates", async () => {
+  const OWNER = "a".repeat(64);
+  const projectEvent = {
+    id: "p".repeat(64),
+    kind: 30621,
+    pubkey: OWNER,
+    created_at: 200,
+    content: "",
+    tags: [["d", "proj"]],
+  };
+  const revisionCalls = [];
+  const fetchExhaustively = async (kinds, extraFilter) => {
+    if (kinds.includes(30621)) return [projectEvent];
+    if (kinds.includes(47001)) {
+      revisionCalls.push(extraFilter);
+      return [];
+    }
+    return [];
+  };
+
+  await buildProjectsFromFetcher(fetchExhaustively);
+
+  assert.deepEqual(revisionCalls, [{ "#a": [`30621:${OWNER}:proj`] }]);
 });
 
 test("buildProjectsFromFetcher skips the tombstone fetch when there are no announcements", async () => {

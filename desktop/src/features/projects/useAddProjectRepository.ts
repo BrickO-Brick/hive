@@ -186,6 +186,7 @@ export async function addProjectRepository(
         project,
         repository,
         projectEvent.created_at,
+        projectEvent.id.toLowerCase(),
       ),
       repository,
     };
@@ -306,6 +307,7 @@ export async function addProjectRepository(
       project,
       repository,
       projectEvent.created_at,
+      projectEvent.id.toLowerCase(),
     ),
     repository,
   };

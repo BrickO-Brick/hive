@@ -629,6 +629,7 @@ export function addRepositoryToProject(
   project: Project,
   repository: Repository,
   createdAt: number,
+  effectiveRevisionId = project.effectiveRevisionId,
 ): Project {
   const projectAddress = `${KIND_PROJECT_ANNOUNCEMENT}:${project.owner}:${project.dtag}`;
   const repositoryAddresses = [
@@ -645,6 +646,7 @@ export function addRepositoryToProject(
     ...project,
     id: projectAddress,
     createdAt,
+    effectiveRevisionId,
     legacy: false,
     projectAddress,
     primaryRepositoryAddress:

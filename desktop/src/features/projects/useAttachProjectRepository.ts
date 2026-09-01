@@ -80,6 +80,7 @@ async function attachProjectRepository({
         project,
         repository,
         projectEvent.created_at,
+        projectEvent.id.toLowerCase(),
       ),
       repository,
     };
@@ -101,6 +102,7 @@ async function attachProjectRepository({
       project,
       repository,
       projectEvent.created_at,
+      projectEvent.id.toLowerCase(),
     ),
     repository,
   };

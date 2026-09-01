@@ -14,7 +14,7 @@ const PROJECT_ENUMERATION_PAGE_SIZE = 500;
 
 // Relays commonly cap filter tag-value lists; chunk `#a` scoping well below
 // any such cap.
-const TOMBSTONE_COORDINATE_CHUNK_SIZE = 100;
+const PROJECT_COORDINATE_CHUNK_SIZE = 100;
 
 /** Additional server-side scoping merged into every enumeration page. */
 export type ProjectEventExtraFilter = {
@@ -149,15 +149,45 @@ async function fetchScopedDeletionEvents(
   for (
     let index = 0;
     index < coordinates.length;
-    index += TOMBSTONE_COORDINATE_CHUNK_SIZE
+    index += PROJECT_COORDINATE_CHUNK_SIZE
   ) {
     chunks.push(
-      coordinates.slice(index, index + TOMBSTONE_COORDINATE_CHUNK_SIZE),
+      coordinates.slice(index, index + PROJECT_COORDINATE_CHUNK_SIZE),
     );
   }
 
   const pages = await Promise.all(
     chunks.map((chunk) => fetchExhaustively([KIND_DELETION], { "#a": chunk })),
+  );
+  return pages.flat();
+}
+
+async function fetchScopedProjectRevisionEvents(
+  fetchExhaustively: FetchProjectEventsExhaustively,
+  projectEvents: RelayEvent[],
+): Promise<RelayEvent[]> {
+  const coordinates = [
+    ...new Set(
+      projectEvents.flatMap((event) => {
+        const coordinate = eventCoordinate(event);
+        return coordinate ? [coordinate] : [];
+      }),
+    ),
+  ];
+  const chunks: string[][] = [];
+  for (
+    let index = 0;
+    index < coordinates.length;
+    index += PROJECT_COORDINATE_CHUNK_SIZE
+  ) {
+    chunks.push(
+      coordinates.slice(index, index + PROJECT_COORDINATE_CHUNK_SIZE),
+    );
+  }
+  const pages = await Promise.all(
+    chunks.map((chunk) =>
+      fetchExhaustively([KIND_PROJECT_REVISION], { "#a": chunk }),
+    ),
   );
   return pages.flat();
 }
@@ -180,12 +210,14 @@ export async function buildProjectsFromFetcher(
     viewerPubkey?: string | null;
   } = {},
 ): Promise<Project[]> {
-  const [projectEvents, projectRevisionEvents, repositoryEvents] =
-    await Promise.all([
-      fetchExhaustively([KIND_PROJECT_ANNOUNCEMENT]),
-      fetchExhaustively([KIND_PROJECT_REVISION]),
-      fetchExhaustively([KIND_REPO_ANNOUNCEMENT]),
-    ]);
+  const [projectEvents, repositoryEvents] = await Promise.all([
+    fetchExhaustively([KIND_PROJECT_ANNOUNCEMENT]),
+    fetchExhaustively([KIND_REPO_ANNOUNCEMENT]),
+  ]);
+  const projectRevisionEvents = await fetchScopedProjectRevisionEvents(
+    fetchExhaustively,
+    projectEvents,
+  );
 
   // Tombstones are fetched second (not in parallel) because the `#a` scoping
   // needs the announcement coordinates; both announcement kinds are small,
