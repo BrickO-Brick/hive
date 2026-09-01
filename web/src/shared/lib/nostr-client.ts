@@ -24,6 +24,124 @@ export interface NostrFilter {
 export type NostrEvent = SignedNostrEvent;
 
 const QUERY_TIMEOUT_MS = 10_000;
+const SUBSCRIPTION_RECONNECT_MS = 1_000;
+
+/**
+ * Keep a NIP-01 subscription open after EOSE so new events arrive in real time.
+ * The returned cleanup function closes the socket and disables reconnects.
+ */
+export function subscribeEvents(
+  wsUrl: string,
+  filter: NostrFilter,
+  onEvent: (event: NostrEvent) => void,
+  onError: (error: Error) => void,
+): () => void {
+  const subId = `s-${Date.now().toString(36)}`;
+  let disposed = false;
+  let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let unauthenticatedReqTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = () => {
+    if (disposed) return;
+
+    const socket = new WebSocket(wsUrl);
+    ws = socket;
+    let reqSent = false;
+    let authEventId: string | null = null;
+
+    const sendReq = () => {
+      if (!reqSent && socket.readyState === WebSocket.OPEN) {
+        reqSent = true;
+        socket.send(JSON.stringify(["REQ", subId, filter]));
+      }
+    };
+
+    socket.addEventListener("open", () => {
+      unauthenticatedReqTimer = setTimeout(sendReq, 100);
+    });
+
+    socket.addEventListener("message", async (message) => {
+      let data: unknown;
+      try {
+        data = JSON.parse(String(message.data));
+      } catch {
+        return;
+      }
+      if (!Array.isArray(data)) return;
+
+      if (data[0] === "AUTH" && typeof data[1] === "string") {
+        if (unauthenticatedReqTimer) {
+          clearTimeout(unauthenticatedReqTimer);
+          unauthenticatedReqTimer = null;
+        }
+        try {
+          const auth = await signNostrEvent(makeAuthEvent(wsUrl, data[1]));
+          if (
+            disposed ||
+            ws !== socket ||
+            socket.readyState !== WebSocket.OPEN
+          ) {
+            return;
+          }
+          authEventId = auth.id;
+          socket.send(JSON.stringify(["AUTH", auth]));
+        } catch (error) {
+          onError(
+            error instanceof Error
+              ? error
+              : new Error("Relay authentication failed."),
+          );
+          socket.close();
+        }
+        return;
+      }
+
+      if (data[0] === "OK" && data[1] === authEventId) {
+        if (data[2] === true) {
+          sendReq();
+        } else {
+          onError(new Error(String(data[3] ?? "Relay authentication failed.")));
+          socket.close();
+        }
+        return;
+      }
+
+      if (data[0] === "EVENT" && data[1] === subId && data[2]) {
+        onEvent(data[2] as NostrEvent);
+      } else if (data[0] === "CLOSED" && data[1] === subId) {
+        onError(new Error(String(data[2] ?? "Relay closed the subscription.")));
+        socket.close();
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      onError(new Error("WebSocket connection failed."));
+    });
+
+    socket.addEventListener("close", () => {
+      if (unauthenticatedReqTimer) {
+        clearTimeout(unauthenticatedReqTimer);
+        unauthenticatedReqTimer = null;
+      }
+      if (!disposed && ws === socket) {
+        reconnectTimer = setTimeout(connect, SUBSCRIPTION_RECONNECT_MS);
+      }
+    });
+  };
+
+  connect();
+
+  return () => {
+    disposed = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (unauthenticatedReqTimer) clearTimeout(unauthenticatedReqTimer);
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(["CLOSE", subId]));
+    }
+    ws?.close();
+  };
+}
 
 /**
  * Open a WebSocket to `wsUrl`, authenticate via NIP-42 if challenged,

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -13,6 +14,7 @@ import {
 import {
   publishEvent,
   queryEvents,
+  subscribeEvents,
   type NostrEvent,
 } from "@/shared/lib/nostr-client";
 import {
@@ -29,6 +31,15 @@ export function HiveChatPage() {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const mergeMessage = useCallback((event: NostrEvent) => {
+    setMessages((current) => {
+      const byId = new Map(current.map((message) => [message.id, message]));
+      byId.set(event.id, event);
+      return [...byId.values()].sort((a, b) => a.created_at - b.created_at);
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!identity) return;
@@ -48,6 +59,27 @@ export function HiveChatPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!identity) return;
+    return subscribeEvents(
+      relayWsUrl(),
+      {
+        kinds: [9],
+        "#h": [identity.channelId],
+      },
+      (event) => {
+        setError("");
+        mergeMessage(event);
+      },
+      (cause) => setError(cause.message),
+    );
+  }, [identity, mergeMessage]);
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
     if (!identity || !hasMantapBrowserIdentity()) {
@@ -155,6 +187,7 @@ export function HiveChatPage() {
               </article>
             );
           })}
+          <div ref={messagesEndRef} />
         </section>
         <form onSubmit={send} className="border-t border-white/10 p-4">
           {error && (
