@@ -36,6 +36,48 @@ export class Nip07UnavailableError extends Error {
 }
 
 let ephemeralSecretKey: Uint8Array | null = null;
+const MANTAP_SECRET_KEY_STORAGE = "hive.mantap.nostr-secret.v1";
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  if (!/^[0-9a-f]{64}$/.test(hex)) return null;
+  return Uint8Array.from(hex.match(/../g) ?? [], (byte) =>
+    Number.parseInt(byte, 16),
+  );
+}
+
+function getMantapSecretKey(): Uint8Array | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return hexToBytes(
+      window.localStorage.getItem(MANTAP_SECRET_KEY_STORAGE) ?? "",
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Create or load the browser-local Nostr identity used by Mantap SSO. */
+export function ensureMantapBrowserIdentity(): string {
+  const existing = getMantapSecretKey();
+  if (existing) return getPublicKey(existing);
+  const secret = generateSecretKey();
+  window.localStorage.setItem(MANTAP_SECRET_KEY_STORAGE, bytesToHex(secret));
+  return getPublicKey(secret);
+}
+
+export function hasMantapBrowserIdentity(): boolean {
+  return getMantapSecretKey() != null;
+}
+
+export function clearMantapBrowserIdentity(): void {
+  window.localStorage.removeItem(MANTAP_SECRET_KEY_STORAGE);
+}
 
 function getEphemeralSecretKey(): Uint8Array {
   if (!ephemeralSecretKey) {
@@ -78,6 +120,13 @@ export async function signNostrEvent(
     created_at: template.created_at ?? Math.floor(Date.now() / 1000),
   };
   const provider = typeof window === "undefined" ? undefined : window.nostr;
+  const mantapSecretKey = getMantapSecretKey();
+
+  // A Mantap-provisioned identity must stay on the exact browser key that was
+  // bound during exchange, even if a NIP-07 extension is installed later.
+  if (!options?.requireNip07 && mantapSecretKey) {
+    return finalizeEvent(unsigned, mantapSecretKey);
+  }
 
   if (provider) {
     const expectedPubkey = await provider.getPublicKey();

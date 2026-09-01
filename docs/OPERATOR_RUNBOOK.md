@@ -2,6 +2,17 @@
 
 Run from `/srv/hive/source` with `HIVE_ENV_FILE=/srv/hive/secrets/hive.env`.
 
+Every production Docker mutation on the shared EC2 must be run through the
+governed OneBrick shared deploy lock from an authorized operator workstation:
+
+```bash
+/Users/bricko/Work/mantul-knowledge-reader-validation/scripts/shared-ec2-deploy-lock \
+  --host mantap-ec2 -- bash -lc '<one or more commands below>'
+```
+
+Read-only status and log checks may use SSH directly. Never run concurrent
+Compose mutations outside the lock.
+
 ```bash
 # start core
 docker compose -p hive --env-file "$HIVE_ENV_FILE" -f deploy/onebrick/compose.yml up -d --wait postgres redis minio minio-init relay
@@ -46,3 +57,20 @@ Record the returned channel ID, then use the Desktop membership UI or the
 current Buzz membership command to add only BrickO. Re-check command help
 against the pinned revision before use; private-channel membership APIs are
 still evolving.
+
+## Mantap SSO and web chat
+
+The relay expects `BUZZ_MANTAP_SSO_SHARED_SECRET` and
+`BUZZ_MANTAP_SSO_CHANNEL_ID` in the owner-only Hive environment file. The
+secret must exactly match Mantap backend's `MANTUL_HIVE_SSO_SHARED_SECRET`; the
+channel ID is the private `#bricko-lab` UUID. Never put either secret in a URL,
+image, or tracked file.
+
+An authenticated Mantap user launches **Open Hive**. Mantap issues a 45-second
+single-use ticket in the URL fragment, and the browser exchanges it with a
+NIP-98 proof from a browser-local key. The relay binds one Mantap subject to one
+Nostr key, adds ordinary relay/channel membership, and never changes an
+existing owner/admin role. A user can then return to `/app` from the same
+browser. A fresh browser creates a separate key bound to the same Mantap
+subject; remove lost or retired device keys through the governed membership
+workflow.

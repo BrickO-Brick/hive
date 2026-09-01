@@ -585,6 +585,35 @@ CREATE TABLE relay_members (
 
 CREATE INDEX idx_relay_members_role ON relay_members (community_id, role);
 
+-- ── Mantap SSO ───────────────────────────────────────────────────────────────
+
+CREATE TABLE mantap_sso_bindings (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    subject TEXT NOT NULL,
+    email TEXT NOT NULL,
+    pubkey BYTEA NOT NULL CHECK (octet_length(pubkey) = 32),
+    access TEXT NOT NULL CHECK (access IN ('reader', 'editor', 'admin')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
+    last_verified_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
+    PRIMARY KEY (community_id, subject, pubkey),
+    UNIQUE (community_id, pubkey)
+);
+
+CREATE INDEX idx_mantap_sso_bindings_email
+    ON mantap_sso_bindings (community_id, lower(email));
+
+CREATE TABLE mantap_sso_ticket_uses (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    jti TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ NOT NULL DEFAULT transaction_timestamp(),
+    PRIMARY KEY (community_id, jti)
+);
+
+CREATE INDEX idx_mantap_sso_ticket_uses_expiry
+    ON mantap_sso_ticket_uses (expires_at);
+
 -- ── Join policy acceptances ──────────────────────────────────────────────────
 -- Durable evidence of the policy version accepted when an invite claim grants
 -- relay membership. The composite foreign key keeps evidence bound to a live
@@ -1745,6 +1774,8 @@ SELECT attach_community_write_fence('event_mentions');
 SELECT attach_community_write_fence('events');
 SELECT attach_community_write_fence('git_repo_names');
 SELECT attach_community_write_fence('join_policy_acceptances');
+SELECT attach_community_write_fence('mantap_sso_bindings');
+SELECT attach_community_write_fence('mantap_sso_ticket_uses');
 SELECT attach_community_write_fence('moderation_actions');
 SELECT attach_community_write_fence('moderation_reports');
 SELECT attach_community_write_fence('parameterized_event_watermarks');

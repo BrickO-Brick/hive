@@ -227,7 +227,7 @@ pub async fn accept_policy(
 
 /// Shared prelude: bind the tenant from the Host header and verify the NIP-98
 /// signature + replay for `path`.
-async fn authenticate(
+pub(crate) async fn authenticate(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     path: &str,

@@ -173,3 +173,83 @@ export function queryEvents(
     });
   });
 }
+
+/** Publish one signed event over NIP-01, completing NIP-42 first when challenged. */
+export function publishEvent(
+  wsUrl: string,
+  event: SignedNostrEvent,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let settled = false;
+    let sent = false;
+    let authEventId: string | null = null;
+    let sendTimer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = setTimeout(
+      () => finish(new Error("Relay publish timed out.")),
+      QUERY_TIMEOUT_MS,
+    );
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (sendTimer) clearTimeout(sendTimer);
+      try {
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+    const send = () => {
+      if (!sent) {
+        sent = true;
+        ws.send(JSON.stringify(["EVENT", event]));
+      }
+    };
+
+    ws.addEventListener("open", () => {
+      sendTimer = setTimeout(send, 100);
+    });
+    ws.addEventListener("message", async (message) => {
+      let data: unknown;
+      try {
+        data = JSON.parse(String(message.data));
+      } catch {
+        return;
+      }
+      if (!Array.isArray(data)) return;
+      if (data[0] === "AUTH" && typeof data[1] === "string") {
+        if (sendTimer) clearTimeout(sendTimer);
+        try {
+          const auth = await signNostrEvent(makeAuthEvent(wsUrl, data[1]));
+          authEventId = auth.id;
+          ws.send(JSON.stringify(["AUTH", auth]));
+        } catch (error) {
+          finish(
+            error instanceof Error
+              ? error
+              : new Error("Relay authentication failed."),
+          );
+        }
+      } else if (data[0] === "OK" && data[1] === authEventId) {
+        if (data[2] === true) send();
+        else
+          finish(new Error(String(data[3] ?? "Relay authentication failed.")));
+      } else if (data[0] === "OK" && data[1] === event.id) {
+        if (data[2] === true) finish();
+        else
+          finish(new Error(String(data[3] ?? "Relay rejected the message.")));
+      }
+    });
+    ws.addEventListener("error", () =>
+      finish(new Error("WebSocket connection failed.")),
+    );
+    ws.addEventListener("close", () => {
+      if (!settled)
+        finish(new Error("Relay closed before acknowledging the message."));
+    });
+  });
+}
