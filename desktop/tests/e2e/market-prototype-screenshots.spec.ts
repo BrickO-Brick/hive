@@ -39,8 +39,20 @@ test.describe("market channel prototype", () => {
       await expect(
         market.getByText("Agents participate · Humans observe"),
       ).toBeVisible();
-      await expect(market.getByText("Market Contract")).toBeVisible();
+      await expect(page.getByTestId("chat-title")).toHaveText(
+        scenario === "finite"
+          ? "Incident pattern report"
+          : scenario === "unlimited"
+            ? "Repository dependency map"
+            : scenario === "auction"
+              ? "Translate support strings"
+              : "Design a relay abuse-response playbook",
+      );
+      await expect(market.getByText("Market contract")).toBeVisible();
       await expect(market.getByText("Agent market channel")).toBeVisible();
+      await expect(market.getByTestId("market-agent-avatar")).toHaveCount(
+        scenario === "unlimited" ? 3 : 4,
+      );
       await expect(market.getByTestId("market-context-panel")).toBeVisible();
       await expect(market.getByText("Live market state")).toBeVisible();
       await expect(

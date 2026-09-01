@@ -4,7 +4,6 @@ import {
   Check,
   CircleDollarSign,
   Clock3,
-  Eye,
   LockKeyhole,
   MessageSquareOff,
   PackageCheck,
@@ -18,6 +17,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
+import { ChatHeader } from "@/features/chat/ui/ChatHeader";
 import {
   MARKET_SCENARIOS,
   MARKET_SCENARIO_IDS,
@@ -30,6 +30,7 @@ import { ProjectHomeColumn } from "@/features/projects/ui/ProjectHomeColumn";
 import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
 import { SIDEBAR_WIDTH_MIN } from "@/shared/layout/sidebarLayout";
 import { cn } from "@/shared/lib/cn";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { useOptionalSidebar } from "@/shared/ui/sidebar";
@@ -89,37 +90,23 @@ const ACTIVITY_STYLE: Record<
   MarketActivity["state"],
   {
     icon: React.ComponentType<{ className?: string }>;
-    badgeClass: string;
-    avatarClass: string;
     label: string;
   }
 > = {
   accepted: {
     icon: Radio,
-    badgeClass:
-      "border-sky-600/25 bg-sky-500/10 text-sky-800 dark:text-sky-200",
-    avatarClass: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
     label: "Accepted by relay",
   },
   discussion: {
     icon: Bot,
-    badgeClass:
-      "border-violet-600/25 bg-violet-500/10 text-violet-800 dark:text-violet-200",
-    avatarClass: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
     label: "Agent message",
   },
   rejected: {
     icon: TriangleAlert,
-    badgeClass:
-      "border-rose-600/25 bg-rose-500/10 text-rose-800 dark:text-rose-200",
-    avatarClass: "bg-rose-500/15 text-rose-700 dark:text-rose-300",
     label: "Rejected by relay",
   },
   terminal: {
     icon: PackageCheck,
-    badgeClass:
-      "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
-    avatarClass: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
     label: "Signed transition",
   },
 };
@@ -157,34 +144,19 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
       data-testid="market-screen"
     >
       <section className="mb-2 ml-px mt-px flex min-h-0 min-w-60 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
-        <header className="flex min-h-16 shrink-0 items-center justify-between gap-5 border-b border-border/80 bg-background/95 px-6 py-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-700 dark:text-amber-300">
-              <Store className="h-5 w-5" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="truncate text-lg font-semibold tracking-tight">
-                  Market
-                </h1>
-                <Badge
-                  className="border-amber-600/25 bg-amber-500/10 text-amber-800 dark:text-amber-200"
-                  variant="outline"
-                >
-                  Prototype
-                </Badge>
-              </div>
-              <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                <Eye className="h-3.5 w-3.5" />
-                Agents participate · Humans observe
-              </p>
-            </div>
-          </div>
-          <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:flex">
-            <Scale className="h-3.5 w-3.5" /> One channel = one contract · Pulse
-            indexes markets
-          </span>
-        </header>
+        <ChatHeader
+          actions={
+            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:flex">
+              <Scale className="h-3.5 w-3.5" /> Agents participate · Humans
+              observe
+            </span>
+          }
+          channelType="stream"
+          description={scenario.summary}
+          leadingContent={<Store className="h-4 w-4 text-muted-foreground" />}
+          statusBadge={<StatusBadge status={scenario.status} />}
+          title={scenario.title}
+        />
 
         <nav
           className="flex shrink-0 items-center gap-1 border-b bg-muted/20 px-6 py-2"
@@ -205,20 +177,28 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
         </nav>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-6 py-5">
+          <div className="border-b px-6 py-4">
+            <div className="mx-auto w-full max-w-4xl">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">{scenario.eyebrow}</Badge>
+                <span className="font-mono text-xs text-muted-foreground">
+                  {scenario.contractId}
+                </span>
+              </div>
+              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+                {scenario.summary}
+              </p>
+            </div>
+          </div>
+          <div className="mx-auto flex w-full max-w-4xl flex-col px-6 py-5">
             <ContractCard
               closeAt={scenario.closeAt}
-              contractId={scenario.contractId}
-              eyebrow={scenario.eyebrow}
               mode={scenario.mode}
-              status={scenario.status}
-              summary={scenario.summary}
               terms={contractTerms}
-              title={scenario.title}
             />
 
-            <section data-testid="market-agent-timeline">
-              <div className="mb-2 flex items-end justify-between gap-3 px-1">
+            <section className="pt-5" data-testid="market-agent-timeline">
+              <div className="mb-3 flex items-end justify-between gap-3 px-1">
                 <div>
                   <h3 className="font-semibold">Agent market channel</h3>
                   <p className="text-xs text-muted-foreground">
@@ -230,7 +210,7 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
                   {scenario.activity.length} messages
                 </Badge>
               </div>
-              <div className="overflow-hidden rounded-2xl border bg-card">
+              <div>
                 {scenario.activity.map((activity) => (
                   <AgentMessage
                     activity={activity}
@@ -295,62 +275,35 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
 
 function ContractCard({
   closeAt,
-  contractId,
-  eyebrow,
   mode,
-  status,
-  summary,
   terms,
-  title,
 }: {
   closeAt: string;
-  contractId: string;
-  eyebrow: string;
   mode: string;
-  status: "Open" | "Closed" | "Awarded" | "Fulfilled";
-  summary: string;
   terms: MarketTerm[];
-  title: string;
 }) {
   return (
-    <section className="overflow-hidden rounded-2xl border bg-card shadow-sm">
-      <div className="border-b bg-gradient-to-br from-amber-500/10 via-card to-card px-5 py-4">
-        <div className="mb-1.5 flex flex-wrap items-center gap-2">
-          <Badge className="bg-amber-600 text-white hover:bg-amber-600">
-            {eyebrow}
-          </Badge>
-          <StatusBadge status={status} />
-          <span className="font-mono text-xs text-muted-foreground">
-            {contractId}
+    <section className="border-b pb-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <LockKeyhole className="h-4 w-4 text-muted-foreground" />
+            <h2 className="font-semibold">Market contract</h2>
+          </div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Immutable signed scope · material changes require v2
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Clock3 className="h-3.5 w-3.5" /> {closeAt}
           </span>
+          <Badge variant="outline">v1 locked</Badge>
         </div>
-        <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-          {summary}
-        </p>
       </div>
-      <div className="p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <LockKeyhole className="h-4 w-4 text-amber-700 dark:text-amber-300" />
-              <h3 className="font-semibold">Market Contract</h3>
-            </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Immutable signed scope · material changes require v2
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Clock3 className="h-3.5 w-3.5" /> {closeAt}
-            </span>
-            <Badge variant="outline">v1 locked</Badge>
-          </div>
-        </div>
-        <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-          <TermRows terms={[{ label: "Mode", value: mode }, ...terms]} />
-        </dl>
-      </div>
+      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+        <TermRows terms={[{ label: "Mode", value: mode }, ...terms]} />
+      </dl>
     </section>
   );
 }
@@ -379,13 +332,13 @@ function MarketContextPanel({
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 pb-8 pt-5">
         <div className="flex h-8 items-center justify-between gap-2 px-2">
           <div className="flex items-center gap-2">
-            <ReceiptText className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+            <ReceiptText className="h-4 w-4 text-sidebar-foreground/65" />
             <h2 className="text-sm font-semibold">Market context</h2>
           </div>
           <StatusBadge status={status} />
         </div>
         <ContextSection icon={CircleDollarSign} title="Commercial terms">
-          <p className="rounded-xl border border-amber-600/20 bg-amber-500/10 p-3 text-sm font-medium leading-relaxed">
+          <p className="rounded-xl border border-sidebar-border bg-sidebar-accent p-3 text-sm font-medium leading-relaxed">
             {direction}
           </p>
           <dl className="space-y-3 pt-1">
@@ -412,8 +365,8 @@ function MarketContextPanel({
               </div>
             ))}
           </dl>
-          <div className="flex items-start gap-2 rounded-xl border border-sky-600/20 bg-sky-500/10 p-3 text-xs">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sky-700 dark:text-sky-300" />
+          <div className="flex items-start gap-2 rounded-xl border border-sidebar-border bg-sidebar-accent p-3 text-xs">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sidebar-foreground/65" />
             <span>
               {statusDetail}. Client timers never determine acceptance.
             </span>
@@ -509,11 +462,7 @@ function StatusBadge({
   const terminal = status !== "Open";
   return (
     <Badge
-      className={cn(
-        terminal
-          ? "border-emerald-600/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
-          : "border-sky-600/25 bg-sky-500/10 text-sky-800 dark:text-sky-200",
-      )}
+      className="border-sidebar-border bg-sidebar-accent text-sidebar-foreground"
       variant="outline"
     >
       {terminal ? (
@@ -530,28 +479,27 @@ function AgentMessage({ activity }: { activity: MarketActivity }) {
   const style = ACTIVITY_STYLE[activity.state];
   const Icon = style.icon;
   return (
-    <article className="group flex gap-3 border-b px-4 py-4 last:border-b-0 hover:bg-muted/25">
-      <div
-        className={cn(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
-          style.avatarClass,
-        )}
-      >
-        <Bot className="h-5 w-5" />
-      </div>
+    <article className="group flex gap-2.5 rounded-2xl px-2 py-3 hover:bg-muted/50">
+      <UserAvatar
+        accent
+        avatarUrl={null}
+        className="rounded-[30%] grayscale"
+        displayName={activity.actor}
+        fallbackDelayMs={0}
+        shape="squircle"
+        testId="market-agent-avatar"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <p className="text-sm font-semibold">{activity.actor}</p>
+          <time className="text-xs text-muted-foreground">{activity.at}</time>
           <Badge
-            className={cn("font-normal", style.badgeClass)}
+            className="border-border bg-muted/50 font-normal text-muted-foreground"
             variant="outline"
           >
             <Icon className="mr-1 h-3 w-3" />
             {style.label}
           </Badge>
-          <time className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {activity.at}
-          </time>
         </div>
         <p className="mt-1 text-sm font-medium">{activity.title}</p>
         <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
