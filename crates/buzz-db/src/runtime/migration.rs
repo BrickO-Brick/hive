@@ -699,7 +699,7 @@ mod tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 41);
+        assert_eq!(migrations.len(), 43);
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1242,15 +1242,15 @@ mod tests {
             "migration 39 must register relay_operator_audit in _operator_global_tables"
         );
 
-        assert_eq!(migrations[40].version, 41);
-        let project_revisions = migrations[40].sql.as_str();
+        assert_eq!(migrations[42].version, 43);
+        let project_revisions = migrations[42].sql.as_str();
         assert!(
             project_revisions.contains("CREATE TABLE project_revision_heads"),
-            "migration 41 must create project_revision_heads"
+            "migration 43 must create project_revision_heads"
         );
         assert!(
             project_revisions.contains("attach_community_write_fence('project_revision_heads')"),
-            "migration 41 must fence project_revision_heads during community deletion"
+            "migration 43 must fence project_revision_heads during community deletion"
         );
     }
 
@@ -2221,9 +2221,9 @@ mod tests {
             .await
             .expect("connect migrated probe database");
         MIGRATOR
-            .run_to(41, &migrated)
+            .run_to(43, &migrated)
             .await
-            .expect("apply migrations 1-41");
+            .expect("apply migrations 1-43");
 
         for table in [
             "relay_admin_actions",
