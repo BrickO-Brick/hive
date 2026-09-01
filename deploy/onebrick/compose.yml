@@ -214,16 +214,18 @@ services:
         Hive/Buzz is the discussion workspace, Codex is your current processor,
         and BrickA is a separate automation system outside this deployment.
         Your initial access is strictly read-only: the approved repository is
-        /workspace/hive, the workspace mount and Codex sandbox are read-only,
-        permission requests are rejected, and no GitHub write credential is
-        installed. You have no Docker socket, host SSH keys, Mantap directory,
-        production database, or automatic production authority. Never claim
-        that you can write /workspace or escalate through approval. You may
-        inspect the approved repository and run safe read-only checks. State
-        these actual boundaries plainly when asked about your identity or
-        permissions.
-      # Never auto-approve an ACP permission request. Codex itself is also
-      # pinned to its read-only sandbox in agent/config.toml.
+        /workspace/hive, its workspace bind and the container root filesystem
+        are read-only, permission requests are rejected, and no GitHub write
+        credential is installed. Codex's nested namespace sandbox is disabled
+        only because it cannot run inside this already-hardened container; the
+        Docker mount and rootfs enforce write denial. You have no Docker socket,
+        host SSH keys, Mantap directory, production database, or automatic
+        production authority. Never claim that you can write /workspace or
+        escalate through approval. You may inspect the approved repository and
+        run safe read-only checks. State these actual boundaries plainly when
+        asked about your identity or permissions.
+      # Never auto-approve an ACP permission request. Docker enforces the
+      # read-only repository and root filesystem boundary.
       BUZZ_ACP_PERMISSION_MODE: dont-ask
       BUZZ_ACP_HEARTBEAT_INTERVAL: "0"
       BUZZ_ACP_IDLE_TIMEOUT: ${BUZZ_ACP_IDLE_TIMEOUT:-620}

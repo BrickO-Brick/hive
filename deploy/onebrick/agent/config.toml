@@ -1,7 +1,7 @@
 cli_auth_credentials_store = "file"
 forced_login_method = "chatgpt"
-sandbox_mode = "read-only"
+# Docker is the security boundary for this nested runtime. Codex's Linux
+# namespace sandbox cannot create a second user namespace inside the hardened
+# container; the container rootfs and approved workspace bind remain read-only.
+sandbox_mode = "danger-full-access"
 approval_policy = "never"
-
-[sandbox_workspace_write]
-network_access = false
