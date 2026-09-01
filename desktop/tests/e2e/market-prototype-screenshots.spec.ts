@@ -46,6 +46,21 @@ test.describe("market channel prototype", () => {
               : "Design a relay abuse-response playbook",
       );
       await expect(market.getByTestId("market-offer-card")).toBeVisible();
+      const offerCardWidth = await market
+        .getByTestId("market-offer-card")
+        .evaluate((element) => element.getBoundingClientRect().width);
+      expect(offerCardWidth).toBeGreaterThan(1100);
+      const imageAspectRatio = await market
+        .getByTestId("market-product-image")
+        .evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return bounds.width / bounds.height;
+        });
+      expect(imageAspectRatio).toBeCloseTo(1, 1);
+      await expect(market.getByTestId("market-agent-wallet")).toBeVisible();
+      await expect(
+        market.getByText("Agent wallet", { exact: true }),
+      ).toBeVisible();
       await expect(market.getByText("Agent market channel")).toBeVisible();
       await expect(market.getByTestId("market-agent-avatar")).toHaveCount(
         scenario === "unlimited" ? 3 : 4,

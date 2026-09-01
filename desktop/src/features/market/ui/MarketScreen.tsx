@@ -5,6 +5,7 @@ import {
   Radio,
   Store,
   TriangleAlert,
+  WalletCards,
 } from "lucide-react";
 import * as React from "react";
 
@@ -36,6 +37,37 @@ const REPRESENTING_AGENTS = [
   { name: "Cartograph", role: "Repository mapping" },
   { name: "Sentinel", role: "Operations & safety" },
 ] as const;
+
+const WALLET_DETAILS: Record<
+  MarketScenarioId,
+  { account: string; balance: string; settlement: string }
+> = {
+  finite: {
+    account: "escrow1report…13c8",
+    balance: "150 sats funded",
+    settlement: "1 paid · 2 reserved",
+  },
+  unlimited: {
+    account: "wallet1mapper…c241",
+    balance: "80 sats escrowed",
+    settlement: "760 sats paid",
+  },
+  auction: {
+    account: "escrow1strings…9f10",
+    balance: "600 sats funded",
+    settlement: "Held until award",
+  },
+  tender: {
+    account: "escrow1tender…1b73",
+    balance: "2,000 sats funded",
+    settlement: "Held during selection",
+  },
+  awarded: {
+    account: "escrow1tender…1b73",
+    balance: "1,750 sats escrowed",
+    settlement: "Release on signed receipt",
+  },
+};
 
 const COMMERCIAL_TERM_LABELS = new Set([
   "Price",
@@ -96,10 +128,11 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
         />
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-col px-6 py-6">
+          <div className="flex w-full min-w-0 flex-col px-6 py-6">
             <OfferCard
               onCreate={() => setCreateOpen(true)}
               scenario={scenario}
+              scenarioId={scenarioId}
             />
 
             <section className="pt-5" data-testid="market-agent-timeline">
@@ -161,9 +194,11 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
 function OfferCard({
   onCreate,
   scenario,
+  scenarioId,
 }: {
   onCreate: () => void;
   scenario: MarketScenario;
+  scenarioId: MarketScenarioId;
 }) {
   const author =
     scenario.terms.find(
@@ -181,8 +216,11 @@ function OfferCard({
       className="overflow-hidden rounded-2xl border bg-card"
       data-testid="market-offer-card"
     >
-      <div className="grid sm:grid-cols-[12rem_minmax(0,1fr)]">
-        <div className="flex min-h-44 items-center justify-center border-b bg-muted/60 text-muted-foreground sm:border-b-0 sm:border-r">
+      <div className="grid sm:grid-cols-[minmax(12rem,22rem)_minmax(0,1fr)_17rem]">
+        <div
+          className="flex aspect-square items-center justify-center border-b bg-muted/60 text-muted-foreground sm:border-b-0 sm:border-r"
+          data-testid="market-product-image"
+        >
           <div className="flex flex-col items-center gap-2">
             <PackageCheck className="h-8 w-8" strokeWidth={1.5} />
             <span className="text-xs">Product image</span>
@@ -228,8 +266,44 @@ function OfferCard({
             </Button>
           </div>
         </div>
+        <AgentWallet scenarioId={scenarioId} />
       </div>
     </section>
+  );
+}
+
+function AgentWallet({ scenarioId }: { scenarioId: MarketScenarioId }) {
+  const wallet = WALLET_DETAILS[scenarioId];
+  return (
+    <aside
+      className="flex flex-col border-t bg-muted/25 p-5 sm:border-l sm:border-t-0"
+      data-testid="market-agent-wallet"
+    >
+      <div className="flex items-center gap-2">
+        <WalletCards className="h-4 w-4 text-muted-foreground" />
+        <h3 className="text-sm font-semibold">Agent wallet</h3>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Settlement for this listing
+      </p>
+      <dl className="mt-5 space-y-4">
+        <WalletValue label="Balance" value={wallet.balance} />
+        <WalletValue label="Settlement" value={wallet.settlement} />
+        <WalletValue label="Network" value="Sandbox Lightning" />
+      </dl>
+      <p className="mt-auto pt-5 font-mono text-xs text-muted-foreground">
+        {wallet.account}
+      </p>
+    </aside>
+  );
+}
+
+function WalletValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 text-sm font-medium">{value}</dd>
+    </div>
   );
 }
 
