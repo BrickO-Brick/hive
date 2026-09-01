@@ -25,7 +25,6 @@ import {
 import { useActivePreparedLinkPreviews } from "./useActivePreparedLinkPreviews";
 import { useDetachedAgentStart } from "./useDetachedAgentStart";
 import { useEnsureAgentMentionsReady } from "./useEnsureAgentMentionsReady";
-import { createSendPerfTimer } from "./sendPerfLog";
 import { invokeTauri } from "@/shared/api/tauri";
 import type { AcpRuntime, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
@@ -268,16 +267,6 @@ export function useMentionSendFlow({
       if (isSendCancelled()) return draft.preparedLinkPreviews?.release();
       isCompleteSendPendingRef.current = true;
       setIsCompleteSendPending(true);
-      // `completeSend` is the whole spinner window: it starts with the composer
-      // clearing and ends after the relay accepts the event.
-      const perf = createSendPerfTimer("completeSend", {
-        channelType,
-        mentions: mentionPubkeys.length,
-        addressedAgents: draft.addressedAgentPubkeys.length,
-        isReply: draft.capturedThreadContext != null,
-        hasAttachments: draft.queuedAttachments.length > 0,
-        hasLinkPreviews: draft.preparedLinkPreviews != null,
-      });
       const preparedUpload =
         draft.queuedAttachments.length > 0
           ? prepareBackgroundMediaUpload(draft.queuedAttachments)
@@ -376,9 +365,7 @@ export function useMentionSendFlow({
       let uploadStarted = false;
       try {
         const admittedMentionPubkeys = uniqueNormalizedPubkeys(
-          await perf.step("revalidate1", () =>
-            mentions.revalidateMentionPubkeys(mentionPubkeys),
-          ),
+          await mentions.revalidateMentionPubkeys(mentionPubkeys),
         );
         if (isSendCancelled()) return restoreComposerAfterFailure();
         if (!isMountedRef.current) return persistPreflightDraft();
@@ -388,10 +375,7 @@ export function useMentionSendFlow({
             (pubkey) => admittedMentionPubkeySet.has(pubkey),
           ),
         );
-        const managedAgentsByPubkey = await perf.step(
-          "managedAgentsLookup",
-          getManagedAgentsByPubkey,
-        );
+        const managedAgentsByPubkey = await getManagedAgentsByPubkey();
         if (isSendCancelled()) return restoreComposerAfterFailure();
         if (!isMountedRef.current) {
           persistPreflightDraft();
@@ -420,9 +404,7 @@ export function useMentionSendFlow({
         // between — a revocation can land during those waits (#5681).
         let relaySideEffectsRan = false;
         if (preparedAgentPubkeys.length > 0 && onPrepareSendChannel) {
-          sendChannelId = await perf.step("prepareSendChannel", () =>
-            onPrepareSendChannel(preparedAgentPubkeys),
-          );
+          sendChannelId = await onPrepareSendChannel(preparedAgentPubkeys);
           relaySideEffectsRan = true;
           if (isSendCancelled()) return restoreComposerAfterFailure();
           if (!sendChannelId) {
@@ -433,20 +415,14 @@ export function useMentionSendFlow({
             return;
           }
         }
-        const agentReadiness = await perf.step("ensureAgentsReady", () =>
-          ensureManagedAgentMentionsReady(
-            managedMentionPubkeys.filter(
-              (pubkey) => !readyAgentPubkeys.has(normalizePubkey(pubkey)),
-            ),
-            sendChannelId ?? "",
-            onPrepareSendChannel ? preparedAgentPubkeys : [],
-            [...managedAgentsByPubkey.values()],
+        const agentReadiness = await ensureManagedAgentMentionsReady(
+          managedMentionPubkeys.filter(
+            (pubkey) => !readyAgentPubkeys.has(normalizePubkey(pubkey)),
           ),
+          sendChannelId ?? "",
+          onPrepareSendChannel ? preparedAgentPubkeys : [],
+          [...managedAgentsByPubkey.values()],
         );
-        perf.note({
-          wroteRelayState: agentReadiness.wroteRelayState,
-          detachedStarts: agentReadiness.detachedStarts,
-        });
         if (agentReadiness.wroteRelayState) {
           relaySideEffectsRan = true;
         }
@@ -468,17 +444,12 @@ export function useMentionSendFlow({
         }
         if (preparedAgentPubkeys.length > 0 && sendChannelId) {
           try {
-            const huddleSync = await perf.step("huddleSync", () =>
-              invokeTauri<{
-                matched_active_huddle: boolean;
-                added: string[];
-              }>("sync_agents_to_active_huddle", {
-                channelId: sendChannelId,
-                agentPubkeys: preparedAgentPubkeys,
-              }),
-            );
-            perf.note({
-              matchedActiveHuddle: huddleSync.matched_active_huddle,
+            const huddleSync = await invokeTauri<{
+              matched_active_huddle: boolean;
+              added: string[];
+            }>("sync_agents_to_active_huddle", {
+              channelId: sendChannelId,
+              agentPubkeys: preparedAgentPubkeys,
             });
             if (huddleSync.matched_active_huddle) {
               // A matched huddle means the sync did relay work (membership
@@ -515,8 +486,10 @@ export function useMentionSendFlow({
               ),
             ]),
           );
-          const finalOutgoingTags = await perf.step("resolvePreviewTags", () =>
-            resolvePreviewTags(draft, mediaTags, outgoingTags),
+          const finalOutgoingTags = await resolvePreviewTags(
+            draft,
+            mediaTags,
+            outgoingTags,
           );
           if (!finalOutgoingTags || signal?.aborted || isSendCancelled())
             return;
@@ -528,19 +501,10 @@ export function useMentionSendFlow({
           // enrollment) — since authorization could have been revoked during
           // the gap. On the remaining immediate path a second pass would repeat
           // the same relay round-trips with the same inputs.
-          const revalidateTrigger = preparedUpload
-            ? "upload"
-            : draft.preparedLinkPreviews
-              ? "linkPreviews"
-              : relaySideEffectsRan
-                ? "relaySideEffects"
-                : null;
-          perf.note({ revalidateTrigger });
-          const revalidatedMentionPubkeys = revalidateTrigger
-            ? await perf.step("revalidate2", () =>
-                mentions.revalidateMentionPubkeys(mentionPubkeys),
-              )
-            : admittedMentionPubkeys;
+          const revalidatedMentionPubkeys =
+            preparedUpload || draft.preparedLinkPreviews || relaySideEffectsRan
+              ? await mentions.revalidateMentionPubkeys(mentionPubkeys)
+              : admittedMentionPubkeys;
           if (signal?.aborted || isSendCancelled()) return;
           const finalTagsWithAgentAddress = [
             ...finalOutgoingTags,
@@ -549,15 +513,13 @@ export function useMentionSendFlow({
               revalidatedMentionPubkeys,
             ),
           ];
-          await perf.step("publish", () =>
-            send(
-              finalContent,
-              revalidatedMentionPubkeys,
-              finalTagsWithAgentAddress,
-              sendChannelId,
-              draft.capturedThreadContext,
-              draft.preparedLinkPreviews != null,
-            ),
+          await send(
+            finalContent,
+            revalidatedMentionPubkeys,
+            finalTagsWithAgentAddress,
+            sendChannelId,
+            draft.capturedThreadContext,
+            draft.preparedLinkPreviews != null,
           );
           if (signal?.aborted || isSendCancelled()) return;
           const sentMentionPubkeys = new Set(
@@ -634,7 +596,6 @@ export function useMentionSendFlow({
         restoreComposerAfterFailure();
         throw error;
       } finally {
-        perf.finish();
         if (draft.preparedLinkPreviews) {
           activePreparedLinkPreviews.delete(draft.preparedLinkPreviews);
         }
@@ -647,7 +608,6 @@ export function useMentionSendFlow({
       }
     },
     [
-      channelType,
       clearComposer,
       contentRef,
       drafts,
