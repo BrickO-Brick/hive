@@ -30,11 +30,14 @@ import type { AcpRuntime, ManagedAgent } from "@/shared/api/types";
 import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
+  dedupeQueuedAgentWakes,
+  enqueueAgentWake,
   getErrorMessage,
   mergeMentionRecipients,
   MENTION_REFERENCE_TAG,
   mergeOutgoingTagsWithReferenceMentions,
   type PendingNonMemberMentionSend,
+  type QueuedAgentWake,
   type SendMessageWithMentionFlowInput,
   resolvePreviewTags,
   uniqueNormalizedPubkeys,
@@ -98,7 +101,11 @@ export function useMentionSendFlow({
   const personasQuery = usePersonasQuery();
   // Detached (publish-first) agent wake, bound to the community and identity
   // active at this render so a start that outlives a community switch fails
-  // closed instead of spawning against the new tenant.
+  // closed instead of spawning against the new tenant. The send path never
+  // calls it while preparing a message: wakes are queued during preparation
+  // and flushed through this callback only after the relay accepts the
+  // publish, so a start failure can never toast "your message was sent"
+  // before the publish outcome is known.
   const startAgentDetached = useDetachedAgentStart();
   const getManagedAgentsByPubkey = React.useCallback(async () => {
     const agents =
@@ -136,7 +143,6 @@ export function useMentionSendFlow({
     getManagedAgentsByPubkey,
     getPersonas,
     memberPubkeys: mentions.memberPubkeys,
-    startAgentDetached,
   });
   const createMentionedPersonaAgents = React.useCallback(
     async (trimmed: string, capturedChannelId: string) => {
@@ -146,6 +152,7 @@ export function useMentionSendFlow({
           errors: [] as string[],
           agents: [] as ManagedAgent[],
           pubkeys: [] as string[],
+          agentsToWake: [] as QueuedAgentWake[],
         };
       }
       const runtimes = await getAvailableRuntimes();
@@ -153,6 +160,10 @@ export function useMentionSendFlow({
       const errors: string[] = [];
       const agents: ManagedAgent[] = [];
       const pubkeys: string[] = [];
+      // Queued, not fired: the wakes ride the pending draft and flush only
+      // after the publish succeeds, so a persona created for a send the
+      // non-member prompt later cancels never wakes at all.
+      const agentsToWake: QueuedAgentWake[] = [];
       const seenPersonaIds = new Set<string>();
       const shouldProvisionForDm =
         channelType === "dm" && Boolean(onPrepareSendChannel);
@@ -183,7 +194,8 @@ export function useMentionSendFlow({
             model: persona.model ?? undefined,
             role: "bot",
             ensureRunning: true,
-            detachedStart: startAgentDetached,
+            detachedStart: (agentToWake) =>
+              enqueueAgentWake(agentsToWake, agentToWake),
           };
           const result = shouldProvisionForDm
             ? await provisionPersonaAgentMutation.mutateAsync(input)
@@ -207,6 +219,7 @@ export function useMentionSendFlow({
         agents,
         errors,
         pubkeys: uniqueNormalizedPubkeys(pubkeys),
+        agentsToWake,
       };
     },
     [
@@ -217,7 +230,6 @@ export function useMentionSendFlow({
       mentions.registerMentionPubkey,
       onPrepareSendChannel,
       provisionPersonaAgentMutation,
-      startAgentDetached,
     ],
   );
   const clearComposer = React.useCallback(() => {
@@ -426,6 +438,17 @@ export function useMentionSendFlow({
         if (agentReadiness.wroteRelayState) {
           relaySideEffectsRan = true;
         }
+        // Every wake this send queued: persona creates carried on the draft
+        // (enqueued before the non-member prompt could defer us here), then
+        // the readiness pass's. Flushed only after the relay accepts the
+        // publish — every abort path between here and there just drops them,
+        // so no wake (or "your message was sent" failure toast) can exist for
+        // a message that never landed. First entry wins the dedupe because it
+        // carries the earliest replay floor, and the floor is a lower bound.
+        const agentsToWake = dedupeQueuedAgentWakes([
+          ...(draft.queuedAgentWakes ?? []),
+          ...agentReadiness.agentsToWake,
+        ]);
         if (isSendCancelled()) return restoreComposerAfterFailure();
         if (!isMountedRef.current) {
           persistPreflightDraft();
@@ -521,6 +544,15 @@ export function useMentionSendFlow({
             draft.capturedThreadContext,
             draft.preparedLinkPreviews != null,
           );
+          // The relay accepted the publish: flush the queued wakes now,
+          // before the post-send cancellation check — a cancellation racing
+          // a successful publish must not drop the wake for a message that
+          // did land. Fire-and-forget: the send awaits nothing here, and
+          // each wake carries its enqueue-time replay floor so the spawned
+          // harness replays back past this message however late the flush.
+          for (const wake of agentsToWake) {
+            startAgentDetached(wake.agent, wake.replayFloorUnix);
+          }
           if (signal?.aborted || isSendCancelled()) return;
           const sentMentionPubkeys = new Set(
             revalidatedMentionPubkeys.map(normalizePubkey),
@@ -622,6 +654,7 @@ export function useMentionSendFlow({
       onSendRef,
       richText.setContent,
       setContent,
+      startAgentDetached,
       setPendingImeta,
       restoreQueuedAttachments,
       setSpoileredAttachmentUrls,
@@ -754,6 +787,7 @@ export function useMentionSendFlow({
           outgoingTags,
           preparedLinkPreviews,
           preparedManagedAgents: personaMentionResult.agents,
+          queuedAgentWakes: personaMentionResult.agentsToWake,
           readyAgentPubkeys:
             channelType === "dm" && onPrepareSendChannel
               ? []
