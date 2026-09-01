@@ -19,7 +19,9 @@ pub mod config;
 pub mod model_capabilities;
 pub mod types;
 
-pub use catalog::{discover_databricks_models, ModelEntry};
+pub use catalog::{
+    discover_databricks_models, discover_databricks_models_with_cache_dir, ModelEntry,
+};
 pub use config::{Config, Provider, ThinkingEffort};
 pub use types::AgentError;
 
@@ -28,6 +30,14 @@ pub use types::AgentError;
 /// Shared so the desktop model picker and `buzz-agent auth databricks` cache
 /// tokens in the same place.
 pub fn databricks_pkce_config(host: &str) -> auth::PkceOAuthConfig {
+    databricks_pkce_config_with_cache_dir(host, None)
+}
+
+/// PKCE configuration with an optional explicit credential cache root.
+pub fn databricks_pkce_config_with_cache_dir(
+    host: &str,
+    cache_dir: Option<&std::path::Path>,
+) -> auth::PkceOAuthConfig {
     auth::PkceOAuthConfig {
         discovery_url: format!(
             "{}/oidc/.well-known/oauth-authorization-server",
@@ -36,7 +46,7 @@ pub fn databricks_pkce_config(host: &str) -> auth::PkceOAuthConfig {
         client_id: "databricks-cli".into(),
         scopes: vec!["all-apis".into(), "offline_access".into()],
         cache_namespace: "databricks".into(),
-        cache_dir_override: None,
+        cache_dir_override: cache_dir.map(std::path::Path::to_path_buf),
     }
 }
 
@@ -45,7 +55,15 @@ pub fn databricks_pkce_config(host: &str) -> auth::PkceOAuthConfig {
 /// Needs a browser on the machine. The desktop model picker calls this when
 /// discovery fails with an auth error.
 pub async fn authenticate_databricks(host: &str) -> Result<(), AgentError> {
-    auth::PkceOAuthTokenSource::new(databricks_pkce_config(host))?
+    authenticate_databricks_with_cache_dir(host, None).await
+}
+
+/// Run Databricks OAuth using an optional explicit credential cache root.
+pub async fn authenticate_databricks_with_cache_dir(
+    host: &str,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<(), AgentError> {
+    auth::PkceOAuthTokenSource::new(databricks_pkce_config_with_cache_dir(host, cache_dir))?
         .interactive_login()
         .await
 }
