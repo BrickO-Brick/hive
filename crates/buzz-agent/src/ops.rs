@@ -461,7 +461,7 @@ impl Operation<Session, ConversationEffect> for BuzzCompactionOperation {
         conversation: &Conversation,
         _emit: &Emitter,
     ) -> Result<OperationResult<ConversationEffect>> {
-        let provider = self.model.provider().await;
+        let (provider, model_config, _model_id) = self.model.snapshot().await;
         if !goose::context_mgmt::check_if_compaction_needed(
             provider.as_ref(),
             conversation,
@@ -473,7 +473,6 @@ impl Operation<Session, ConversationEffect> for BuzzCompactionOperation {
             return not_applicable();
         }
 
-        let model_config = self.model.config().await;
         let result = goose::context_mgmt::compact_messages(
             provider.as_ref(),
             &model_config,

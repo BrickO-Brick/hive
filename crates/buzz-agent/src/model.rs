@@ -13,6 +13,8 @@
 //! Two things still need goose's `Agent`: `list_tools` and
 //! `dispatch_tool_call`. Neither touches the provider (`dispatch_tool_call`
 //! contains no reference to it) or the session store.
+//! The model's exact ACP id is held under the same lock as its provider and
+//! config so every inference and its cost attribution describe one state.
 
 use std::sync::Arc;
 
@@ -29,33 +31,48 @@ pub struct SessionModel {
 struct Inner {
     provider: Arc<dyn Provider>,
     config: ModelConfig,
+    /// Exact ACP model id installed with this provider/config pair. This stays
+    /// under the same lock so inference and attribution cannot split.
+    model_id: String,
 }
 
 impl SessionModel {
-    pub fn new(provider: Arc<dyn Provider>, config: ModelConfig) -> Self {
+    pub fn new(provider: Arc<dyn Provider>, config: ModelConfig, model_id: String) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Inner { provider, config })),
+            inner: Arc::new(RwLock::new(Inner {
+                provider,
+                config,
+                model_id,
+            })),
         }
     }
 
-    /// The provider to stream from.
+    /// Snapshot the provider and config for one operation, along with the
+    /// exact model id that owns them.
+    pub async fn snapshot(&self) -> (Arc<dyn Provider>, ModelConfig, String) {
+        let inner = self.inner.read().await;
+        (
+            Arc::clone(&inner.provider),
+            inner.config.clone(),
+            inner.model_id.clone(),
+        )
+    }
+
+    /// Provider handle for model discovery. Inference and compaction use
+    /// [`Self::snapshot`] so their provider and config are one generation.
     pub async fn provider(&self) -> Arc<dyn Provider> {
         Arc::clone(&self.inner.read().await.provider)
     }
 
-    /// The model config, which also carries the context limit compaction needs.
-    pub async fn config(&self) -> ModelConfig {
-        self.inner.read().await.config.clone()
-    }
-
-    /// Swap both, as `session/set_model` does.
+    /// Swap all three, as `session/set_model` does.
     ///
     /// Taken together under one write so a turn can never observe a new
-    /// provider with the previous model's config.
-    pub async fn set(&self, provider: Arc<dyn Provider>, config: ModelConfig) {
+    /// provider/config while reporting the previous model id (or vice versa).
+    pub async fn set(&self, provider: Arc<dyn Provider>, config: ModelConfig, model_id: String) {
         let mut inner = self.inner.write().await;
         inner.provider = provider;
         inner.config = config;
+        inner.model_id = model_id;
     }
 }
 
@@ -92,10 +109,12 @@ mod tests {
     #[tokio::test]
     async fn the_configured_provider_and_config_are_what_come_back() {
         let (provider, config) = model("first");
-        let session = SessionModel::new(provider, config);
+        let session = SessionModel::new(provider, config, "first".to_string());
 
-        assert_eq!(session.provider().await.get_name(), "first");
-        assert_eq!(session.config().await.model_name, "first");
+        let (provider, config, model_id) = session.snapshot().await;
+        assert_eq!(provider.get_name(), "first");
+        assert_eq!(config.model_name, "first");
+        assert_eq!(model_id, "first");
     }
 
     #[tokio::test]
@@ -103,13 +122,17 @@ mod tests {
         // The pair must move as one: a turn seeing a new provider with the old
         // config would stream against the wrong context limit.
         let (provider, config) = model("first");
-        let session = SessionModel::new(provider, config);
+        let session = SessionModel::new(provider, config, "first".to_string());
 
         let (next_provider, next_config) = model("second");
-        session.set(next_provider, next_config).await;
+        session
+            .set(next_provider, next_config, "second".to_string())
+            .await;
 
-        assert_eq!(session.provider().await.get_name(), "second");
-        assert_eq!(session.config().await.model_name, "second");
+        let (provider, config, model_id) = session.snapshot().await;
+        assert_eq!(provider.get_name(), "second");
+        assert_eq!(config.model_name, "second");
+        assert_eq!(model_id, "second");
     }
 
     #[tokio::test]
@@ -117,12 +140,17 @@ mod tests {
         // `SessionModel` is cloned into the turn; a `session/set_model` applied
         // through one handle has to be visible through the other.
         let (provider, config) = model("first");
-        let session = SessionModel::new(provider, config);
+        let session = SessionModel::new(provider, config, "first".to_string());
         let clone = session.clone();
 
         let (next_provider, next_config) = model("second");
-        session.set(next_provider, next_config).await;
+        session
+            .set(next_provider, next_config, "second".to_string())
+            .await;
 
-        assert_eq!(clone.provider().await.get_name(), "second");
+        let (provider, config, model_id) = clone.snapshot().await;
+        assert_eq!(provider.get_name(), "second");
+        assert_eq!(config.model_name, "second");
+        assert_eq!(model_id, "second");
     }
 }

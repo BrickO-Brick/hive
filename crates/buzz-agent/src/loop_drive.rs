@@ -491,8 +491,7 @@ async fn infer(
     conversation: &Conversation,
     tokens: &mut super::agent::TurnTokens,
 ) -> Result<Option<Inference>, AgentError> {
-    let provider = ctx.model.provider().await;
-    let model_config = ctx.model.config().await;
+    let (provider, model_config, _model_id) = ctx.model.snapshot().await;
 
     let system_prompt = ctx.prompt.build(&session.working_dir).await;
     let tools = ctx.agent.list_tools(ctx.session_id, None).await;

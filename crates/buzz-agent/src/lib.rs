@@ -85,9 +85,6 @@ struct Session {
     /// Set for the duration of a turn; advertised to steer-capable clients.
     active_run_id: Option<String>,
     cancel: Option<CancellationToken>,
-    /// Model id currently in force for this session (`session/set_model`).
-    /// Reported back on `usage_update`.
-    model_override: Option<String>,
     /// Set by `session/set_model`, consumed by the next `session/prompt`.
     /// Applying it at prompt time rather than immediately matches buzz-agent:
     /// the override takes effect "from the next prompt" and never mutates a
@@ -209,7 +206,7 @@ async fn build_agent(
     // Held here rather than pushed into the `Agent` with `update_provider`:
     // that call writes the provider config to goose's sqlite session row, and
     // buzz reads the provider and config back through `SessionModel` anyway.
-    let model = crate::model::SessionModel::new(provider, model_config);
+    let model = crate::model::SessionModel::new(provider, model_config, model_name);
 
     // Persona. This is the seam that does NOT work over plain ACP: goose's own
     // ACP server never reads `systemPrompt` (rg finds zero hits in
@@ -642,7 +639,6 @@ async fn session_new(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSen
                 busy: false,
                 active_run_id: None,
                 cancel: None,
-                model_override: None,
                 pending_model: None,
                 hook_extension,
                 prompt,
@@ -824,6 +820,11 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
         }
     }
 
+    // Snapshot the exact model identity this turn will use after applying any
+    // pending switch. A later `session/set_model` may queue the following turn,
+    // but must not relabel usage from this one.
+    let (_provider, _config, turn_model_id) = model.snapshot().await;
+
     // Advertise the run id so steer-capable clients can target this turn.
     // `_meta` nests INSIDE `update` — see the module docs.
     wire::send(
@@ -922,25 +923,13 @@ async fn session_prompt(app: &Arc<App>, id: Value, params: Value, wire_tx: &Wire
         if let Some((acc_in, acc_out, acc_cached, acc_written, acc_total, acc_identity)) =
             accumulated
         {
-            let model = {
-                let sessions = app.sessions.lock().await;
-                sessions
-                    .get(&p.session_id)
-                    .and_then(|s| s.model_override.clone())
-                    .or_else(|| app.cfg.model.clone())
-                    // A session starts fine with only GOOSE_MODEL set
-                    // (build_agent falls back to it), so omitting it here
-                    // emitted `"model": ""` and blanked kind-44200 attribution.
-                    .or_else(|| std::env::var("GOOSE_MODEL").ok())
-                    .unwrap_or_default()
-            };
             let update = wire::usage_update_payload(
                 Some(acc_in),
                 Some(acc_out),
                 acc_cached.exact_value(),
                 acc_written.exact_value(),
                 acc_total,
-                &model,
+                &turn_model_id,
                 acc_identity.as_ref().and_then(|identity| identity.as_ref()),
             );
             wire::send(wire_tx, goose_session_update(&p.session_id, update)).await;
@@ -980,7 +969,6 @@ async fn set_model(app: &Arc<App>, id: Value, params: Value, wire_tx: &WireSende
     let mut sessions = app.sessions.lock().await;
     match sessions.get_mut(&p.session_id) {
         Some(s) => {
-            s.model_override = Some(p.model_id.clone());
             s.pending_model = Some(p.model_id);
             drop(sessions);
             wire::send(wire_tx, wire::ok(id, Value::Null)).await;
@@ -1117,7 +1105,9 @@ async fn apply_model(model: &crate::model::SessionModel, model_id: &str) -> Resu
         .map_err(|e| AgentError::LlmModelNotFound(e.to_string()))?;
     // Swapped on buzz's own handle. `Agent::update_provider` would do the same
     // thing plus a write to goose's session row; see [`crate::model`].
-    model.set(provider, model_config).await;
+    model
+        .set(provider, model_config, model_id.to_string())
+        .await;
     Ok(())
 }
 

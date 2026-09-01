@@ -18,7 +18,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -32,9 +32,43 @@ const FIZZ_PROMPT: &str = "You are Fizz, an energetic maker who turns ideas into
 /// Returns the captured `system` prompt of the first request over a channel so
 /// the test can assert the persona survived the trip.
 fn spawn_fake_provider() -> (String, mpsc::Receiver<String>) {
+    let (base_url, request_rx, _gate) = spawn_controllable_provider(false);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(request) = request_rx.recv() {
+            let _ = tx.send(request.system);
+        }
+    });
+    (base_url, rx)
+}
+
+#[derive(Debug)]
+struct ProviderRequest {
+    model: String,
+    system: String,
+}
+
+#[derive(Clone)]
+struct ProviderGate(Arc<(Mutex<bool>, Condvar)>);
+
+impl ProviderGate {
+    fn release(&self) {
+        let (released, cv) = &*self.0;
+        *released.lock().expect("provider gate lock") = true;
+        cv.notify_all();
+    }
+}
+
+/// OpenAI-compatible provider whose chat response can be held after the
+/// request is captured. This makes in-flight model-switch races deterministic.
+fn spawn_controllable_provider(
+    block_chat_response: bool,
+) -> (String, mpsc::Receiver<ProviderRequest>, ProviderGate) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = mpsc::channel();
+    let gate = ProviderGate(Arc::new((Mutex::new(!block_chat_response), Condvar::new())));
+    let server_gate = gate.clone();
 
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -86,9 +120,13 @@ fn spawn_fake_provider() -> (String, mpsc::Receiver<String>) {
                 continue;
             }
 
-            // Chat completions: capture the system prompt, then answer.
+            // Chat completions: capture the model and system prompt, then
+            // optionally hold the response until the test releases it.
+            let mut request_model = String::new();
+            let mut system = String::new();
             if let Ok(req) = serde_json::from_slice::<Value>(&body) {
-                let system = req["messages"]
+                request_model = req["model"].as_str().unwrap_or_default().to_string();
+                system = req["messages"]
                     .as_array()
                     .and_then(|msgs| {
                         msgs.iter()
@@ -97,8 +135,18 @@ fn spawn_fake_provider() -> (String, mpsc::Receiver<String>) {
                             .map(str::to_owned)
                     })
                     .unwrap_or_default();
-                let _ = tx.send(system);
             }
+            let _ = tx.send(ProviderRequest {
+                model: request_model.clone(),
+                system,
+            });
+
+            let (released, cv) = &*server_gate.0;
+            let mut released = released.lock().expect("provider gate lock");
+            while !*released {
+                released = cv.wait(released).expect("provider gate wait");
+            }
+            drop(released);
 
             // Goose sets `stream: true` on the OpenAI provider
             // (goose-providers/src/openai.rs:650), so answer with SSE. A
@@ -110,7 +158,7 @@ fn spawn_fake_provider() -> (String, mpsc::Receiver<String>) {
                     "id": "chatcmpl-test",
                     "object": "chat.completion.chunk",
                     "created": 1,
-                    "model": "fake-model",
+                    "model": request_model,
                     "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
                 });
                 if !usage.is_null() {
@@ -144,7 +192,7 @@ fn spawn_fake_provider() -> (String, mpsc::Receiver<String>) {
         }
     });
 
-    (format!("http://{addr}"), rx)
+    (format!("http://{addr}"), rx, gate)
 }
 
 struct Harness {
@@ -198,11 +246,30 @@ impl Harness {
     /// Read lines until the response with `id` arrives, collecting every
     /// notification seen along the way (so ordering can be asserted).
     fn await_response(&mut self, id: i64) -> (Value, Vec<Value>) {
-        let mut notifications = Vec::new();
+        self.await_response_collecting(id, Vec::new())
+    }
+
+    fn await_response_collecting(
+        &mut self,
+        id: i64,
+        mut notifications: Vec<Value>,
+    ) -> (Value, Vec<Value>) {
+        loop {
+            let msg = self.read_message();
+            if msg.get("id").and_then(Value::as_i64) == Some(id) {
+                return (msg, notifications);
+            }
+            if msg.get("method").is_some() {
+                notifications.push(msg);
+            }
+        }
+    }
+
+    fn read_message(&mut self) -> Value {
         loop {
             let mut line = String::new();
             let n = self.stdout.read_line(&mut line).expect("read");
-            assert_ne!(n, 0, "agent closed stdout before responding to id={id}");
+            assert_ne!(n, 0, "agent closed stdout before the next message");
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -215,12 +282,7 @@ impl Harness {
                 self.stdin.flush().expect("flush approval");
                 continue;
             }
-            if msg.get("id").and_then(Value::as_i64) == Some(id) {
-                return (msg, notifications);
-            }
-            if msg.get("method").is_some() {
-                notifications.push(msg);
-            }
+            return msg;
         }
     }
 }
@@ -429,6 +491,131 @@ fn set_model_applies_from_the_next_prompt() {
     let _ = system_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("provider never received a request after set_model");
+}
+
+#[test]
+fn in_flight_set_model_does_not_relabel_the_active_turn() {
+    let (base_url, request_rx, gate) = spawn_controllable_provider(true);
+    let home = tempfile::tempdir().expect("tempdir");
+    let cwd = tempfile::tempdir().expect("cwd");
+    let mut h = Harness::start(&base_url, home.path());
+
+    let id = h.request("initialize", json!({ "protocolVersion": 2 }));
+    let _ = h.await_response(id);
+    let id = h.request(
+        "session/new",
+        json!({ "cwd": cwd.path().to_str().unwrap(), "mcpServers": [] }),
+    );
+    let (resp, _) = h.await_response(id);
+    let session_id = resp["result"]["sessionId"].as_str().unwrap().to_string();
+
+    let prompt_id = h.request(
+        "session/prompt",
+        json!({
+            "sessionId": session_id,
+            "prompt": [{ "type": "text", "text": "hold this turn" }],
+        }),
+    );
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("provider never received the active turn");
+    assert_eq!(request.model, "fake-model");
+
+    let set_model_id = h.request(
+        "session/set_model",
+        json!({ "sessionId": session_id, "modelId": "fake-model-2" }),
+    );
+    let mut before_prompt_response = Vec::new();
+    loop {
+        let msg = h.read_message();
+        if msg.get("id").and_then(Value::as_i64) == Some(set_model_id) {
+            assert!(msg["error"].is_null(), "set_model rejected: {msg}");
+            break;
+        }
+        if msg.get("method").is_some() {
+            before_prompt_response.push(msg);
+        }
+    }
+
+    gate.release();
+    let (resp, notifications) = h.await_response_collecting(prompt_id, before_prompt_response);
+    assert!(
+        resp["result"]["stopReason"].is_string(),
+        "active turn failed after model switch: {resp}"
+    );
+    let usage = notifications
+        .iter()
+        .find(|n| {
+            n["method"] == "_goose/unstable/session/update"
+                && n["params"]["update"]["sessionUpdate"] == "usage_update"
+        })
+        .expect("active turn emitted no usage update");
+    assert_eq!(
+        usage["params"]["update"]["model"], "fake-model",
+        "a switch during inference must apply to the next turn, not relabel the old model's usage"
+    );
+
+    let next_prompt_id = h.request(
+        "session/prompt",
+        json!({
+            "sessionId": session_id,
+            "prompt": [{ "type": "text", "text": "next turn" }],
+        }),
+    );
+    let next = request_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("provider never received the next turn");
+    assert_eq!(next.model, "fake-model-2");
+    let (resp, _) = h.await_response(next_prompt_id);
+    assert!(resp["result"]["stopReason"].is_string());
+}
+
+#[test]
+fn repeated_model_switches_report_the_model_each_turn_actually_used() {
+    let (base_url, request_rx, _gate) = spawn_controllable_provider(false);
+    let home = tempfile::tempdir().expect("tempdir");
+    let cwd = tempfile::tempdir().expect("cwd");
+    let mut h = Harness::start(&base_url, home.path());
+
+    let id = h.request("initialize", json!({ "protocolVersion": 2 }));
+    let _ = h.await_response(id);
+    let id = h.request(
+        "session/new",
+        json!({ "cwd": cwd.path().to_str().unwrap(), "mcpServers": [] }),
+    );
+    let (resp, _) = h.await_response(id);
+    let session_id = resp["result"]["sessionId"].as_str().unwrap().to_string();
+
+    for model in ["fake-model-2", "fake-model-3"] {
+        let id = h.request(
+            "session/set_model",
+            json!({ "sessionId": session_id, "modelId": model }),
+        );
+        let (resp, _) = h.await_response(id);
+        assert!(resp["error"].is_null(), "set_model rejected: {resp}");
+
+        let id = h.request(
+            "session/prompt",
+            json!({
+                "sessionId": session_id,
+                "prompt": [{ "type": "text", "text": format!("use {model}") }],
+            }),
+        );
+        let request = request_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("provider never received switched turn");
+        assert_eq!(request.model, model);
+        let (resp, notifications) = h.await_response(id);
+        assert!(resp["result"]["stopReason"].is_string());
+        let usage = notifications
+            .iter()
+            .find(|n| {
+                n["method"] == "_goose/unstable/session/update"
+                    && n["params"]["update"]["sessionUpdate"] == "usage_update"
+            })
+            .expect("switched turn emitted no usage update");
+        assert_eq!(usage["params"]["update"]["model"], model);
+    }
 }
 
 #[test]
