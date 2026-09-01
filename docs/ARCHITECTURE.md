@@ -11,7 +11,7 @@ Hive relay ── PostgreSQL 17
     │        ├─ Redis 7
     │        └─ MinIO
     ▼
-buzz-acp (one worker, owner-only, thread sessions, heartbeat off)
+buzz-acp (one worker, authenticated members, mention-triggered, thread sessions)
     │ ACP stdio
     ▼
 codex-acp 1.7.0 ── Codex CLI 0.152.0
@@ -24,5 +24,5 @@ component. GitHub remains authoritative; Buzz native Git is not used for
 OneBrick source control in phase one.
 
 The human owner, relay signer, and BrickO are three distinct Nostr identities.
-Channel membership is the content boundary. `#bricko-lab` is private and starts
-with only SaGad and BrickO.
+Relay and channel membership are the content boundary. Mantap SSO users admitted
+to `#bricko-lab` may invoke BrickO with an explicit `@BrickO` mention.
