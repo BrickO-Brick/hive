@@ -56,6 +56,7 @@ type ProjectCanvasHostProps = {
 };
 
 const CONSENT_CAPABILITY_LABELS: Record<string, string> = {
+  "app.dm.send": "send direct messages as you",
   "app.open": "open channels, people, and work items",
   "project.tasks.write": "update project tasks",
 };
@@ -64,7 +65,21 @@ function commandToastLabel(commandName: string): string {
   if (commandName === "tasks.setStatus") return "updated a task's status";
   if (commandName === "tasks.assign") return "assigned a task";
   if (commandName === "tasks.unassign") return "unassigned a task";
-  return "ran a task command";
+  if (commandName === "dm.send") return "sent a direct message";
+  return "ran a command";
+}
+
+function commandFailureTitle(commandName: string): string {
+  return commandName === "dm.send"
+    ? "Canvas direct message failed"
+    : "Canvas task update failed";
+}
+
+function consentPhrase(labels: string[]): string {
+  if (labels.length > 2) {
+    return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+  }
+  return labels.join(" and ");
 }
 
 type PackageRequest = {
@@ -436,7 +451,7 @@ export function ProjectCanvasHost({
   const handleCommandSettled = React.useCallback(
     (commandName: string, commandError: string | null) => {
       if (commandError) {
-        toast.error("Canvas task update failed", {
+        toast.error(commandFailureTitle(commandName), {
           description: commandError,
         });
         return;
@@ -553,12 +568,12 @@ export function ProjectCanvasHost({
           >
             <span className="min-w-0 flex-1 break-words text-muted-foreground">
               This Canvas asks to{" "}
-              {requestedConsentCapabilities
-                .map(
+              {consentPhrase(
+                requestedConsentCapabilities.map(
                   (capability) =>
                     CONSENT_CAPABILITY_LABELS[capability] ?? capability,
-                )
-                .join(" and ")}
+                ),
+              )}
               . Denying keeps the read-only canvas running.
             </span>
             <div className="flex shrink-0 gap-1">

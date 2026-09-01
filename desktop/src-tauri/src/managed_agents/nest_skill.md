@@ -88,10 +88,10 @@ The source must be listed in that nest's index, the widget id must be unique in 
 Package scripts run against a host SDK at `window.buzzCanvas.sdk`, loaded before every package script. Use it instead of bundling fixture rows:
 
 - `sdk.data.query(name, params)` / `sdk.data.liveQuery(name, params, onUpdate)` — one-shot or live reads returning `{status: "loading"|"ready"|"error", data}`. Live queries return a stop function; stop the old one before re-subscribing. Queries: `project.metadata`, `project.channels.list`, `project.reviews.list`, `project.tasks.list`, `project.tasks.get`, `people.lookup` (≤32 pubkeys), `people.search`.
-- `sdk.data.command(name, params)` — `tasks.setStatus` (`{id, status: "open"|"done"|"closed"|"draft"}`), `tasks.assign`/`tasks.unassign` (`{id, assignee?}`, assignee defaults to the viewing user).
+- `sdk.data.command(name, params)` — `tasks.setStatus` (`{id, status: "open"|"done"|"closed"|"draft"}`), `tasks.assign`/`tasks.unassign` (`{id, assignee?}`, assignee defaults to the viewing user), `dm.send` (`{pubkey, message}`, ≤2000 chars — sends a direct message as the viewing user).
 - `sdk.app.open(target)` — `{type: "channel"|"task"|"review", id}` or `{type: "user", pubkey}`.
 - `sdk.ui.avatar/reviewRow/channelRow` — standard components themed by host `--buzz-*` CSS variables.
-- `sdk.capabilities()` — the granted subset of the manifest capabilities (`project.metadata.read`, `project.channels.read`, `project.reviews.read`, `project.tasks.read`, `project.people.read`, `project.tasks.write`, `app.open`). Render a fallback when a capability is missing; `project.tasks.write` and `app.open` need a one-time user approval per package revision.
+- `sdk.capabilities()` — the granted subset of the manifest capabilities (`project.metadata.read`, `project.channels.read`, `project.reviews.read`, `project.tasks.read`, `project.people.read`, `project.tasks.write`, `app.open`, `app.dm.send`). Render a fallback when a capability is missing; `project.tasks.write`, `app.open`, and `app.dm.send` need a one-time user approval per package revision.
 
 Budgets: ≤16 concurrent live queries, ≤10 commands/minute, ≤3 opens/10s, 64 KiB per message. Violations fail the single request with `error.code === "rate-limited"`; the canvas keeps running. All reads are scoped to the hosting project — widget-supplied parameters cannot widen them.
 

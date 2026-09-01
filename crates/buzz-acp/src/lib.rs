@@ -5138,6 +5138,8 @@ mod agent_draft_prompt_tests {
         assert!(prompt.contains("sdk.capabilities()"));
         assert!(prompt.contains("project.tasks.write"));
         assert!(prompt.contains("`app.open`"));
+        assert!(prompt.contains("`dm.send`"));
+        assert!(prompt.contains("`app.dm.send`"));
         assert!(prompt.contains("rate-limited"));
         assert!(prompt.contains("sdk.ui.avatar"));
     }

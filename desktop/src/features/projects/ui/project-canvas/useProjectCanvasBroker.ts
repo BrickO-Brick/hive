@@ -1,14 +1,18 @@
 import * as React from "react";
 
+import { useOpenDmMutation } from "@/features/channels/hooks";
+import { normalizeRelayUrl } from "@/features/communities/communityStorage";
 import {
   useAssignProjectIssueMutation,
   useUnassignProjectIssueMutation,
 } from "@/features/projects/issueAssignments";
 import { useUpdateProjectIssueStatusMutation } from "@/features/projects/issueMutations";
 import { fetchAvatarDataUrl } from "@/features/profile/lib/selfProfileStorage";
+import { sendChannelMessage } from "@/shared/api/tauriMessages";
 import { getUsersBatch, searchUsers } from "@/shared/api/tauriProfiles";
 import { getAvatarSnapshotUrl } from "@/shared/lib/animatedAvatar";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
+import { normalizePubkey } from "@/shared/lib/pubkey";
 import type { Repository } from "@/features/projects/hooks";
 import type { ProjectIssue } from "@/features/projects/projectIssues.mjs";
 import type { ProjectPullRequest } from "@/features/projects/projectPullRequests.mjs";
@@ -106,6 +110,7 @@ export function useProjectCanvasBroker({
   issues,
   onOpenTarget,
   primaryRepository,
+  relayUrl,
   reviews,
   snapshots,
 }: {
@@ -113,6 +118,7 @@ export function useProjectCanvasBroker({
   issues: WorkQueryState<ProjectIssue>;
   onOpenTarget: (target: ProjectCanvasOpenTarget) => void;
   primaryRepository: Repository | null;
+  relayUrl: string | undefined;
   reviews: WorkQueryState<ProjectPullRequest>;
   snapshots: ProjectCanvasSnapshots;
 }): ProjectCanvasBroker {
@@ -120,12 +126,15 @@ export function useProjectCanvasBroker({
     useUpdateProjectIssueStatusMutation(primaryRepository);
   const assignMutation = useAssignProjectIssueMutation(primaryRepository);
   const unassignMutation = useUnassignProjectIssueMutation(primaryRepository);
+  const openDmMutation = useOpenDmMutation();
 
   const avatarCacheRef = React.useRef(new Map<string, string>());
   const issuesRef = React.useRef<ProjectIssue[]>([]);
   issuesRef.current = issues.data ?? [];
   const identityRef = React.useRef(identityPubkey);
   identityRef.current = identityPubkey;
+  const relayUrlRef = React.useRef(relayUrl);
+  relayUrlRef.current = relayUrl;
   const onOpenTargetRef = React.useRef(onOpenTarget);
   onOpenTargetRef.current = onOpenTarget;
   const setStatusRef = React.useRef(setStatusMutation.mutateAsync);
@@ -134,6 +143,8 @@ export function useProjectCanvasBroker({
   assignRef.current = assignMutation.mutateAsync;
   const unassignRef = React.useRef(unassignMutation.mutateAsync);
   unassignRef.current = unassignMutation.mutateAsync;
+  const openDmRef = React.useRef(openDmMutation.mutateAsync);
+  openDmRef.current = openDmMutation.mutateAsync;
 
   const brokerRef = React.useRef<ProjectCanvasBroker | null>(null);
   if (brokerRef.current === null) {
@@ -208,6 +219,40 @@ export function useProjectCanvasBroker({
           isAgent: user.isAgent,
           pubkey: user.pubkey.toLowerCase(),
         }));
+      },
+      sendDirectMessage: async (recipient, message) => {
+        const signerPubkey = identityRef.current;
+        if (!signerPubkey) {
+          throw new Error("No signed-in identity is available.");
+        }
+        // Tenant scope captured before the first await: the backend fails
+        // closed if the active community or identity changes mid-send, so a
+        // suspended completion can never deliver into the wrong community.
+        const expectedRelayUrl = relayUrlRef.current
+          ? normalizeRelayUrl(relayUrlRef.current)
+          : undefined;
+        const expectedSignerPubkey = normalizePubkey(signerPubkey);
+        const dm = await openDmRef.current({
+          expectedRelayUrl,
+          expectedSignerPubkey,
+          pubkeys: [recipient],
+        });
+        // A freshly opened DM has no live subscription yet, so the first
+        // message must take the HTTP path rather than the socket.
+        await sendChannelMessage(
+          dm.id,
+          message,
+          null,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          expectedRelayUrl,
+          expectedSignerPubkey,
+        );
       },
     });
   }

@@ -204,6 +204,7 @@ test("capabilities are intersected with the fixed host set", () => {
       "project.people.read",
       "project.tasks.write",
       "app.open",
+      "app.dm.send",
     ]),
     [
       "project.metadata.read",
@@ -213,6 +214,7 @@ test("capabilities are intersected with the fixed host set", () => {
       "project.people.read",
       "project.tasks.write",
       "app.open",
+      "app.dm.send",
     ],
   );
 });
@@ -223,9 +225,10 @@ test("consent capabilities are the consequential subset of a request", () => {
       "project.metadata.read",
       "project.tasks.write",
       "app.open",
+      "app.dm.send",
       "network",
     ]),
-    ["project.tasks.write", "app.open"],
+    ["project.tasks.write", "app.open", "app.dm.send"],
   );
   assert.deepEqual(
     projectCanvasConsentCapabilities(["project.metadata.read"]),
@@ -238,6 +241,7 @@ test("effective capabilities withhold consequential ones until approval", () => 
     "project.metadata.read",
     "project.tasks.write",
     "app.open",
+    "app.dm.send",
   ];
   assert.deepEqual(effectiveProjectCanvasCapabilities(requested, null), [
     "project.metadata.read",
@@ -249,6 +253,7 @@ test("effective capabilities withhold consequential ones until approval", () => 
     "project.metadata.read",
     "project.tasks.write",
     "app.open",
+    "app.dm.send",
   ]);
 });
 

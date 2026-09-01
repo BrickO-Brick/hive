@@ -98,6 +98,7 @@ const ALL_CAPABILITIES = [
   "project.people.read",
   "project.tasks.write",
   "app.open",
+  "app.dm.send",
 ];
 
 function initMessage(fixtureData, overrides = {}) {
@@ -444,6 +445,112 @@ test("live queries drive the dev widgets through the SDK", async () => {
     name: "tasks.assign",
     params: { id: "b".repeat(64) },
   });
+});
+
+test("the support bug reporter delivers the report as a DM to the project owner", async () => {
+  const harness = await createCanvasHarness();
+  const { document } = harness.dom.window;
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  harness.port.emit(
+    initMessage(harness.fixtureData, {
+      project: { id: "project-1", name: "my-support-channel" },
+    }),
+  );
+
+  const textarea = document.querySelector(
+    "[data-testid='project-canvas-support-bug-input']",
+  );
+  const form = document.querySelector(
+    "[data-testid='project-canvas-support-bug-reporter']",
+  );
+  assert.ok(textarea);
+  assert.ok(form);
+  textarea.value = "The sync button spins forever";
+  textarea.dispatchEvent(new harness.dom.window.Event("input"));
+  form.dispatchEvent(
+    new harness.dom.window.Event("submit", { cancelable: true }),
+  );
+
+  const metadataQuery = harness.sent.find(
+    (message) =>
+      message.type === "canvas.query" &&
+      message.query.name === "project.metadata",
+  );
+  assert.ok(metadataQuery);
+  const owner = "c".repeat(64);
+  harness.port.emit({
+    loadId: "load-1",
+    nonce: "nonce-1",
+    protocolVersion: 1,
+    queryId: metadataQuery.queryId,
+    result: {
+      data: { id: "30621:owner:proj", name: "proj", owner, repositories: [] },
+      status: "ready",
+    },
+    type: "host.queryResult",
+  });
+  await tick();
+
+  const dmCommand = harness.sent.find(
+    (message) =>
+      message.type === "canvas.command" && message.command.name === "dm.send",
+  );
+  assert.ok(dmCommand);
+  assert.deepEqual(plain(dmCommand.command.params), {
+    message: "Support report: The sync button spins forever",
+    pubkey: owner,
+  });
+  harness.port.emit({
+    commandId: dmCommand.commandId,
+    loadId: "load-1",
+    nonce: "nonce-1",
+    protocolVersion: 1,
+    result: { ok: true },
+    type: "host.commandResult",
+  });
+  await tick();
+  assert.equal(document.body.textContent.includes("Report sent"), true);
+  assert.equal(
+    document.body.textContent.includes(
+      "Delivered to the project owner as a direct message.",
+    ),
+    true,
+  );
+});
+
+test("the support bug reporter only stages the report without app.dm.send", async () => {
+  const harness = await createCanvasHarness();
+  const { document } = harness.dom.window;
+  harness.port.emit(
+    initMessage(harness.fixtureData, {
+      capabilities: ALL_CAPABILITIES.filter(
+        (capability) => capability !== "app.dm.send",
+      ),
+      project: { id: "project-1", name: "my-support-channel" },
+    }),
+  );
+
+  const textarea = document.querySelector(
+    "[data-testid='project-canvas-support-bug-input']",
+  );
+  const form = document.querySelector(
+    "[data-testid='project-canvas-support-bug-reporter']",
+  );
+  textarea.value = "The sync button spins forever";
+  textarea.dispatchEvent(new harness.dom.window.Event("input"));
+  form.dispatchEvent(
+    new harness.dom.window.Event("submit", { cancelable: true }),
+  );
+
+  assert.equal(
+    harness.sent.some(
+      (message) =>
+        message.type === "canvas.query" || message.type === "canvas.command",
+    ),
+    false,
+  );
+  assert.equal(document.body.textContent.includes("Report staged"), true);
 });
 
 test("missing capabilities render unavailable states and never subscribe", async () => {

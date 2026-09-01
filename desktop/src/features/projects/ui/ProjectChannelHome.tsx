@@ -414,6 +414,7 @@ export function ProjectChannelHome({
     },
     onOpenTarget: handleCanvasOpenTarget,
     primaryRepository: channelFeatures.primaryRepository,
+    relayUrl: activeCommunity?.relayUrl,
     reviews: {
       data: canvasReviewsQuery.data,
       isError: canvasReviewsQuery.isError,

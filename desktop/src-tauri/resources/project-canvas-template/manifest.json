@@ -22,6 +22,7 @@
     "project.tasks.read",
     "project.people.read",
     "project.tasks.write",
-    "app.open"
+    "app.open",
+    "app.dm.send"
   ]
 }

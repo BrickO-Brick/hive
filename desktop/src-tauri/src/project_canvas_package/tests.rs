@@ -688,7 +688,8 @@ fn manifest_accepts_the_full_capability_set_and_rejects_unknown_ones() {
         "project.tasks.read",
         "project.people.read",
         "project.tasks.write",
-        "app.open"
+        "app.open",
+        "app.dm.send"
     ]);
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(prepare_snapshot(&temp.path().join("CANVASES"), &binding, None).is_ok());

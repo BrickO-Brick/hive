@@ -23,6 +23,7 @@ const ALLOWED_CAPABILITIES: &[&str] = &[
     "project.people.read",
     "project.tasks.write",
     "app.open",
+    "app.dm.send",
 ];
 
 #[derive(Clone, Debug)]

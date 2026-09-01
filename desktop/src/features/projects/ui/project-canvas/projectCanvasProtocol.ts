@@ -28,6 +28,7 @@ const capabilitySchema = z.enum([
   "project.people.read",
   "project.tasks.write",
   "app.open",
+  "app.dm.send",
 ]);
 
 export type ProjectCanvasCapability = z.infer<typeof capabilitySchema>;
@@ -40,6 +41,7 @@ export type ProjectCanvasCapability = z.infer<typeof capabilitySchema>;
 export const PROJECT_CANVAS_CONSENT_CAPABILITIES = [
   "project.tasks.write",
   "app.open",
+  "app.dm.send",
 ] as const satisfies readonly ProjectCanvasCapability[];
 
 export function projectCanvasConsentCapabilities(

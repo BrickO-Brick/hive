@@ -20,6 +20,7 @@ import type {
 export const PROJECT_CANVAS_QUERY_ROW_LIMIT = 50;
 export const PROJECT_CANVAS_LOOKUP_PUBKEY_LIMIT = 32;
 export const PROJECT_CANVAS_SEARCH_QUERY_MAX_LENGTH = 64;
+export const PROJECT_CANVAS_DM_MESSAGE_MAX_LENGTH = 2_000;
 
 export type ProjectCanvasTaskRow = {
   assignees: string[];
@@ -82,6 +83,7 @@ export type ProjectCanvasBrokerDelegate = {
   ) => Promise<ProjectCanvasPersonRow[]>;
   runTaskCommand: (command: ProjectCanvasTaskCommand) => Promise<void>;
   openTarget: (target: ProjectCanvasOpenTarget) => Promise<void>;
+  sendDirectMessage: (recipient: string, message: string) => Promise<void>;
 };
 
 export type ProjectCanvasQueryResult = {
@@ -164,6 +166,12 @@ const assignParamsSchema = z
   .object({
     assignee: hexIdSchema.optional(),
     id: hexIdSchema,
+  })
+  .strict();
+const dmSendParamsSchema = z
+  .object({
+    message: z.string().min(1).max(PROJECT_CANVAS_DM_MESSAGE_MAX_LENGTH),
+    pubkey: hexIdSchema,
   })
   .strict();
 const openTargetSchema = z.discriminatedUnion("type", [
@@ -323,6 +331,28 @@ export class ProjectCanvasBroker {
     params: unknown,
     capabilities: readonly ProjectCanvasCapability[],
   ): Promise<void> {
+    if (name === "dm.send") {
+      if (!capabilities.includes("app.dm.send")) {
+        throw new ProjectCanvasBrokerError(
+          "forbidden",
+          "Canvas command dm.send requires the app.dm.send capability.",
+        );
+      }
+      const parsed = parseParams(dmSendParamsSchema, params);
+      const message = parsed.message.trim();
+      if (!message) {
+        throw invalidParams("Direct message content must not be blank.");
+      }
+      // Like the `user` open target, the recipient is any valid pubkey (it
+      // legitimately comes from people.lookup/people.search results, which
+      // are not host sources). Containment is the consent-gated capability,
+      // the command rate budget, and the host toast on every send.
+      await this.delegate.sendDirectMessage(
+        parsed.pubkey.toLowerCase(),
+        message,
+      );
+      return;
+    }
     if (
       name !== "tasks.setStatus" &&
       name !== "tasks.assign" &&

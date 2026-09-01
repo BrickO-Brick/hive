@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PROJECT_CANVAS_DM_MESSAGE_MAX_LENGTH,
   PROJECT_CANVAS_LOOKUP_PUBKEY_LIMIT,
   ProjectCanvasBroker,
   ProjectCanvasBrokerError,
@@ -15,6 +16,7 @@ const ALL_CAPABILITIES = [
   "project.people.read",
   "project.tasks.write",
   "app.open",
+  "app.dm.send",
 ];
 
 function channel(id, name, relationship = "home") {
@@ -58,7 +60,13 @@ function review(id, overrides = {}) {
 }
 
 function createBroker(overrides = {}) {
-  const calls = { commands: [], lookups: [], opens: [], searches: [] };
+  const calls = {
+    commands: [],
+    directMessages: [],
+    lookups: [],
+    opens: [],
+    searches: [],
+  };
   const broker = new ProjectCanvasBroker({
     lookupPeople: async (pubkeys) => {
       calls.lookups.push(pubkeys);
@@ -78,6 +86,9 @@ function createBroker(overrides = {}) {
     searchPeople: async (query, limit) => {
       calls.searches.push({ limit, query });
       return [];
+    },
+    sendDirectMessage: async (recipient, message) => {
+      calls.directMessages.push({ message, recipient });
     },
     ...overrides,
   });
@@ -320,6 +331,71 @@ test("commands require the write capability and resolve tasks from host sources"
   assert.equal(calls.commands[0].status, "done");
   assert.equal(calls.commands[0].task.id, TASK_ID);
   assert.equal(calls.commands[1].assignee, "f".repeat(64));
+});
+
+test("dm.send requires its capability, bounds the message, and normalizes the recipient", async () => {
+  const { broker, calls } = createBroker();
+  broker.setSources(readySources());
+
+  assert.equal(
+    await rejectionCode(
+      broker.command(
+        "dm.send",
+        { message: "hello", pubkey: "a".repeat(64) },
+        ALL_CAPABILITIES.filter((capability) => capability !== "app.dm.send"),
+      ),
+    ),
+    "forbidden",
+  );
+  assert.equal(
+    await rejectionCode(
+      broker.command("dm.send", { message: "hello" }, ALL_CAPABILITIES),
+    ),
+    "invalid-params",
+  );
+  assert.equal(
+    await rejectionCode(
+      broker.command(
+        "dm.send",
+        { message: "   ", pubkey: "a".repeat(64) },
+        ALL_CAPABILITIES,
+      ),
+    ),
+    "invalid-params",
+  );
+  assert.equal(
+    await rejectionCode(
+      broker.command(
+        "dm.send",
+        {
+          message: "x".repeat(PROJECT_CANVAS_DM_MESSAGE_MAX_LENGTH + 1),
+          pubkey: "a".repeat(64),
+        },
+        ALL_CAPABILITIES,
+      ),
+    ),
+    "invalid-params",
+  );
+  assert.equal(
+    await rejectionCode(
+      broker.command(
+        "dm.send",
+        { extra: true, message: "hello", pubkey: "a".repeat(64) },
+        ALL_CAPABILITIES,
+      ),
+    ),
+    "invalid-params",
+  );
+  assert.equal(calls.directMessages.length, 0);
+
+  await broker.command(
+    "dm.send",
+    { message: "  Checking in  ", pubkey: "A".repeat(64) },
+    ALL_CAPABILITIES,
+  );
+  assert.deepEqual(calls.directMessages, [
+    { message: "Checking in", recipient: "a".repeat(64) },
+  ]);
 });
 
 test("open targets are validated against host sources before navigation", async () => {

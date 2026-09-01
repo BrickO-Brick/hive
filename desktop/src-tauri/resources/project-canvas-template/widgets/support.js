@@ -93,6 +93,7 @@
     const editor = element("div", "bug-editor");
     const textarea = element("textarea", "", {
       ariaLabel: "Describe a support issue",
+      maxlength: "1900",
       placeholder: "What happened? Include what you expected to see...",
       testId: "project-canvas-support-bug-input",
     });
@@ -108,20 +109,57 @@
     });
     editor.append(textarea, submit);
     form.append(header, editor);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      if (!textarea.value.trim()) return;
+    function showOutcome(title, detail) {
       const success = element("div", "bug-success", {
         testId: "project-canvas-support-bug-success",
       });
       success.append(
         icon("✓", "success-circle"),
-        element("h4", "", { text: "Report staged" }),
-        element("p", "muted", {
-          text: "We'll check for matching issues before filing.",
-        }),
+        element("h4", "", { text: title }),
+        element("p", "muted", { text: detail }),
       );
       form.replaceChildren(header, success);
+    }
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const report = textarea.value.trim();
+      if (!report) return;
+      const sdk = window.buzzCanvas?.sdk;
+      const canDm =
+        !!sdk?.data &&
+        sdk.capabilities().includes("app.dm.send") &&
+        sdk.capabilities().includes("project.metadata.read");
+      if (!canDm) {
+        showOutcome(
+          "Report staged",
+          "We'll check for matching issues before filing.",
+        );
+        return;
+      }
+      submit.disabled = true;
+      sdk.data
+        .query("project.metadata")
+        .then((result) => {
+          const owner = result?.data ? String(result.data.owner || "") : "";
+          if (!/^[0-9a-f]{64}$/i.test(owner)) {
+            throw new Error("Project owner is unavailable.");
+          }
+          return sdk.data.command("dm.send", {
+            message: `Support report: ${report}`,
+            pubkey: owner,
+          });
+        })
+        .then(() => {
+          showOutcome(
+            "Report sent",
+            "Delivered to the project owner as a direct message.",
+          );
+        })
+        .catch(() => {
+          // Failures surface through the host's command toast; re-enable so
+          // the report stays retryable.
+          submit.disabled = false;
+        });
     });
     return form;
   }
