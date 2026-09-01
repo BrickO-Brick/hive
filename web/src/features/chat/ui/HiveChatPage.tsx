@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
+import brickLogoUrl from "@/assets/brick-logo.svg";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -364,7 +365,7 @@ export function HiveChatPage() {
       >
         {!collapsed && (
           <img
-            src="/logo.svg"
+            src={brickLogoUrl}
             alt="Brick"
             className="h-auto w-[92px] shrink-0"
           />
@@ -553,13 +554,13 @@ export function HiveChatPage() {
               <Menu size={17} />
             </button>
             <img
-              src="/logo.svg"
+              src={brickLogoUrl}
               alt="Brick"
               className="h-auto w-[92px] shrink-0 md:hidden"
             />
             {sidebarCollapsed && (
               <img
-                src="/logo.svg"
+                src={brickLogoUrl}
                 alt="Brick"
                 className="hidden h-auto w-[92px] shrink-0 md:block"
               />

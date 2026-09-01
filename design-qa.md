@@ -4,7 +4,7 @@
 
 - Target: match the Mantap navigation shell in Hive, including the Brick logo, expanded/collapsed navigation, responsive behavior, and visibility of secondary elements.
 - Reference: `/Users/bricko/Work/mantul/sidebar-final-20260705/all-sites/mantap-northstar-top-left.png` plus the Mantap navigation implementation in `/Users/bricko/Work/mantul/mantul-fe`.
-- Implementation: `web/src/features/chat/ui/HiveChatPage.tsx` and `web/public/logo.svg`.
+- Implementation: `web/src/features/chat/ui/HiveChatPage.tsx` and `web/src/assets/brick-logo.svg`.
 
 ## Viewports and states
 
@@ -39,7 +39,9 @@ The implementation screenshots are under `web/test-results/smoke-Hive-shows-Bric
 
 ## Findings and iteration history
 
-Pass 1 found no P0, P1, or P2 visual or interaction defects. The reference screenshot is dimmed by Mantap's PIN overlay, so exact source tokens and dimensions were also verified from the Mantap implementation rather than inferred from the overlay.
+Pass 1 found no P0, P1, or P2 visual or interaction defects in the local build. The reference screenshot is dimmed by Mantap's PIN overlay, so exact source tokens and dimensions were also verified from the Mantap implementation rather than inferred from the overlay.
+
+Pass 2 checked the first production rollout and found that the relay's static-file allowlist did not serve a root-level `/logo.svg`. The logo was moved into the Vite asset graph so it is emitted as a hashed `/assets/*` file, which the production relay serves. The complete build and six-state smoke screenshot pass then succeeded again.
 
 ## Final result
 
