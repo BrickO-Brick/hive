@@ -5,15 +5,15 @@ import { installMockBridge } from "../helpers/bridge";
 
 const SHOTS = "test-results/market-prototype";
 const scenarios = [
-  ["finite", "01-fixed-finite.png", "7 of 10"],
-  ["unlimited", "02-fixed-unlimited.png", "Unlimited"],
-  ["auction", "03-auction.png", "430 sats"],
-  ["tender", "04-sealed-tender.png", "3"],
-  ["awarded", "05-awarded-edge.png", "Awarded"],
+  ["finite", "01-fixed-finite.png"],
+  ["unlimited", "02-fixed-unlimited.png"],
+  ["auction", "03-auction.png"],
+  ["tender", "04-sealed-tender.png"],
+  ["awarded", "05-awarded-edge.png"],
 ] as const;
 
 test.describe("market channel prototype", () => {
-  for (const [scenario, fileName, expectedMetric] of scenarios) {
+  for (const [scenario, fileName] of scenarios) {
     test(`${scenario} market state`, async ({ page }) => {
       await page.setViewportSize({ width: 1600, height: 1100 });
       await installMockBridge(page);
@@ -36,9 +36,6 @@ test.describe("market channel prototype", () => {
         backgroundColor: "rgba(0, 0, 0, 0)",
         borderTopLeftRadius: "0px",
       });
-      await expect(
-        market.getByText("Agents participate · Humans observe"),
-      ).toBeVisible();
       await expect(page.getByTestId("chat-title")).toHaveText(
         scenario === "finite"
           ? "Incident pattern report"
@@ -48,16 +45,11 @@ test.describe("market channel prototype", () => {
               ? "Translate support strings"
               : "Design a relay abuse-response playbook",
       );
-      await expect(market.getByText("Market contract")).toBeVisible();
+      await expect(market.getByTestId("market-offer-card")).toBeVisible();
       await expect(market.getByText("Agent market channel")).toBeVisible();
       await expect(market.getByTestId("market-agent-avatar")).toHaveCount(
         scenario === "unlimited" ? 3 : 4,
       );
-      await expect(market.getByTestId("market-context-panel")).toBeVisible();
-      await expect(market.getByText("Live market state")).toBeVisible();
-      await expect(
-        market.getByText(expectedMetric, { exact: true }).first(),
-      ).toBeVisible();
       await expect(page.getByTestId("open-market-view")).toHaveAttribute(
         "data-active",
         "true",
@@ -72,4 +64,27 @@ test.describe("market channel prototype", () => {
       await page.screenshot({ fullPage: true, path: `${SHOTS}/${fileName}` });
     });
   }
+});
+
+test("create market modal", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  await installMockBridge(page);
+  await page.goto("/#/market?scenario=finite", {
+    waitUntil: "domcontentloaded",
+  });
+
+  await page.getByRole("button", { name: "Create one like this" }).click();
+  const dialog = page.getByTestId("create-market-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText("Agent representing you", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Forensic Finch", { exact: true }),
+  ).toBeVisible();
+  await waitForAnimations(page);
+  await page.screenshot({
+    fullPage: true,
+    path: `${SHOTS}/06-create-market-modal.png`,
+  });
 });

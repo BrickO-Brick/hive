@@ -1,49 +1,41 @@
-import { useNavigate } from "@tanstack/react-router";
 import {
   Bot,
-  Check,
-  CircleDollarSign,
-  Clock3,
-  LockKeyhole,
   MessageSquareOff,
   PackageCheck,
   Radio,
-  ReceiptText,
-  Scale,
-  ShieldCheck,
   Store,
   TriangleAlert,
-  WalletCards,
 } from "lucide-react";
 import * as React from "react";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
 import {
   MARKET_SCENARIOS,
-  MARKET_SCENARIO_IDS,
   type MarketActivity,
+  type MarketScenario,
   type MarketScenarioId,
-  type MarketTerm,
 } from "@/features/market/lib/marketPrototypeData";
-import { ProjectContextRail } from "@/features/projects/ui/ProjectContextRail";
-import { ProjectHomeColumn } from "@/features/projects/ui/ProjectHomeColumn";
-import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
-import { SIDEBAR_WIDTH_MIN } from "@/shared/layout/sidebarLayout";
 import { cn } from "@/shared/lib/cn";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/shared/ui/dialog";
+import { Input } from "@/shared/ui/input";
 import { useOptionalSidebar } from "@/shared/ui/sidebar";
+import { Textarea } from "@/shared/ui/textarea";
 
-const MARKET_CONTEXT_WIDTH_KEY = "buzz.desktop.market-context-width";
-
-const SCENARIO_LABELS: Record<MarketScenarioId, string> = {
-  finite: "Fixed · finite",
-  unlimited: "Fixed · unlimited",
-  auction: "Auction",
-  tender: "Tender",
-  awarded: "Awarded edge",
-};
+const REPRESENTING_AGENTS = [
+  { name: "Forensic Finch", role: "Research & incident analysis" },
+  { name: "Cartograph", role: "Repository mapping" },
+  { name: "Sentinel", role: "Operations & safety" },
+] as const;
 
 const COMMERCIAL_TERM_LABELS = new Set([
   "Price",
@@ -54,37 +46,6 @@ const COMMERCIAL_TERM_LABELS = new Set([
   "Reward",
   "Award count",
 ]);
-
-const WALLET_DETAILS: Record<
-  MarketScenarioId,
-  { account: string; balance: string; settlement: string }
-> = {
-  finite: {
-    account: "escrow1report…13c8",
-    balance: "150 sats funded",
-    settlement: "1 paid · 2 reserved",
-  },
-  unlimited: {
-    account: "wallet1mapper…c241",
-    balance: "80 sats escrowed",
-    settlement: "760 sats paid",
-  },
-  auction: {
-    account: "escrow1strings…9f10",
-    balance: "600 sats funded",
-    settlement: "Held until award",
-  },
-  tender: {
-    account: "escrow1tender…1b73",
-    balance: "2,000 sats funded",
-    settlement: "Held during selection",
-  },
-  awarded: {
-    account: "escrow1tender…1b73",
-    balance: "1,750 sats escrowed",
-    settlement: "Release on signed receipt",
-  },
-};
 
 const ACTIVITY_STYLE: Record<
   MarketActivity["state"],
@@ -113,26 +74,9 @@ const ACTIVITY_STYLE: Record<
 
 export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
   const scenario = MARKET_SCENARIOS[scenarioId];
-  const navigate = useNavigate();
   const sidebar = useOptionalSidebar();
-  const contextWidth = useThreadPanelWidth(undefined, {
-    minWidthPx: SIDEBAR_WIDTH_MIN,
-    sessionKey: MARKET_CONTEXT_WIDTH_KEY,
-  });
+  const [createOpen, setCreateOpen] = React.useState(false);
   const isTerminal = scenario.status !== "Open";
-  const contractTerms = scenario.terms.filter(
-    (term) => !COMMERCIAL_TERM_LABELS.has(term.label),
-  );
-  const commercialTerms = scenario.terms.filter((term) =>
-    COMMERCIAL_TERM_LABELS.has(term.label),
-  );
-
-  const selectScenario = React.useCallback(
-    (nextScenario: MarketScenarioId) => {
-      void navigate({ to: "/market", search: { scenario: nextScenario } });
-    },
-    [navigate],
-  );
 
   return (
     <main
@@ -145,56 +89,17 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
     >
       <section className="mb-2 ml-px mt-px flex min-h-0 min-w-60 flex-1 flex-col overflow-hidden rounded-2xl bg-background">
         <ChatHeader
-          actions={
-            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground lg:flex">
-              <Scale className="h-3.5 w-3.5" /> Agents participate · Humans
-              observe
-            </span>
-          }
           channelType="stream"
           description={scenario.summary}
           leadingContent={<Store className="h-4 w-4 text-muted-foreground" />}
-          statusBadge={<StatusBadge status={scenario.status} />}
           title={scenario.title}
         />
 
-        <nav
-          className="flex shrink-0 items-center gap-1 border-b bg-muted/20 px-6 py-2"
-          aria-label="Market prototype scenarios"
-        >
-          {MARKET_SCENARIO_IDS.map((id) => (
-            <Button
-              className="h-8 rounded-lg"
-              key={id}
-              onClick={() => selectScenario(id)}
-              size="sm"
-              type="button"
-              variant={id === scenarioId ? "secondary" : "ghost"}
-            >
-              {SCENARIO_LABELS[id]}
-            </Button>
-          ))}
-        </nav>
-
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="border-b px-6 py-4">
-            <div className="mx-auto w-full max-w-4xl">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">{scenario.eyebrow}</Badge>
-                <span className="font-mono text-xs text-muted-foreground">
-                  {scenario.contractId}
-                </span>
-              </div>
-              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-                {scenario.summary}
-              </p>
-            </div>
-          </div>
-          <div className="mx-auto flex w-full max-w-4xl flex-col px-6 py-5">
-            <ContractCard
-              closeAt={scenario.closeAt}
-              mode={scenario.mode}
-              terms={contractTerms}
+          <div className="mx-auto flex w-full max-w-3xl flex-col px-6 py-6">
+            <OfferCard
+              onCreate={() => setCreateOpen(true)}
+              scenario={scenario}
             />
 
             <section className="pt-5" data-testid="market-agent-timeline">
@@ -222,6 +127,12 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
           </div>
         </div>
 
+        <CreateMarketDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          scenario={scenario}
+        />
+
         <footer className="shrink-0 border-t bg-background px-5 py-3">
           <div className="mx-auto flex w-full max-w-4xl items-center gap-3 rounded-xl border border-dashed bg-muted/35 px-4 py-3">
             <MessageSquareOff className="h-5 w-5 shrink-0 text-muted-foreground" />
@@ -243,235 +154,228 @@ export function MarketScreen({ scenarioId }: { scenarioId: MarketScenarioId }) {
           </div>
         </footer>
       </section>
-
-      <ProjectContextRail
-        open
-        panelWidthPx={contextWidth.widthPx}
-        resizing={contextWidth.isResizing}
-        rounded={false}
-        testId="market-context-rail"
-      >
-        <ProjectHomeColumn
-          bodyClassName="overflow-hidden"
-          canResetWidth={contextWidth.canReset}
-          onResetWidth={contextWidth.onResetWidth}
-          onResizeStart={contextWidth.onResizeStart}
-          testId="market-context-column"
-          widthPx={contextWidth.widthPx}
-        >
-          <MarketContextPanel
-            commercialTerms={commercialTerms}
-            direction={scenario.direction}
-            liveMetrics={scenario.liveMetrics}
-            scenarioId={scenarioId}
-            status={scenario.status}
-            statusDetail={scenario.statusDetail}
-          />
-        </ProjectHomeColumn>
-      </ProjectContextRail>
     </main>
   );
 }
 
-function ContractCard({
-  closeAt,
-  mode,
-  terms,
+function OfferCard({
+  onCreate,
+  scenario,
 }: {
-  closeAt: string;
-  mode: string;
-  terms: MarketTerm[];
+  onCreate: () => void;
+  scenario: MarketScenario;
 }) {
+  const author =
+    scenario.terms.find(
+      (term) => term.label === "Seller" || term.label === "Requester",
+    )?.value ?? "Market agent";
+  const commercial = scenario.terms.find((term) =>
+    COMMERCIAL_TERM_LABELS.has(term.label),
+  );
+  const listingKind = scenario.eyebrow.startsWith("Offer")
+    ? "Agent offer"
+    : "Agent request";
+
   return (
-    <section className="border-b pb-5">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <LockKeyhole className="h-4 w-4 text-muted-foreground" />
-            <h2 className="font-semibold">Market contract</h2>
+    <section
+      className="overflow-hidden rounded-2xl border bg-card"
+      data-testid="market-offer-card"
+    >
+      <div className="grid sm:grid-cols-[12rem_minmax(0,1fr)]">
+        <div className="flex min-h-44 items-center justify-center border-b bg-muted/60 text-muted-foreground sm:border-b-0 sm:border-r">
+          <div className="flex flex-col items-center gap-2">
+            <PackageCheck className="h-8 w-8" strokeWidth={1.5} />
+            <span className="text-xs">Product image</span>
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Immutable signed scope · material changes require v2
-          </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Clock3 className="h-3.5 w-3.5" /> {closeAt}
-          </span>
-          <Badge variant="outline">v1 locked</Badge>
+        <div className="flex min-w-0 flex-col p-5">
+          <Badge className="w-fit" variant="secondary">
+            {listingKind} · {scenario.mode}
+          </Badge>
+          <h2 className="mt-3 text-xl font-semibold tracking-tight">
+            {scenario.title}
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+            {scenario.summary}
+          </p>
+          <div className="mt-4 rounded-xl bg-muted/60 px-3 py-2.5">
+            <p className="text-sm font-semibold">
+              {commercial?.value ?? scenario.direction}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {scenario.direction}
+            </p>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+            <div className="flex items-center gap-2.5">
+              <UserAvatar
+                accent
+                avatarUrl={null}
+                className="rounded-[30%] grayscale"
+                displayName={author}
+                fallbackDelayMs={0}
+                shape="squircle"
+              />
+              <div>
+                <p className="text-sm font-medium">{author}</p>
+                <p className="text-xs text-muted-foreground">
+                  Created this {listingKind.toLowerCase()}
+                </p>
+              </div>
+            </div>
+            <Button onClick={onCreate} size="sm" variant="outline">
+              Create one like this
+            </Button>
+          </div>
         </div>
       </div>
-      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-        <TermRows terms={[{ label: "Mode", value: mode }, ...terms]} />
-      </dl>
     </section>
   );
 }
 
-function MarketContextPanel({
-  commercialTerms,
-  direction,
-  liveMetrics,
-  scenarioId,
-  status,
-  statusDetail,
+function CreateMarketDialog({
+  onOpenChange,
+  open,
+  scenario,
 }: {
-  commercialTerms: MarketTerm[];
-  direction: string;
-  liveMetrics: MarketTerm[];
-  scenarioId: MarketScenarioId;
-  status: "Open" | "Closed" | "Awarded" | "Fulfilled";
-  statusDetail: string;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  scenario: MarketScenario;
 }) {
-  const wallet = WALLET_DETAILS[scenarioId];
+  const [selectedAgent, setSelectedAgent] = React.useState<string>(
+    REPRESENTING_AGENTS[0].name,
+  );
+
   return (
-    <div
-      className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-sidebar text-sidebar-foreground"
-      data-testid="market-context-panel"
-    >
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-3 pb-8 pt-5">
-        <div className="flex h-8 items-center justify-between gap-2 px-2">
-          <div className="flex items-center gap-2">
-            <ReceiptText className="h-4 w-4 text-sidebar-foreground/65" />
-            <h2 className="text-sm font-semibold">Market context</h2>
-          </div>
-          <StatusBadge status={status} />
-        </div>
-        <ContextSection icon={CircleDollarSign} title="Commercial terms">
-          <p className="rounded-xl border border-sidebar-border bg-sidebar-accent p-3 text-sm font-medium leading-relaxed">
-            {direction}
-          </p>
-          <dl className="space-y-3 pt-1">
-            <TermRows terms={commercialTerms} />
-          </dl>
-        </ContextSection>
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent
+        className="max-h-[88vh] max-w-xl overflow-y-auto"
+        data-testid="create-market-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>Create a market</DialogTitle>
+          <DialogDescription>
+            Publish an offer or request through an agent representing you.
+          </DialogDescription>
+        </DialogHeader>
 
-        <ContextSection icon={Radio} title="Live market state">
-          <dl className="grid grid-cols-2 gap-2">
-            {liveMetrics.map((term) => (
-              <div
-                className="rounded-xl border bg-background/70 p-3"
-                key={term.label}
+        <div className="space-y-5">
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">Market type</legend>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                className="rounded-xl border-2 border-foreground bg-muted px-3 py-3 text-left"
+                type="button"
               >
-                <dt className="text-xs text-muted-foreground">{term.label}</dt>
-                <dd className="mt-0.5 text-base font-semibold tracking-tight">
-                  {term.value}
-                </dd>
-                {term.detail ? (
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {term.detail}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </dl>
-          <div className="flex items-start gap-2 rounded-xl border border-sidebar-border bg-sidebar-accent p-3 text-xs">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-sidebar-foreground/65" />
-            <span>
-              {statusDetail}. Client timers never determine acceptance.
-            </span>
-          </div>
-        </ContextSection>
+                <span className="block text-sm font-medium">Offer</span>
+                <span className="text-xs text-muted-foreground">
+                  Sell a product or service
+                </span>
+              </button>
+              <button
+                className="rounded-xl border px-3 py-3 text-left"
+                type="button"
+              >
+                <span className="block text-sm font-medium">Request</span>
+                <span className="text-xs text-muted-foreground">
+                  Ask agents to deliver something
+                </span>
+              </button>
+            </div>
+          </fieldset>
 
-        <ContextSection icon={WalletCards} title="Wallet & settlement">
-          <dl className="space-y-3 rounded-xl border bg-background/70 p-3">
-            <ContextValue label="Contract wallet" value={wallet.account} mono />
-            <ContextValue label="Balance" value={wallet.balance} />
-            <ContextValue label="Settlement" value={wallet.settlement} />
-            <ContextValue label="Network" value="Sandbox Lightning" />
-          </dl>
-        </ContextSection>
-      </div>
-    </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Title">
+              <Input defaultValue={scenario.title} />
+            </Field>
+            <Field label="Price or reward">
+              <Input defaultValue="50 sats" />
+            </Field>
+          </div>
+          <Field label="Short description">
+            <Textarea defaultValue={scenario.summary} />
+          </Field>
+          <button
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-5 text-sm text-muted-foreground"
+            type="button"
+          >
+            <PackageCheck className="h-5 w-5" /> Add product image
+          </button>
+
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">
+              Agent representing you
+            </legend>
+            <p className="text-xs text-muted-foreground">
+              This agent creates the market and handles responses on your
+              behalf.
+            </p>
+            <div className="space-y-2">
+              {REPRESENTING_AGENTS.map((agent) => {
+                const selected = selectedAgent === agent.name;
+                return (
+                  <button
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left",
+                      selected && "border-foreground bg-muted",
+                    )}
+                    key={agent.name}
+                    onClick={() => setSelectedAgent(agent.name)}
+                    type="button"
+                  >
+                    <UserAvatar
+                      accent
+                      avatarUrl={null}
+                      className="rounded-[30%] grayscale"
+                      displayName={agent.name}
+                      fallbackDelayMs={0}
+                      shape="squircle"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">
+                        {agent.name}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {agent.role}
+                      </span>
+                    </span>
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "h-4 w-4 rounded-full border",
+                        selected && "border-4 border-foreground",
+                      )}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        </div>
+
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} variant="outline">
+            Cancel
+          </Button>
+          <Button>Ask {selectedAgent} to publish</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function ContextSection({
+function Field({
   children,
-  icon: Icon,
-  title,
+  label,
 }: {
   children: React.ReactNode;
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-}) {
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-2 px-1">
-        <Icon className="h-4 w-4 text-sidebar-foreground/65" />
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-sidebar-foreground/65">
-          {title}
-        </h3>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function ContextValue({
-  label,
-  mono = false,
-  value,
-}: {
   label: string;
-  mono?: boolean;
-  value: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd
-        className={cn(
-          "text-right text-sm font-medium",
-          mono && "font-mono text-xs",
-        )}
-      >
-        {value}
-      </dd>
+    <div className="space-y-2 text-sm font-medium">
+      <p>{label}</p>
+      {children}
     </div>
-  );
-}
-
-function TermRows({ terms }: { terms: MarketTerm[] }) {
-  return terms.map((term) => (
-    <div
-      className={cn(
-        "min-w-0",
-        term.label === "Public criteria" && "sm:col-span-2",
-      )}
-      key={term.label}
-    >
-      <dt className="text-xs font-medium text-muted-foreground">
-        {term.label}
-      </dt>
-      <dd className="mt-0.5 text-sm font-medium leading-relaxed">
-        {term.value}
-      </dd>
-      {term.detail ? (
-        <p className="text-xs text-muted-foreground">{term.detail}</p>
-      ) : null}
-    </div>
-  ));
-}
-
-function StatusBadge({
-  status,
-}: {
-  status: "Open" | "Closed" | "Awarded" | "Fulfilled";
-}) {
-  const terminal = status !== "Open";
-  return (
-    <Badge
-      className="border-sidebar-border bg-sidebar-accent text-sidebar-foreground"
-      variant="outline"
-    >
-      {terminal ? (
-        <Check className="mr-1 h-3 w-3" />
-      ) : (
-        <Radio className="mr-1 h-3 w-3" />
-      )}
-      {status}
-    </Badge>
   );
 }
 
