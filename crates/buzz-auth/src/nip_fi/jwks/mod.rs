@@ -510,6 +510,9 @@ pub struct ProductionJwksSource<F = HttpJwksFetcher> {
     configs: HashMap<String, IssuerJwksConfig>,
     states: Arc<RwLock<HashMap<String, Mutex<IssuerState>>>>,
     fetcher: Arc<F>,
+    /// Clock used for `hard_deadline` computation and expiry checks. Always
+    /// `Arc::new(Utc::now)` in production; tests supply a controlled clock.
+    now_fn: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
 }
 
 impl<F: JwksFetcher> ProductionJwksSource<F> {
@@ -537,6 +540,36 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
             configs: config_map,
             states: Arc::new(RwLock::new(state_map)),
             fetcher: Arc::new(fetcher),
+            now_fn: Arc::new(Utc::now),
+        })
+    }
+
+    /// **Test-only.** Construct with an injectable clock so tests can advance
+    /// `now` past snapshot hard deadlines without wall-clock sleep.
+    #[cfg(test)]
+    pub(crate) fn new_with_clock(
+        configs: Vec<IssuerJwksConfig>,
+        fetcher: F,
+        now_fn: Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>,
+    ) -> Option<Self> {
+        if configs.is_empty() {
+            return None;
+        }
+        let mut config_map = HashMap::with_capacity(configs.len());
+        let mut state_map = HashMap::with_capacity(configs.len());
+        for c in configs {
+            if config_map.contains_key(&c.issuer) {
+                return None;
+            }
+            let issuer = c.issuer.clone();
+            state_map.insert(issuer.clone(), Mutex::new(IssuerState::new()));
+            config_map.insert(issuer, c);
+        }
+        Some(Self {
+            configs: config_map,
+            states: Arc::new(RwLock::new(state_map)),
+            fetcher: Arc::new(fetcher),
+            now_fn,
         })
     }
 
@@ -574,7 +607,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
             prev_generation.saturating_add(1).max(1)
         };
 
-        let now = Utc::now();
+        let now = (self.now_fn)();
         // MAX_JWKS_TIMING_SECONDS ≤ ~31.5M < i64::MAX, so this conversion is
         // always safe for values that passed the bounds check in JwksSourceContract::new().
         let deadline_secs = i64::try_from(config.contract.key_snapshot_hard_deadline_seconds())
@@ -609,7 +642,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
         let state_mutex = states.get(issuer)?;
         let mut state = state_mutex.lock().await;
 
-        let now = Utc::now();
+        let now = (self.now_fn)();
         let config = self.configs.get(issuer)?;
 
         if let Some(ref cached) = state.snapshot {
@@ -655,7 +688,7 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
             }
             // Drop the permit only after the state commit is visible.
             drop(permit);
-            let now2 = Utc::now();
+            let now2 = (self.now_fn)();
             return st
                 .snapshot
                 .as_ref()
@@ -665,24 +698,6 @@ impl<F: JwksFetcher> ProductionJwksSource<F> {
 
         drop(permit);
         None
-    }
-
-    /// **Test-only helper.** Sets the snapshot for `issuer` to expired by
-    /// backdating its `hard_deadline` to one second ago, so that the next
-    /// `get_snapshot` call triggers a re-fetch. Use this instead of a
-    /// wall-clock sleep to drive the controlled-clock rotation test.
-    ///
-    /// Not compiled into production builds.
-    #[cfg(test)]
-    pub(crate) async fn force_expire_snapshot_for_test(&self, issuer: &str) {
-        use chrono::Duration;
-        let states = self.states.read().await;
-        if let Some(state_mutex) = states.get(issuer) {
-            let mut state = state_mutex.lock().await;
-            if let Some(ref mut snap) = state.snapshot {
-                snap.hard_deadline = Utc::now() - Duration::seconds(1);
-            }
-        }
     }
 }
 
@@ -699,7 +714,7 @@ impl<F: JwksFetcher> IssuerKeySource for ProductionJwksSource<F> {
         let states = self.states.try_read().ok()?;
         let state_mutex = states.get(issuer)?;
         let state = state_mutex.try_lock().ok()?;
-        let now = Utc::now();
+        let now = (self.now_fn)();
         state
             .snapshot
             .as_ref()
