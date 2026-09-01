@@ -21,7 +21,6 @@ type HuddleSession = {
   startCreatedAt: number;
   startEventId: string;
   endState: AdmissionState | null;
-  latestRosterRevision: number | null;
   admissionsByParticipant: Map<string, Map<string, AdmissionState>>;
   legacyStateByParticipant: Map<string, AdmissionState>;
 };
@@ -77,7 +76,10 @@ function lifecyclePhase(kind: number): number {
   return 1;
 }
 
-function compareLifecycleEvents(left: RelayEvent, right: RelayEvent): number {
+export function compareHuddleLifecycleEvents(
+  left: RelayEvent,
+  right: RelayEvent,
+): number {
   const timestampOrder = left.created_at - right.created_at;
   if (timestampOrder !== 0) return timestampOrder;
 
@@ -141,33 +143,22 @@ function sessionParticipants(session: HuddleSession): Set<string> {
   );
 }
 
-function compactSession(session: HuddleSession): void {
-  for (const [participant, admissions] of session.admissionsByParticipant) {
-    for (const [admissionId, state] of admissions) {
-      if (!state.present) admissions.delete(admissionId);
-    }
-    if (admissions.size === 0) {
-      session.admissionsByParticipant.delete(participant);
-    }
-  }
-}
-
 type FetchEvents = (filter: RelaySubscriptionFilter) => Promise<RelayEvent[]>;
 
 export const HUDDLE_LIFECYCLE_PAGE_LIMIT = 500;
-export const HUDDLE_ACTIVE_LOOKBACK_SECONDS = 3_900;
 
 /**
- * Load the complete lifecycle window in which a huddle can still be active.
- * Huddle backing channels have a one-hour TTL; the extra five minutes cover
- * the relay reaper cadence and second-boundary skew. Inclusive `until` pages
- * are de-duplicated by event id.
+ * Load complete persisted huddle lifecycle history.
+ *
+ * A backing channel's TTL is not an audio-session lifetime: already-connected
+ * participants can remain in a room after the channel is archived, and relay
+ * deployments may configure a longer TTL. Pagination therefore continues to
+ * the beginning of lifecycle history instead of imposing a client-side time
+ * horizon. Inclusive `until` pages are de-duplicated by event id.
  */
-export async function fetchActiveHuddleLifecycle(
+export async function fetchHuddleLifecycleHistory(
   fetchEvents: FetchEvents,
-  nowSeconds = Math.floor(Date.now() / 1_000),
 ): Promise<RelayEvent[]> {
-  const since = Math.max(0, nowSeconds - HUDDLE_ACTIVE_LOOKBACK_SECONDS);
   const events = new Map<string, RelayEvent>();
   let until: number | undefined;
 
@@ -179,7 +170,6 @@ export async function fetchActiveHuddleLifecycle(
         KIND_HUDDLE_PARTICIPANT_LEFT,
         KIND_HUDDLE_ENDED,
       ],
-      since,
       ...(until === undefined ? {} : { until }),
       limit: HUDDLE_LIFECYCLE_PAGE_LIMIT,
     });
@@ -232,7 +222,6 @@ export class HuddlePresenceTracker {
         startCreatedAt: event.created_at,
         startEventId: event.id,
         endState: null,
-        latestRosterRevision: null,
         admissionsByParticipant: new Map(),
         legacyStateByParticipant: new Map(),
       });
@@ -271,13 +260,6 @@ export class HuddlePresenceTracker {
 
     const participant = participantPubkey(event);
     if (!participant) return false;
-    if (
-      content.rosterRevision !== null &&
-      session.latestRosterRevision !== null &&
-      content.rosterRevision <= session.latestRosterRevision
-    ) {
-      return false;
-    }
     const next: AdmissionState = {
       present: event.kind === KIND_HUDDLE_PARTICIPANT_JOINED,
       rosterRevision: content.rosterRevision,
@@ -297,9 +279,6 @@ export class HuddlePresenceTracker {
       const existing = session.legacyStateByParticipant.get(participant);
       if (!isNewerAdmissionState(next, existing)) return false;
       session.legacyStateByParticipant.set(participant, next);
-    }
-    if (content.rosterRevision !== null) {
-      session.latestRosterRevision = content.rosterRevision;
     }
     if (
       participant === session.creator &&
@@ -327,9 +306,18 @@ export class HuddlePresenceTracker {
       for (const participant of sessionParticipants(session)) {
         participants.add(participant);
       }
-      compactSession(session);
     }
     return participants;
+  }
+}
+
+/** Apply a complete hydration result in lifecycle order to an existing tracker. */
+export function applyHuddleLifecycleHistory(
+  tracker: HuddlePresenceTracker,
+  events: Iterable<RelayEvent>,
+): void {
+  for (const event of [...events].sort(compareHuddleLifecycleEvents)) {
+    tracker.apply(event);
   }
 }
 
@@ -339,8 +327,6 @@ export function reconstructHuddlePresence(
   relaySelfPubkey: string | null | undefined,
 ): ReadonlySet<string> {
   const tracker = new HuddlePresenceTracker(relaySelfPubkey);
-  for (const event of [...events].sort(compareLifecycleEvents)) {
-    tracker.apply(event);
-  }
+  applyHuddleLifecycleHistory(tracker, events);
   return tracker.snapshot();
 }

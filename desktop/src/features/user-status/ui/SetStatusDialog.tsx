@@ -82,6 +82,13 @@ function toLocalTimeValue(date: Date) {
   return `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
 }
 
+function formattedTime(date: Date) {
+  return date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function endOfToday(from: Date) {
   const end = new Date(from);
   end.setHours(24, 0, 0, 0);
@@ -191,49 +198,77 @@ export function SetStatusDialog({
   const [calendarOpen, setCalendarOpen] = React.useState(false);
   const [duration, setDuration] = React.useState<DurationLabel>("Today");
   const [customUntil, setCustomUntil] = React.useState(defaultCustomDate);
+  const [durationTouched, setDurationTouched] = React.useState(false);
+  const [baseline, setBaseline] = React.useState(() => ({
+    text: initialText,
+    emoji: initialEmoji,
+    expiresAt: initialExpiresAt,
+    duration: null as DurationLabel | null,
+    customUntil: null as Date | null,
+    hasExistingStatus,
+  }));
+  const initializedForOpenRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      initializedForOpenRef.current = false;
+      return;
+    }
+    if (initializedForOpenRef.current) return;
+    initializedForOpenRef.current = true;
     setText(initialText);
     setEmoji(initialEmoji);
     const currentExpiration = initialExpiresAt
       ? new Date(initialExpiresAt * 1_000)
       : null;
     if (currentExpiration && currentExpiration.getTime() > Date.now()) {
-      setDuration(inferredDuration(initialExpiresAt, initialUpdatedAt));
-      setCustomUntil(roundUpToHalfHour(currentExpiration));
+      const nextDuration = inferredDuration(initialExpiresAt, initialUpdatedAt);
+      setDuration(nextDuration);
+      setCustomUntil(currentExpiration);
+      setBaseline({
+        text: initialText,
+        emoji: initialEmoji,
+        expiresAt: initialExpiresAt,
+        duration: nextDuration,
+        customUntil: currentExpiration,
+        hasExistingStatus,
+      });
     } else {
       setDuration("Today");
-      setCustomUntil(defaultCustomDate());
+      const nextCustomUntil = defaultCustomDate();
+      setCustomUntil(nextCustomUntil);
+      setBaseline({
+        text: initialText,
+        emoji: initialEmoji,
+        expiresAt: undefined,
+        duration: null,
+        customUntil: null,
+        hasExistingStatus,
+      });
     }
-  }, [open, initialText, initialEmoji, initialExpiresAt, initialUpdatedAt]);
+    setDurationTouched(false);
+  }, [
+    open,
+    initialText,
+    initialEmoji,
+    initialExpiresAt,
+    initialUpdatedAt,
+    hasExistingStatus,
+  ]);
 
-  const initialExpiration = initialExpiresAt
-    ? new Date(initialExpiresAt * 1_000)
-    : null;
-  const hasFutureInitialExpiration = Boolean(
-    initialExpiration && initialExpiration.getTime() > Date.now(),
-  );
-  const roundedInitialExpiration = initialExpiration
-    ? roundUpToHalfHour(initialExpiration)
-    : null;
-  const initialDuration = hasFutureInitialExpiration
-    ? inferredDuration(initialExpiresAt, initialUpdatedAt)
-    : "Today";
   const hasContent = Boolean(text.trim() || emoji);
   const effectiveEmoji =
     emoji || (text.trim() ? DEFAULT_USER_STATUS_EMOJI : "");
   const initialEffectiveEmoji =
-    initialEmoji || (initialText.trim() ? DEFAULT_USER_STATUS_EMOJI : "");
+    baseline.emoji || (baseline.text.trim() ? DEFAULT_USER_STATUS_EMOJI : "");
   const isDirty =
-    text.trim() !== initialText.trim() ||
+    text.trim() !== baseline.text.trim() ||
     effectiveEmoji !== initialEffectiveEmoji ||
-    duration !== initialDuration ||
+    durationTouched ||
     (duration === "Custom" &&
-      initialDuration === "Custom" &&
-      hasFutureInitialExpiration &&
-      roundedInitialExpiration !== null &&
-      customUntil.getTime() !== roundedInitialExpiration.getTime());
+      baseline.duration === "Custom" &&
+      baseline.customUntil !== null &&
+      customUntil.getTime() !== baseline.customUntil.getTime());
   const canSave =
     hasContent &&
     isDirty &&
@@ -249,7 +284,8 @@ export function SetStatusDialog({
     setPickerOpen(false);
   }
 
-  function expirationUnixSeconds() {
+  function expirationUnixSeconds(): number | undefined {
+    if (!durationTouched) return baseline.expiresAt;
     const now = new Date();
     const expiresAt = (() => {
       switch (duration) {
@@ -298,7 +334,7 @@ export function SetStatusDialog({
         data-testid="set-status-dialog"
         footer={
           <div className="flex w-full items-center justify-between gap-3">
-            {hasExistingStatus ? (
+            {baseline.hasExistingStatus ? (
               <Button
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 data-testid="set-status-clear"
@@ -381,7 +417,10 @@ export function SetStatusDialog({
                 <DropdownMenuItem
                   className="justify-between"
                   key={option}
-                  onSelect={() => setDuration(option)}
+                  onSelect={() => {
+                    setDuration(option);
+                    setDurationTouched(true);
+                  }}
                 >
                   {option}
                   {duration === option ? <Check className="h-4 w-4" /> : null}
@@ -412,6 +451,7 @@ export function SetStatusDialog({
                     mode="single"
                     onSelect={(selected) => {
                       if (!selected) return;
+                      setDurationTouched(true);
                       setCustomUntil((current) =>
                         withCustomDate(current, selected),
                       );
@@ -429,12 +469,9 @@ export function SetStatusDialog({
                     type="button"
                   >
                     <span>
-                      {
-                        HALF_HOUR_TIMES.find(
-                          (time) =>
-                            time.value === toLocalTimeValue(customUntil),
-                        )?.label
-                      }
+                      {HALF_HOUR_TIMES.find(
+                        (time) => time.value === toLocalTimeValue(customUntil),
+                      )?.label ?? formattedTime(customUntil)}
                     </span>
                     <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
                   </button>
@@ -451,11 +488,12 @@ export function SetStatusDialog({
                     <DropdownMenuItem
                       className="justify-between"
                       key={time.value}
-                      onSelect={() =>
+                      onSelect={() => {
+                        setDurationTouched(true);
                         setCustomUntil((current) =>
                           withCustomTime(current, time.value),
-                        )
-                      }
+                        );
+                      }}
                     >
                       {time.label}
                       {time.value === toLocalTimeValue(customUntil) ? (
@@ -469,7 +507,7 @@ export function SetStatusDialog({
           ) : null}
         </StatusSection>
 
-        {!hasExistingStatus ? (
+        {!baseline.hasExistingStatus ? (
           <StatusSection label="Quick statuses">
             {PRESETS.map((preset) => (
               <button

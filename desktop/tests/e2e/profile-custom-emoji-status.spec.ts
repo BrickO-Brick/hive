@@ -31,6 +31,42 @@ async function openProfilePopover(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("profile-popover")).toBeVisible();
 }
 
+async function waitForMockGlobalKindSubscription(
+  page: import("@playwright/test").Page,
+  kind: number,
+) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (currentKind) =>
+          window.__BUZZ_E2E_HAS_MOCK_GLOBAL_KIND_SUBSCRIPTION__?.(
+            currentKind,
+          ) ?? false,
+        kind,
+      ),
+    )
+    .toBe(true);
+}
+
+async function seedMockStatus(
+  page: import("@playwright/test").Page,
+  input: {
+    text: string;
+    emoji?: string;
+    expiresAt?: number;
+    createdAt?: number;
+  },
+) {
+  await waitForMockGlobalKindSubscription(page, 30315);
+  await page.evaluate((status) => {
+    window.__BUZZ_E2E_SET_MOCK_USER_STATUS__?.(status);
+  }, input);
+  await openProfilePopover(page);
+  await expect(page.getByTestId("profile-popover-set-status")).toContainText(
+    input.text,
+  );
+}
+
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page, { relaySelf: MOCK_IDENTITY_PUBKEY });
   const PNG = Buffer.from(
@@ -155,6 +191,114 @@ test("set status dialog uses the desktop modal with shared status choices", asyn
     clip: { height: 700, width: 600, x: 340, y: 10 },
     path: "test-results/profile-status/06-custom-status-time.png",
   });
+});
+
+test("keeps an open status draft when the saved status expires", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  await seedMockStatus(page, {
+    text: "Original draft",
+    emoji: "📝",
+    expiresAt: nowSeconds + 60,
+    createdAt: nowSeconds,
+  });
+  await page.getByTestId("profile-popover-set-status").click();
+  const dialog = page.getByTestId("set-status-dialog");
+  await dialog.getByTestId("set-status-input").fill("Unsaved draft");
+  await page.getByTestId("set-status-duration").click();
+  await page.getByRole("menuitem", { name: "This week" }).click();
+
+  await page.evaluate(
+    ({ createdAt, expiresAt }) => {
+      window.__BUZZ_E2E_SET_MOCK_USER_STATUS__?.({
+        text: "Original draft",
+        emoji: "📝",
+        createdAt,
+        expiresAt,
+      });
+    },
+    { createdAt: nowSeconds + 1, expiresAt: nowSeconds },
+  );
+  await expect(page.getByTestId("sidebar-user-status")).toHaveCount(0);
+
+  await expect(dialog.getByTestId("set-status-input")).toHaveValue(
+    "Unsaved draft",
+  );
+  await expect(page.getByTestId("set-status-duration")).toContainText(
+    "This week",
+  );
+  await expect(dialog.getByText("Quick statuses", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(dialog.getByTestId("set-status-clear")).toBeVisible();
+});
+
+test("can apply Today to an existing status without an expiration", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  await seedMockStatus(page, {
+    text: "Indefinite status",
+    emoji: "♾️",
+    createdAt: nowSeconds,
+  });
+  await page.getByTestId("profile-popover-set-status").click();
+  const dialog = page.getByTestId("set-status-dialog");
+  await expect(dialog.getByLabel("Save status")).toBeDisabled();
+
+  await page.getByTestId("set-status-duration").click();
+  await page.getByRole("menuitem", { name: "Today" }).click();
+  await expect(dialog.getByLabel("Save status")).toBeEnabled();
+  await dialog.getByTestId("set-status-save").click();
+
+  const expiration = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_SIGNED_EVENTS__
+        ?.filter((event) => event.kind === 30315)
+        .at(-1)
+        ?.tags.find((tag) => tag[0] === "expiration")?.[1],
+  );
+  expect(Number(expiration)).toBeGreaterThan(nowSeconds);
+});
+
+test("preserves a minute-precision custom deadline when only text changes", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const { createdAt, expiresAt } = await page.evaluate(() => {
+    const now = new Date();
+    const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1_000);
+    expiration.setHours(10, 10, 0, 0);
+    return {
+      createdAt: Math.floor(now.getTime() / 1_000),
+      expiresAt: Math.floor(expiration.getTime() / 1_000),
+    };
+  });
+  await seedMockStatus(page, {
+    text: "Mobile deadline",
+    emoji: "📱",
+    createdAt,
+    expiresAt,
+  });
+  await page.getByTestId("profile-popover-set-status").click();
+  const dialog = page.getByTestId("set-status-dialog");
+  await expect(dialog.getByLabel("Status expiration time")).toContainText(
+    "10:10",
+  );
+  await dialog.getByTestId("set-status-input").fill("Edited desktop text");
+  await dialog.getByTestId("set-status-save").click();
+
+  const publishedExpiration = await page.evaluate(
+    () =>
+      window.__BUZZ_E2E_SIGNED_EVENTS__
+        ?.filter((event) => event.kind === 30315)
+        .at(-1)
+        ?.tags.find((tag) => tag[0] === "expiration")?.[1],
+  );
+  expect(Number(publishedExpiration)).toBe(expiresAt);
 });
 
 test("profile popover renders a custom emoji status as an image", async ({

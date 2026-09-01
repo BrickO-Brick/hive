@@ -3,14 +3,14 @@ import test from "node:test";
 
 import {
   HuddlePresenceTracker,
-  HUDDLE_ACTIVE_LOOKBACK_SECONDS,
   HUDDLE_LIFECYCLE_PAGE_LIMIT,
-  fetchActiveHuddleLifecycle,
+  fetchHuddleLifecycleHistory,
   reconstructHuddlePresence,
 } from "./huddlePresence.ts";
 
 const ALICE = "a".repeat(64);
 const BOB = "b".repeat(64);
+const CHARLIE = "d".repeat(64);
 const RELAY = "c".repeat(64);
 const ATTACKER = "d".repeat(64);
 
@@ -156,6 +156,7 @@ test("ignores an older replay for the same admission", () => {
       rosterRevision: 3,
     }),
   );
+  assert.equal(tracker.snapshot().has(BOB), false);
   tracker.apply(
     participantEvent({
       id: "2",
@@ -184,7 +185,7 @@ test("retains a legacy leave tombstone across snapshots", () => {
   assert.equal(tracker.snapshot().has(BOB), false);
 });
 
-test("ignores an older revision from a different admission", () => {
+test("accepts an older revision from another participant and admission", () => {
   const tracker = new HuddlePresenceTracker(RELAY);
   tracker.apply(event({ id: "1", kind: 48100 }));
   tracker.apply(
@@ -203,11 +204,38 @@ test("ignores an older revision from a different admission", () => {
         kind: 48101,
         admissionId: "old",
         rosterRevision: 2,
+        tags: [["p", CHARLIE]],
       }),
     ),
-    false,
+    true,
   );
-  assert.equal(tracker.snapshot().has(BOB), false);
+  assert.equal(tracker.snapshot().has(CHARLIE), true);
+});
+
+test("accepts lower revisions from a new relay room generation", () => {
+  const tracker = new HuddlePresenceTracker(RELAY);
+  tracker.apply(event({ id: "1", kind: 48100 }));
+  tracker.apply(
+    participantEvent({
+      id: "2",
+      kind: 48101,
+      admissionId: "before-restart",
+      rosterRevision: 20,
+    }),
+  );
+
+  assert.equal(
+    tracker.apply(
+      participantEvent({
+        id: "3",
+        kind: 48101,
+        admissionId: "after-restart",
+        rosterRevision: 1,
+      }),
+    ),
+    true,
+  );
+  assert.equal(tracker.snapshot().has(BOB), true);
 });
 
 test("rejects an unauthorized end signer", () => {
@@ -257,7 +285,7 @@ test("tracks simultaneous sessions and clears only the ended huddle", () => {
   assert.deepEqual([...result], [BOB]);
 });
 
-test("pages the complete bounded active-huddle window", async () => {
+test("pages complete lifecycle history without a fixed lifetime horizon", async () => {
   const firstPage = Array.from(
     { length: HUDDLE_LIFECYCLE_PAGE_LIMIT },
     (_, index) =>
@@ -274,15 +302,19 @@ test("pages the complete bounded active-huddle window", async () => {
   ];
   const filters = [];
 
-  const result = await fetchActiveHuddleLifecycle(async (filter) => {
+  const result = await fetchHuddleLifecycleHistory(async (filter) => {
     filters.push(filter);
     return filters.length === 1 ? firstPage : secondPage;
-  }, 10_000);
+  });
 
   assert.equal(result.length, HUDDLE_LIFECYCLE_PAGE_LIMIT + 1);
-  assert.equal(filters[0].since, 10_000 - HUDDLE_ACTIVE_LOOKBACK_SECONDS);
+  assert.equal(filters[0].since, undefined);
   assert.equal(filters[0].until, undefined);
   assert.equal(filters[1].until, boundary);
+  assert.equal(
+    result.some((item) => item.id === "older-start"),
+    true,
+  );
 });
 
 test("refuses to claim exhaustive history at a dense timestamp", async () => {
@@ -291,7 +323,7 @@ test("refuses to claim exhaustive history at a dense timestamp", async () => {
   );
 
   await assert.rejects(
-    fetchActiveHuddleLifecycle(async () => page, 10_000),
+    fetchHuddleLifecycleHistory(async () => page),
     /timestamp exceeds one relay page/,
   );
 });

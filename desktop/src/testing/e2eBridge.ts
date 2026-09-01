@@ -1207,6 +1207,13 @@ declare global {
       ownerPubkey: string;
       kind: number;
     }) => boolean;
+    __BUZZ_E2E_HAS_MOCK_GLOBAL_KIND_SUBSCRIPTION__?: (kind: number) => boolean;
+    __BUZZ_E2E_SET_MOCK_USER_STATUS__?: (input: {
+      text: string;
+      emoji?: string;
+      expiresAt?: number;
+      createdAt?: number;
+    }) => RelayEvent;
     __BUZZ_E2E_EMIT_MOCK_MESSAGE__?: (input: {
       channelName: string;
       content: string;
@@ -11188,6 +11195,26 @@ export function maybeInstallE2eTauriMocks() {
       id,
     );
   };
+  window.__BUZZ_E2E_SET_MOCK_USER_STATUS__ = ({
+    text,
+    emoji,
+    expiresAt,
+    createdAt,
+  }) => {
+    const tags = [["d", "general"]];
+    if (emoji) tags.push(["emoji", emoji]);
+    if (expiresAt) tags.push(["expiration", String(expiresAt)]);
+    const event = createMockEvent(
+      KIND_USER_STATUS,
+      text,
+      tags,
+      DEFAULT_MOCK_IDENTITY.pubkey,
+      createdAt,
+    );
+    recordMockUserStatus(event);
+    emitMockGlobalEvent(event);
+    return event;
+  };
   window.__BUZZ_E2E_PREPEND_MOCK_HISTORY__ = prependMockHistory;
   window.__BUZZ_E2E_EMIT_MOCK_TYPING__ = ({
     channelName,
@@ -11223,6 +11250,8 @@ export function maybeInstallE2eTauriMocks() {
     ownerPubkey,
     kind,
   }) => hasMockOwnerKindSubscription(ownerPubkey, kind);
+  window.__BUZZ_E2E_HAS_MOCK_GLOBAL_KIND_SUBSCRIPTION__ = (kind) =>
+    hasMockLiveSubscription(GLOBAL_MOCK_SUBSCRIPTION, kind);
   window.__BUZZ_E2E_REPLACE_MOCK_TEAM_CATALOG_HEAD__ = (event) => {
     const dTag = event.tags.find((tag) => tag[0] === "d")?.[1];
     const existingIndex = mockTeamCatalogEvents.findIndex(
