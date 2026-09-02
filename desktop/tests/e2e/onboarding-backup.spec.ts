@@ -13,7 +13,7 @@ async function enterMachineBackup(page: import("@playwright/test").Page) {
     skipOnboardingSeed: true,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
 }
 
 async function openBackupOptions(page: import("@playwright/test").Page) {
@@ -342,7 +342,7 @@ test("backup step back button returns to machine identity choice", async ({
     page.getByRole("button", { name: "Continue setup" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Use a different key instead" }),
+    page.getByRole("button", { name: "Recover an existing Hive identity" }),
   ).toBeVisible();
 });
 
@@ -359,7 +359,7 @@ test("reveal shows inline error when get_nsec fails and Next still advances", as
     { skipCommunitySeed: true, skipOnboardingSeed: true },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
 
   await expect(page.getByTestId("onboarding-page-backup")).toBeVisible();
   await page.getByTestId("backup-key-reveal-toggle").click();
@@ -380,7 +380,7 @@ test("reveal retry succeeds after initial failure", async ({ page }) => {
     { skipCommunitySeed: true, skipOnboardingSeed: true },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
 
   await page.getByTestId("backup-key-reveal-toggle").click();
   await expect(page.getByTestId("backup-copy-error")).toBeVisible();

@@ -24,12 +24,40 @@ export function MantapSsoPage() {
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    const desktopCallback = search.get("desktop_callback");
     const ticket = new URLSearchParams(window.location.hash.slice(1)).get(
       "ticket",
     );
-    window.history.replaceState(null, "", window.location.pathname);
+    const validDesktopCallback = (() => {
+      if (!desktopCallback) return null;
+      try {
+        const url = new URL(desktopCallback);
+        return url.protocol === "http:" && url.hostname === "127.0.0.1"
+          ? url
+          : null;
+      } catch {
+        return null;
+      }
+    })();
     if (!ticket) {
-      window.location.replace("https://mantap.onebrick.io");
+      if (!validDesktopCallback) {
+        window.location.replace("https://mantap.onebrick.io");
+        return;
+      }
+      const loginUrl = new URL("https://mantap.onebrick.io");
+      loginUrl.searchParams.set("returnTo", window.location.href);
+      window.location.replace(loginUrl);
+      return;
+    }
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (validDesktopCallback) {
+      validDesktopCallback.searchParams.set("ticket", ticket);
+      window.location.replace(validDesktopCallback);
       return;
     }
     let current = true;

@@ -44,6 +44,34 @@ export async function persistCurrentIdentity(): Promise<Identity> {
   );
 }
 
+export type MantapLogin = {
+  email: string;
+  subject: string;
+  pubkey: string;
+  channelId: string;
+  role: string;
+};
+
+export function requestMantapOtp(username: string, password: string): Promise<void> {
+  return invokeTauri<void>("request_mantap_otp", { username, password });
+}
+
+export function startMantapLogin(
+  username: string,
+  password: string,
+  otp: string,
+): Promise<MantapLogin> {
+  return invokeTauri<MantapLogin>("start_mantap_login", {
+    username,
+    password,
+    otp,
+  });
+}
+
+export function cancelMantapLogin(): Promise<void> {
+  return invokeTauri<void>("cancel_mantap_login");
+}
+
 /**
  * Wipe all local Buzz state (keychain, App Support, WebKit, nest, OAuth cache,
  * CLI symlinks) and relaunch into first-run onboarding.

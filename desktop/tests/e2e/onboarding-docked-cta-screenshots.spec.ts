@@ -30,44 +30,19 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/01-landing.png` });
 
-  await page.getByRole("button", { name: "Use an existing key" }).click();
   await expect(
-    page.getByRole("heading", { name: "Enter your private key" }),
-  ).toBeVisible();
-  const importCard = page.getByTestId("nostr-import-card");
-  await expect(importCard).toBeVisible();
-  await expect(page.getByLabel("Private key", { exact: true })).toBeVisible();
-  // The production card uses a baked nine-slice texture: no runtime SVG
-  // filter, measurement, or texture regeneration during resize.
-  await expect(importCard).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-  await expect(importCard).toHaveCSS("border-top-width", "0px");
-  await expect(importCard).toHaveCSS("border-image-repeat", "repeat");
-  await expect(importCard).toHaveCSS("border-image-outset", "96px");
-  // Icon SVGs (e.g. the reveal toggle) are fine; a filter would mean the
-  // texture regressed to the runtime SVG pipeline.
-  await expect(importCard.locator("svg filter")).toHaveCount(0);
+    page.getByRole("button", { name: /Recover an existing Hive identity/i }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to Mantap" })).toBeVisible();
+  await page.getByLabel("OneBrick email").fill("brickster@onebrick.io");
+  await page.getByLabel("Password").fill("test-password");
+  await page.getByRole("button", { name: "Continue with OTP" }).click();
+  await expect(page.getByRole("heading", { name: "Enter your OTP" })).toBeVisible();
   await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/01b-enter-key.png` });
-
-  await page.getByTestId("nostr-import-nsec-input").fill(NCRYPTSEC);
-  await expect(
-    page.getByRole("heading", { name: "Unlock your account" }),
-  ).toBeVisible();
-  await expect(page.getByTestId("backup-password-timeline")).toBeVisible();
-  await expect(page.getByTestId("restore-ncryptsec-affordance")).toBeVisible();
-  await expect(page.getByTestId("restore-unlock-icon")).toBeVisible();
-  await expect(page.getByTestId("nostr-import-passphrase")).toBeFocused();
-  await waitForAnimations(page);
-  await page.screenshot({ path: `${SHOT_DIR}/01c-restore-backup.png` });
-
-  // The first Back returns to key selection; the second leaves import.
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(importCard).toBeVisible();
-  await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Create a new identity key" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await page.screenshot({ path: `${SHOT_DIR}/01b-mantap-otp.png` });
+  await page.getByLabel("4-digit OTP").fill("1234");
+  await page.getByRole("button", { name: "Verify and sign in" }).click();
   await expect(
     page.getByRole("heading", {
       name: "Your unique identity key has been created",
@@ -143,7 +118,9 @@ test("machine key import remains usable in a short viewport", async ({
     skipOnboardingSeed: true,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Use an existing key" }).click();
+  await page
+    .getByRole("button", { name: "Recover an existing Hive identity" })
+    .click();
 
   const heading = page.getByRole("heading", { name: "Enter your private key" });
   const input = page.getByLabel("Private key", { exact: true });
@@ -185,7 +162,7 @@ test("backup options keep one-column geometry on narrow windows", async ({
     skipOnboardingSeed: true,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Create a new identity key" }).click();
+  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
   await expect(
     page.getByRole("heading", {
       name: "Your unique identity key has been created",

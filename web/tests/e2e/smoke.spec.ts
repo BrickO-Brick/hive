@@ -61,6 +61,24 @@ test("Hive redirects a missing SSO ticket to Mantap", async ({ page }) => {
   await expect(page).toHaveURL("https://mantap.onebrick.io/");
 });
 
+test("Hive returns a Mantap ticket to the native desktop callback", async ({
+  page,
+}) => {
+  const ticket = mantapTicket("mantap-user:bricko", "bricko@onebrick.io");
+  const callback = "http://127.0.0.1:43123/callback/native-nonce";
+  await page.route("http://127.0.0.1:43123/**", async (route) => {
+    await route.fulfill({ status: 200, body: "Hive sign-in complete" });
+  });
+
+  await page.goto(
+    `/mantul-sso?desktop_callback=${encodeURIComponent(callback)}#ticket=${ticket}`,
+  );
+
+  await expect(page).toHaveURL(
+    `${callback}?ticket=${encodeURIComponent(ticket)}`,
+  );
+});
+
 test("Hive switches Mantap accounts without rebinding their browser identities", async ({
   page,
 }) => {

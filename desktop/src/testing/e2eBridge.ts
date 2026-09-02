@@ -12034,6 +12034,20 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "get_builderlab_auth":
         return activeConfig?.mock?.builderlabAuth ?? null;
+      case "request_mantap_otp":
+        return null;
+      case "start_mantap_login": {
+        const activeIdentity = identity ?? DEFAULT_MOCK_IDENTITY;
+        return {
+          email: "brickster@onebrick.io",
+          subject: "mantap-user:brickster",
+          pubkey: activeIdentity.pubkey,
+          channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+          role: "member",
+        };
+      }
+      case "cancel_mantap_login":
+        return null;
       case "start_builderlab_login": {
         const delayMs = activeConfig?.mock?.builderlabLoginDelayMs ?? 0;
         if (delayMs > 0)
