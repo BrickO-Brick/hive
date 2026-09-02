@@ -389,4 +389,14 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn nip05_reassignment_is_scoped_to_the_same_mantap_subject() {
+        assert!(REASSIGN_SUBJECT_NIP05_QUERY.contains("pubkey <> $2"));
+        assert!(REASSIGN_SUBJECT_NIP05_QUERY.contains("lower(nip05_handle) = lower($3)"));
+        assert!(REASSIGN_SUBJECT_NIP05_QUERY.contains("mantap_sso_bindings.subject = $4"));
+        assert!(REASSIGN_SUBJECT_NIP05_QUERY
+            .contains("mantap_sso_bindings.community_id = users.community_id"));
+        assert!(REASSIGN_SUBJECT_NIP05_QUERY.contains("mantap_sso_bindings.pubkey = users.pubkey"));
+    }
 }

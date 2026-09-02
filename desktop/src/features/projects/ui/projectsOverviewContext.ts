@@ -210,6 +210,7 @@ function overviewContextPeople({
   if (filter === "prs") return peopleWithKind(counts, "reviews");
   if (filter === "repositories") return commitAuthors;
   if (filter === "channels") return [];
+  if (filter === "sources") return [];
   if (filter === "all") {
     return uniquePubkeys([...peopleWithKind(counts, "any"), ...commitAuthors]);
   }
@@ -235,6 +236,16 @@ export function projectsOverviewContext(
   const channelCount = uniqueProjectRelatedChannelCount(readModels);
   const repositories = repositoryCount(readModels);
   const people = overviewContextPeople(input);
+
+  if (filter === "sources") {
+    return {
+      action: null,
+      detailsTitle: "Source catalog",
+      people,
+      stats: [],
+      title: "GitHub sources",
+    };
+  }
 
   if (filter === "repositories") {
     return {

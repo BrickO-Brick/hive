@@ -9,6 +9,7 @@ import type { ProjectsOverviewAgentContextItem } from "@/features/projects/lib/p
 import { collectProjectRelatedChannelRows } from "@/features/projects/lib/projectRelatedChannels";
 import type { ProjectsFilter } from "@/features/projects/lib/projectsViewHelpers";
 import type { Channel } from "@/shared/api/types";
+import type { GitHubRepositoryCatalogEntry } from "@/shared/api/githubRepositoryCatalog";
 import { buildProjectsActivityAgentContextItems } from "./ProjectsActivityFeed";
 
 export type ProjectsViewAgentContextInput = {
@@ -22,6 +23,7 @@ export type ProjectsViewAgentContextInput = {
   visibleProjects: Project[];
   visiblePullRequests: ProjectPullRequestListItem[];
   visibleRepositories: Array<{ project: Project; repository: Repository }>;
+  visibleSourceRepositories?: GitHubRepositoryCatalogEntry[];
 };
 
 function detail(parts: Array<string | number | null | undefined>) {
@@ -41,6 +43,7 @@ export function buildProjectsViewAgentContextItems({
   visibleProjects,
   visiblePullRequests,
   visibleRepositories,
+  visibleSourceRepositories = [],
 }: ProjectsViewAgentContextInput): ProjectsOverviewAgentContextItem[] {
   if (filter === "all") {
     return buildProjectsActivityAgentContextItems({
@@ -67,6 +70,19 @@ export function buildProjectsViewAgentContextItems({
       kind: "repository",
       reference: repository.repoAddress,
       title: repository.name,
+    }));
+  }
+  if (filter === "sources") {
+    return visibleSourceRepositories.map((repository) => ({
+      detail: detail([
+        repository.description,
+        repository.language,
+        repository.private ? "private" : "public",
+        `Default branch: ${repository.defaultBranch}`,
+      ]),
+      kind: "source repository",
+      reference: repository.url,
+      title: `${repository.owner}/${repository.name}`,
     }));
   }
   if (filter === "issues") {

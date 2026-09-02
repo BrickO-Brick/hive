@@ -2,6 +2,7 @@ import {
   CircleDot,
   FolderGit2,
   Folders,
+  Cloud,
   GitPullRequest,
   Hash,
   type LucideIcon,
@@ -14,6 +15,7 @@ export function projectsSectionTitle(filter: ProjectsFilter) {
   if (filter === "prs") return "Reviews";
   if (filter === "issues") return "Tasks";
   if (filter === "repositories") return "Repositories";
+  if (filter === "sources") return "Sources";
   if (filter === "channels") return "Channels";
   return "Projects";
 }
@@ -22,6 +24,7 @@ export function projectsSectionIcon(filter: ProjectsFilter): LucideIcon {
   if (filter === "prs") return GitPullRequest;
   if (filter === "issues") return CircleDot;
   if (filter === "repositories") return FolderGit2;
+  if (filter === "sources") return Cloud;
   if (filter === "channels") return Hash;
   return Folders;
 }

@@ -12602,6 +12602,181 @@ export function maybeInstallE2eTauriMocks() {
         );
       case "list_project_local_repositories":
         return [];
+      case "list_github_owner_repositories":
+        return [
+          {
+            owner: "BrickO-Brick",
+            name: "hive",
+            description: "A hive mind communication platform",
+            url: "https://github.com/BrickO-Brick/hive",
+            clone_url: "https://github.com/BrickO-Brick/hive.git",
+            default_branch: "main",
+            language: "Rust",
+            archived: false,
+            private: false,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-09-01T23:11:59Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "BrickR",
+            description: "External security verification and recovery",
+            url: "https://github.com/BrickO-Brick/BrickR",
+            clone_url: "https://github.com/BrickO-Brick/BrickR.git",
+            default_branch: "main",
+            language: "Python",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-08-29T03:05:53Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "client-be",
+            description: "OneBrick customer application backend",
+            url: "https://github.com/BrickO-Brick/client-be",
+            clone_url: "https://github.com/BrickO-Brick/client-be.git",
+            default_branch: "main",
+            language: "Go",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-09-01T15:26:51Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "mantul-module-sdk",
+            description: "Mantul public module SDK",
+            url: "https://github.com/BrickO-Brick/mantul-module-sdk",
+            clone_url: "https://github.com/BrickO-Brick/mantul-module-sdk.git",
+            default_branch: "main",
+            language: "TypeScript",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-08-05T09:01:41Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "onebrick-stack",
+            description: "Single-EC2 OneBrick deployment stack",
+            url: "https://github.com/BrickO-Brick/onebrick-stack",
+            clone_url: "https://github.com/BrickO-Brick/onebrick-stack.git",
+            default_branch: "main",
+            language: "MDX",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-09-01T14:58:33Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "ClickHouse",
+            description: "Shared OneBrick ClickHouse runtime and monitoring",
+            url: "https://github.com/BrickO-Brick/ClickHouse",
+            clone_url: "https://github.com/BrickO-Brick/ClickHouse.git",
+            default_branch: "main",
+            language: "Shell",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-08-05T10:26:24Z",
+          },
+          {
+            owner: "BrickO-Brick",
+            name: "wiki-onebrick",
+            description: "Private centralized engineering wiki",
+            url: "https://github.com/BrickO-Brick/wiki-onebrick",
+            clone_url: "https://github.com/BrickO-Brick/wiki-onebrick.git",
+            default_branch: "main",
+            language: "TypeScript",
+            archived: false,
+            private: true,
+            created_at: "2026-08-01T00:00:00Z",
+            updated_at: "2026-08-22T14:13:26Z",
+          },
+        ];
+      case "inspect_github_repository_workspace":
+      case "prepare_github_repository_workspace":
+        return {
+          owner: "BrickO-Brick",
+          name: "hive",
+          path: "/tmp/buzz/REPOS/BrickO-Brick--hive",
+          branch: "feature/human-publication",
+          base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          base_tree: "cccccccccccccccccccccccccccccccccccccccc",
+          result_tree: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          dirty: true,
+          additions: 12,
+          deletions: 3,
+          files: [
+            {
+              path: "desktop/src/features/projects/publisher.ts",
+              additions: 12,
+              deletions: 3,
+              patch:
+                "@@ -1,4 +1,5 @@\n-export const actor = 'agent';\n+export const actor = 'user';\n+export const remotePublicationAuthorized = false;",
+              truncated: false,
+            },
+          ],
+        };
+      case "run_github_repository_test": {
+        const input = payload as { expectedResultTree: string };
+        return {
+          exit_code: 0,
+          passed: true,
+          duration_ms: 420,
+          stdout: "test result: ok. 4 passed; 0 failed",
+          stderr: "",
+          tested_tree: input.expectedResultTree,
+          finished_tree: input.expectedResultTree,
+          tree_changed: false,
+        };
+      }
+      case "get_github_repository_publication_identity":
+        return {
+          git_name: "BrickO User",
+          git_email: "user@bricko.example",
+          github_login: "bricko-owner",
+          local_commit_ready: true,
+          remote_publication_ready: true,
+          blockers: [],
+        };
+      case "commit_github_repository_change": {
+        const input = payload as {
+          branchName: string;
+          expectedResultTree: string;
+        };
+        return {
+          branch: input.branchName,
+          commit: "dddddddddddddddddddddddddddddddddddddddd",
+          result_tree: input.expectedResultTree,
+          author_name: "BrickO User",
+          author_email: "user@bricko.example",
+          signed_off_by: "BrickO User <user@bricko.example>",
+          checked_out: true,
+          index_synchronized: true,
+          warning: null,
+        };
+      }
+      case "publish_github_repository_change": {
+        const input = payload as {
+          baseBranch: string;
+          branchName: string;
+          expectedCommit: string;
+          expectedGithubLogin: string;
+        };
+        return {
+          branch: input.branchName,
+          commit: input.expectedCommit,
+          base_branch: input.baseBranch,
+          github_login: input.expectedGithubLogin,
+          pull_request_number: 42,
+          pull_request_url: "https://github.com/BrickO-Brick/hive/pull/42",
+          draft: true,
+          branch_pushed: true,
+        };
+      }
       case "open_project_repository_folder":
         return null;
       case "push_project_local_repository": {

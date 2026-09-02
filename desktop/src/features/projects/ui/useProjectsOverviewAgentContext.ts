@@ -31,6 +31,7 @@ export function useProjectsOverviewAgentContext(
     visibleProjects,
     visiblePullRequests,
     visibleRepositories,
+    visibleSourceRepositories,
   } = input;
   const [agentContext, setAgentContext] =
     React.useState<ProjectDetailAgentContext | null>(null);
@@ -52,6 +53,7 @@ export function useProjectsOverviewAgentContext(
           visibleProjects,
           visiblePullRequests,
           visibleRepositories,
+          visibleSourceRepositories,
         }),
       ),
     [
@@ -65,6 +67,7 @@ export function useProjectsOverviewAgentContext(
       visibleProjects,
       visiblePullRequests,
       visibleRepositories,
+      visibleSourceRepositories,
     ],
   );
 

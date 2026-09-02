@@ -41,6 +41,12 @@ import { ProjectAgentContextStrip } from "./ProjectAgentContextStrip";
 import { AgentContextPayloadPreview } from "./AgentContextPayloadPreview";
 import { ProjectAgentSelectionComposerBanner } from "./ProjectAgentSelectionComposerBanner";
 
+const GitHubChangeProposalWorkspace = React.lazy(() =>
+  import("./GitHubChangeProposalWorkspace").then((module) => ({
+    default: module.GitHubChangeProposalWorkspace,
+  })),
+);
+
 type ProjectAgentConversation = {
   agent: AgentCandidate;
   channel: Channel;
@@ -99,6 +105,10 @@ export function ProjectAgentChatPanel({
     );
   const [conversation, setConversation] =
     React.useState<ProjectAgentConversation | null>(null);
+  const [changeProposalState, setChangeProposalState] = React.useState<{
+    repoAddress: string;
+    context: NonNullable<ProjectDetailAgentContext["changeProposal"]>;
+  } | null>(null);
   const candidates = useAgentCandidates();
   const channelsQuery = useChannelsQuery();
   const profileQuery = useProfileQuery();
@@ -114,12 +124,27 @@ export function ProjectAgentChatPanel({
         normalizePubkey(selectedAgent.pubkey)
       ]?.avatarUrl ?? null)
     : null;
+  const changeProposalContext =
+    changeProposalState?.repoAddress === context.repoAddress
+      ? changeProposalState.context
+      : null;
   // Computed once per context so the pre-send preview and the appended
   // payload are byte-identical: the user must be able to inspect exactly
   // what will be signed under their key, not a paraphrase of it.
+  const effectiveContext = React.useMemo(
+    () =>
+      changeProposalContext
+        ? {
+            ...context,
+            changeProposal: changeProposalContext,
+            source: "local" as const,
+          }
+        : context,
+    [changeProposalContext, context],
+  );
   const contextPayload = React.useMemo(
-    () => projectDetailAgentContextBlock(context),
-    [context],
+    () => projectDetailAgentContextBlock(effectiveContext),
+    [effectiveContext],
   );
   const restorableConversation = React.useMemo(
     () =>
@@ -151,7 +176,7 @@ export function ProjectAgentChatPanel({
       mediaTags?: string[][],
     ) => {
       const trimmed = content.trim();
-      if (!trimmed || !selectedAgent || isSending) return;
+      if (!trimmed || !selectedAgent || isSending) return false;
       setIsSending(true);
       try {
         // The awaits below suspend across a possible community switch;
@@ -228,10 +253,12 @@ export function ProjectAgentChatPanel({
           setStoredConversation(stored);
           writeStoredProjectsAgentConversation(storageScope, stored);
         }
+        return true;
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "Failed to reach the agent",
         );
+        return false;
       } finally {
         setIsSending(false);
       }
@@ -249,6 +276,40 @@ export function ProjectAgentChatPanel({
       startAgentMutation,
       storageScope,
     ],
+  );
+
+  const handleRecordApproval = React.useCallback(
+    async (content: string) => {
+      const recorded = await handleSubmit(content, []);
+      if (!recorded) {
+        throw new Error("The approval message was not accepted by Buzz.");
+      }
+    },
+    [handleSubmit],
+  );
+  const handleProposalContextChange = React.useCallback(
+    (
+      proposalContext: NonNullable<
+        ProjectDetailAgentContext["changeProposal"]
+      > | null,
+    ) => {
+      setChangeProposalState(
+        proposalContext
+          ? { repoAddress: context.repoAddress, context: proposalContext }
+          : null,
+      );
+    },
+    [context.repoAddress],
+  );
+  const handleComposerSubmit = React.useCallback(
+    async (
+      content: string,
+      mentionPubkeys: string[],
+      mediaTags?: string[][],
+    ) => {
+      await handleSubmit(content, mentionPubkeys, mediaTags);
+    },
+    [handleSubmit],
   );
 
   const handleClear = React.useCallback(() => {
@@ -306,6 +367,24 @@ export function ProjectAgentChatPanel({
         {context.selection?.length ? (
           <ProjectAgentSelectionComposerBanner items={context.selection} />
         ) : null}
+        {context.sourceRepository ? (
+          <React.Suspense
+            fallback={
+              <div className="mx-3 mb-3 flex h-16 items-center justify-center text-xs text-muted-foreground">
+                Loading local proposal tools…
+              </div>
+            }
+          >
+            <GitHubChangeProposalWorkspace
+              approverPubkey={identityQuery.data?.pubkey ?? null}
+              key={context.repoAddress}
+              onContextChange={handleProposalContextChange}
+              onRecordApproval={handleRecordApproval}
+              repository={context.sourceRepository}
+              reposDir={activeCommunity?.reposDir}
+            />
+          </React.Suspense>
+        ) : null}
         <MessageComposer
           channelId={conversation?.channel.id ?? homeChannel?.id ?? null}
           channelName={selectedAgent?.name ?? "project agent"}
@@ -315,7 +394,7 @@ export function ProjectAgentChatPanel({
           draftKey={`project-agent:${storageScope ?? "unscoped"}`}
           isSending={isSending}
           layoutMode="standalone"
-          onSend={handleSubmit}
+          onSend={handleComposerSubmit}
           placeholder={
             selectedAgent
               ? `Message ${selectedAgent.name}`

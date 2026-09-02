@@ -83,6 +83,123 @@ test("repository-only relays keep the Repositories section available", async ({
   ).toBeVisible();
 });
 
+test("GitHub sources are categorized and can start a BrickO discussion", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-sources").click();
+
+  const catalog = page.getByTestId("github-source-catalog");
+  await expect(catalog).toBeVisible();
+  await expect(
+    catalog.getByText("Collaboration", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    catalog.getByText("Security & governance", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    catalog.getByTestId("github-source-repository-card"),
+  ).toHaveCount(7);
+  await waitForAnimations(page);
+  await page.screenshot({ path: `${SHOTS}/10-github-sources.png` });
+
+  await catalog
+    .getByRole("button", { name: "Discuss hive with BrickO" })
+    .click();
+  const chatRail = page.getByTestId("projects-overview-agent-rail");
+  await expect(chatRail).toBeVisible();
+  await expect(chatRail.getByTestId("project-agent-context")).toContainText(
+    "Discuss hive",
+  );
+});
+
+test("GitHub source changes require exact-tree tests and user approval", async ({
+  page,
+}) => {
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-sources").click();
+  await page.getByRole("button", { name: "Develop hive with BrickO" }).click();
+
+  const rail = page.getByTestId("projects-overview-agent-rail");
+  await expect(
+    rail.getByTestId("github-change-proposal-launcher"),
+  ).toBeVisible();
+  await rail.getByTestId("github-change-proposal-open").click();
+
+  const dialog = page.getByTestId("github-change-proposal-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId("github-proposal-diff")).toContainText(
+    "publisher.ts",
+  );
+  const approve = dialog.getByTestId("github-proposal-approve");
+  await expect(approve).toBeDisabled();
+  await dialog.getByTestId("github-proposal-run-test").click();
+  await expect(
+    dialog.getByTestId("github-proposal-test-scenario").getByText("passed"),
+  ).toBeVisible();
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(approve).toContainText("Approved");
+  const publicationGate = dialog.getByTestId("github-publication-gate");
+  await expect(publicationGate).toBeVisible();
+  await expect(
+    publicationGate.getByTestId("github-commit-author"),
+  ).toContainText("BrickO User");
+  await expect(
+    publicationGate.getByTestId("github-publication-actor"),
+  ).toContainText("@bricko-owner");
+  await expect(
+    publicationGate.getByTestId("github-publication-branch"),
+  ).toHaveValue(/users\/bricko-owner\//);
+  const commit = publicationGate.getByTestId("github-create-user-commit");
+  await expect(commit).toBeEnabled();
+  await commit.click();
+  await expect(commit).toContainText("Committed");
+  const remoteAuthorization = publicationGate.getByRole("checkbox", {
+    name: "Authorize GitHub branch push and Draft PR",
+  });
+  await expect(remoteAuthorization).toBeEnabled();
+  const openPublicationConfirmation = publicationGate.getByTestId(
+    "github-open-publication-confirmation",
+  );
+  await expect(openPublicationConfirmation).toBeDisabled();
+  await remoteAuthorization.click();
+  await expect(openPublicationConfirmation).toBeEnabled();
+  await openPublicationConfirmation.click();
+  const confirmation = page.getByTestId("github-publication-confirmation");
+  await expect(confirmation).toContainText("Publish as @bricko-owner?");
+  await confirmation.getByTestId("github-publish-user-draft-pr").click();
+  await expect(
+    publicationGate.getByRole("link", { name: /Draft PR #42/ }),
+  ).toBeVisible();
+  await expect(remoteAuthorization).toBeChecked();
+  const publicationToast = page.getByText(
+    "Draft PR published and recorded in the discussion.",
+    { exact: true },
+  );
+  await expect(publicationToast).toBeVisible();
+  await expect(publicationToast).not.toBeVisible({ timeout: 5_000 });
+  await waitForAnimations(page);
+  await dialog.screenshot({ path: `${SHOTS}/11-user-publication-gate.png` });
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(
+    rail.getByText(
+      /I approve this exact local change proposal for a local commit only\./,
+    ),
+  ).toBeVisible();
+  await expect(
+    rail.getByText(/Local commit created from the approved exact tree/),
+  ).toBeVisible();
+  await expect(
+    rail.getByText(/GitHub Draft PR published by @bricko-owner/),
+  ).toBeVisible();
+  await expect(rail.getByText(/"releaseAuthorized": false/)).toBeVisible();
+});
+
 test("projects activity overview screenshot", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("buzz-theme", "light");

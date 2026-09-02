@@ -24,6 +24,7 @@ export type ProjectsFilter =
   | "local"
   | "projects"
   | "repositories"
+  | "sources"
   | "channels"
   | "prs"
   | "issues"
@@ -88,6 +89,7 @@ export function readStoredFilter(): ProjectsFilter {
       value === "local" ||
       value === "projects" ||
       value === "repositories" ||
+      value === "sources" ||
       value === "channels" ||
       value === "prs" ||
       value === "issues" ||

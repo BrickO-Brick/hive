@@ -47,12 +47,28 @@ const base = {
   visibleProjects: [project],
   visiblePullRequests: [{ project, pullRequest, repository }],
   visibleRepositories: [{ project, repository }],
+  visibleSourceRepositories: [
+    {
+      archived: false,
+      cloneUrl: "https://github.com/BrickO-Brick/hive.git",
+      createdAt: "2026-08-01T00:00:00Z",
+      defaultBranch: "main",
+      description: "A hive mind communication platform",
+      language: "Rust",
+      name: "hive",
+      owner: "BrickO-Brick",
+      private: false,
+      updatedAt: "2026-09-01T23:11:59Z",
+      url: "https://github.com/BrickO-Brick/hive",
+    },
+  ],
 };
 
 for (const [filter, expected] of [
   ["all", "Buzz Patrol"],
   ["projects", "Buzz Patrol"],
   ["repositories", "Buzz"],
+  ["sources", "BrickO-Brick/hive"],
   ["issues", "Agent context"],
   ["prs", "Expose overview data"],
   ["channels", "#buzz-dev"],

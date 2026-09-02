@@ -104,6 +104,11 @@ import {
   useDeleteProjectHandler,
   useOpenProjectTerminalHandler,
 } from "./projectsViewWorkItems";
+import {
+  useDefaultSourcesWhenNoProjects,
+  useGitHubSourceCatalogView,
+  useGitHubSourceCatalogElement,
+} from "./useGitHubSourceCatalogView";
 
 const MANY_PROJECTS_THRESHOLD = 12;
 const PROJECTS_CONTEXT_POD_MIN_VIEWPORT_PX = 1024;
@@ -398,6 +403,7 @@ export function ProjectsView() {
     sort,
   ]);
 
+  const sourceCatalog = useGitHubSourceCatalogView(filter, searchQuery, sort);
   const visiblePullRequests = React.useMemo(() => {
     const pullRequests = projectsWorkItemsQuery.data?.pullRequests.items ?? [];
     return pullRequests
@@ -420,7 +426,6 @@ export function ProjectsView() {
         return right.pullRequest.updatedAt - left.pullRequest.updatedAt;
       });
   }, [projectsWorkItemsQuery.data, searchQuery, sort]);
-
   const visibleIssues = React.useMemo(() => {
     const issues = projectsWorkItemsQuery.data?.issues.items ?? [];
     return issues
@@ -457,6 +462,7 @@ export function ProjectsView() {
     visibleProjects,
     visiblePullRequests,
     visibleRepositories,
+    visibleSourceRepositories: sourceCatalog.repositories,
   });
   const handleFilterChange = React.useCallback(
     (nextFilter: ProjectsFilter) => {
@@ -472,6 +478,19 @@ export function ProjectsView() {
     [setSelectionAgentContext],
   );
 
+  useDefaultSourcesWhenNoProjects({
+    filter,
+    onFilterChange: handleFilterChange,
+    projectCount: projectReadModels.length,
+    projectsLoading: projectsQuery.isLoading,
+  });
+  const sourceItems = useGitHubSourceCatalogElement({
+    query: sourceCatalog.query,
+    searchQuery,
+    setAgentContext: setSelectionAgentContext,
+    sort,
+    viewMode,
+  });
   // Route by the canonical `owner:dtag` project ID — a bare dtag is
   // ambiguous across owners (forks can share the same dtag).
   const handleOpenProject = React.useCallback(
@@ -562,7 +581,7 @@ export function ProjectsView() {
     );
   }
 
-  if (projectReadModels.length === 0) {
+  if (projectReadModels.length === 0 && filter !== "sources") {
     return (
       <>
         <ProjectCreationDialog
@@ -899,6 +918,8 @@ export function ProjectsView() {
                                 />
                               ) : filter === "projects" ? (
                                 projectItems
+                              ) : filter === "sources" ? (
+                                sourceItems
                               ) : (
                                 repositoryItems
                               )}
