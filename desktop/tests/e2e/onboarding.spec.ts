@@ -701,7 +701,49 @@ test("completed users skip the loading gate while profile is still settling", as
   await expectHomeView(page);
 });
 
-test("fresh existing-identity path leads with private-key recovery", async ({
+test("first launch signs in with Mantap credentials and OTP", async ({
+  page,
+}) => {
+  await installMockBridge(page, undefined, {
+    skipCommunitySeed: true,
+    skipOnboardingSeed: true,
+  });
+  await page.goto("/");
+
+  await expect(page.getByTestId("mantap-sign-in-form")).toBeVisible();
+  await expect(page.getByText(/private key/i)).toHaveCount(0);
+  await expect(page.getByText(/recover/i)).toHaveCount(0);
+
+  await page.getByLabel("OneBrick email").fill("brickster@onebrick.io");
+  await page.getByLabel("Password").fill("test-password");
+  await page.getByRole("button", { name: "Continue with OTP" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Check your email" }),
+  ).toBeVisible();
+
+  await page.getByLabel("4-digit OTP").fill("1234");
+  await page.getByRole("button", { name: "Verify and sign in" }).click();
+  await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+
+  const commands = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMAND_PAYLOADS__?: Array<{ command: string }>;
+        }
+      ).__BUZZ_E2E_COMMAND_PAYLOADS__ ?? [],
+  );
+  expect(
+    commands.filter((entry) => entry.command === "request_mantap_otp"),
+  ).toHaveLength(1);
+  expect(
+    commands.filter((entry) => entry.command === "start_mantap_login"),
+  ).toHaveLength(1);
+});
+
+// Retained temporarily as explicit regression history for the removed OSS
+// private-key onboarding. Hive's supported first-run path is Mantap above.
+test.skip("legacy private-key recovery is not part of Hive onboarding", async ({
   page,
 }) => {
   await installMockBridge(page, undefined, {
@@ -796,7 +838,7 @@ test("fresh existing-identity path leads with private-key recovery", async ({
   await expect(page.getByTestId("nostr-import-card")).toBeVisible();
 });
 
-test("first-launch key import continues to machine setup", async ({ page }) => {
+test.skip("legacy key import continues to machine setup", async ({ page }) => {
   await installMockBridge(page, undefined, {
     skipCommunitySeed: true,
     skipOnboardingSeed: true,
@@ -815,9 +857,7 @@ test("first-launch key import continues to machine setup", async ({ page }) => {
   await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
 });
 
-test("key import locks host navigation and ignores rapid duplicate submits", async ({
-  page,
-}) => {
+test.skip("legacy key import locks host navigation", async ({ page }) => {
   await installMockBridge(
     page,
     { identityImportDelayMs: 500 },
@@ -842,7 +882,9 @@ test("key import locks host navigation and ignores rapid duplicate submits", asy
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
 });
 
-test("imported-key users can skip out of harness setup", async ({ page }) => {
+test.skip("legacy imported-key users can skip harness setup", async ({
+  page,
+}) => {
   // Regression: importing an existing key sets the onboarding state machine's
   // "continuing" marker, which pinned the stage to onboarding even after
   // complete() ran — so Skip/Next silently did nothing. The fresh-key skip
@@ -870,9 +912,7 @@ test("imported-key users can skip out of harness setup", async ({ page }) => {
   await expect(page.getByTestId("onboarding-page-2")).toHaveCount(0);
 });
 
-test("first-launch encrypted backup import asks for a passphrase and continues", async ({
-  page,
-}) => {
+test.skip("legacy encrypted backup import", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await installMockBridge(page, undefined, {
     skipCommunitySeed: true,
@@ -927,9 +967,7 @@ test("first-launch encrypted backup import asks for a passphrase and continues",
   await expect(page.getByTestId("machine-onboarding-gate")).toBeVisible();
 });
 
-test("first-launch import accepts an .ncryptsec backup file", async ({
-  page,
-}) => {
+test.skip("legacy .ncryptsec backup import", async ({ page }) => {
   await installMockBridge(page, undefined, {
     skipCommunitySeed: true,
     skipOnboardingSeed: true,

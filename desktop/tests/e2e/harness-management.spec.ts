@@ -21,7 +21,7 @@
 import { expect, test } from "@playwright/test";
 
 import { installMockBridge } from "../helpers/bridge";
-import { passThroughBackupStep } from "../helpers/onboarding";
+import { signInWithMantap } from "../helpers/onboarding";
 
 // ── Shared catalog fixtures ───────────────────────────────────────────────────
 
@@ -671,8 +671,7 @@ test("onboarding setup More-harnesses click navigates to Settings → Agents", a
 
   // Reach setup by creating a new identity key and continuing past the
   // created-key page without opening the optional backup options.
-  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
-  await passThroughBackupStep(page);
+  await signInWithMantap(page);
 
   // Now on the setup page.
   await expect(

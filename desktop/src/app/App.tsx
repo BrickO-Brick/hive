@@ -787,7 +787,6 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
         complete={completeMachineOnboarding}
         continueWithIdentity={machine.continueWithIdentity}
         continueWithRecoveredIdentity={machine.continueWithRecoveredIdentity}
-        identityLost={machine.identityLost}
         initialPage={machineInitialPage}
         navigateAfterComplete={navigateAfterOnboarding}
         queryClient={machine.queryClient}
