@@ -27,7 +27,7 @@ async function addProjectToSidebar(
   await expect(page.getByTestId(`sidebar-project-${dtag}`)).toBeVisible();
 }
 
-test("first-time project empty state opens project creation", async ({
+test("first-time project view shows sources and opens project creation", async ({
   page,
 }) => {
   await enableProjectsFeature(page);
@@ -38,10 +38,17 @@ test("first-time project empty state opens project creation", async ({
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
 
-  await expect(
-    page.getByRole("main").getByText("No projects yet"),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Create project" }).click();
+  await expect(page.getByTestId("projects-section-sources")).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByTestId("github-source-catalog")).toBeVisible();
+  await page.getByTestId("sidebar-projects-section-label").hover();
+  await page.getByTestId("sidebar-projects-create").click();
+  await page
+    .getByTestId("project-browser-dialog")
+    .getByRole("button", { name: /Create a new project/ })
+    .click();
   await expect(page.getByTestId("create-project-dialog")).toBeVisible();
 });
 

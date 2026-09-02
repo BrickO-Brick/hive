@@ -1212,6 +1212,7 @@ test("project channels are grouped by project", async ({ page }) => {
     "Activity",
     "Projects",
     "Repositories",
+    "Sources",
     "Tasks",
     "Reviews",
     "Channels",
@@ -1220,6 +1221,7 @@ test("project channels are grouped by project", async ({ page }) => {
   for (const section of [
     "projects",
     "repositories",
+    "sources",
     "issues",
     "prs",
     "channels",
