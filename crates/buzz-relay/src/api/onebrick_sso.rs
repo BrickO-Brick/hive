@@ -125,6 +125,7 @@ pub async fn exchange(
     Ok(Json(serde_json::json!({
         "status": if inserted { "joined" } else { "already_member" },
         "email": claims.email,
+        "subject": claims.sub,
         "pubkey": pubkey_hex,
         "channel_id": channel_id,
         "role": role.as_str()
