@@ -70,6 +70,7 @@ jobs:
             -e 's/CHANGE_ME_RANDOM_PASSWORD/test-only-not-a-secret/g' \
             -e 's/CHANGE_ME_RANDOM_ACCESS_KEY/test-only-not-a-secret/g' \
             -e 's/CHANGE_ME_RANDOM_SECRET_KEY/test-only-not-a-secret/g' \
+            -e 's/CHANGE_ME_GITHUB_FINE_GRAINED_READ_TOKEN/test-only-github-read-token/g' \
             "$fixture"
           chmod 0600 "$fixture"
           HIVE_ENV_FILE="$fixture" docker compose -p hive-ci --env-file "$fixture" -f deploy/onebrick/compose.yml config --quiet

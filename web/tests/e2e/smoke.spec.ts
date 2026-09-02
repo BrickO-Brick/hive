@@ -533,6 +533,41 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
+  await page.route("**/api/onebrick/github/repositories", async (route) => {
+    expect(nip98Pubkey(route.request().headers().authorization)).toBe(
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    );
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        organization: "BrickO-Brick",
+        repositories: [
+          {
+            name: "hive",
+            description: "Collaboration workspace",
+            url: "https://github.com/BrickO-Brick/hive",
+            visibility: "public",
+            default_branch: "main",
+            updated_at: "2026-09-02T10:34:31Z",
+            archived: false,
+            language: "Rust",
+          },
+          {
+            name: "mantul-be",
+            description: "Mantul backend",
+            url: "https://github.com/BrickO-Brick/mantul-be",
+            visibility: "private",
+            default_branch: "main",
+            updated_at: "2026-09-02T01:07:29Z",
+            archived: false,
+            language: "TypeScript",
+          },
+        ],
+      }),
+    });
+  });
+
   await page.addInitScript(() => {
     const userPubkey =
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
@@ -686,6 +721,23 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByText("Realtime connected")).toBeVisible();
   await expect(page.getByText("Online and ready").first()).toBeVisible();
   await expect(page.getByText("Sudah aktif.")).toBeVisible();
+
+  await page.getByTestId("open-github-repositories").click();
+  await expect(
+    page.getByRole("heading", { name: "BrickO-Brick" }),
+  ).toBeVisible();
+  await expect(page.getByText("2 repository tersedia")).toBeVisible();
+  await expect(page.getByTestId("github-repository-hive")).toBeVisible();
+  await page.getByRole("button", { name: "Mantul", exact: true }).click();
+  await expect(page.getByTestId("github-repository-hive")).toBeHidden();
+  await expect(page.getByTestId("github-repository-mantul-be")).toBeVisible();
+  await page
+    .getByTestId("github-repository-mantul-be")
+    .getByRole("button", { name: "Diskusikan" })
+    .click();
+  await expect(page.getByPlaceholder("Message BrickO…")).toHaveValue(
+    /BrickO-Brick\/mantul-be/,
+  );
 
   const composer = page.getByPlaceholder("Message BrickO…");
   await composer.fill("Tolong cek status Hive sekarang");

@@ -1,6 +1,7 @@
 import {
   CheckCircle2,
   Clock3,
+  GitBranch,
   Hash,
   LogOut,
   Menu,
@@ -15,6 +16,8 @@ import {
 import {
   type FormEvent,
   type KeyboardEvent,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -29,6 +32,7 @@ import {
   clearHiveIdentity,
   loadHiveIdentity,
 } from "@/features/mantap-sso/mantap-sso-api";
+import type { OneBrickGitHubRepository } from "@/features/repos/onebrick-github-api";
 import {
   type NostrSubscriptionState,
   publishEvent,
@@ -53,6 +57,12 @@ type Presence = "online" | "away" | "offline" | "unknown";
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
 const SIDEBAR_STATE_STORAGE_KEY = "hive.navigation.collapsed.v1";
+
+const OneBrickRepositoryCatalog = lazy(() =>
+  import("@/features/repos/ui/OneBrickRepositoryCatalog").then((module) => ({
+    default: module.OneBrickRepositoryCatalog,
+  })),
+);
 
 function celebrationForEvent(eventId: string): BrickOCelebration {
   const variants: BrickOCelebration[] = ["sparkle", "check", "code"];
@@ -106,6 +116,11 @@ export function HiveChatPage() {
     variant: BrickOCelebration;
   } | null>(null);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [surface, setSurface] = useState<"chat" | "repositories">(() =>
+    new URLSearchParams(window.location.search).get("view") === "repositories"
+      ? "repositories"
+      : "chat",
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     const stored = window.localStorage.getItem(SIDEBAR_STATE_STORAGE_KEY);
@@ -114,6 +129,30 @@ export function HiveChatPage() {
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  const selectSurface = useCallback((next: "chat" | "repositories") => {
+    setSurface(next);
+    setMobileNavigationOpen(false);
+    const url = new URL(window.location.href);
+    if (next === "repositories") url.searchParams.set("view", "repositories");
+    else url.searchParams.delete("view");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
+
+  const discussRepository = useCallback(
+    (repository: OneBrickGitHubRepository) => {
+      selectSurface("chat");
+      setText(
+        `@BrickO let's discuss the BrickO-Brick/${repository.name} repository. Start with its purpose, main code areas, test status, and risks we should review.`,
+      );
+      requestAnimationFrame(() => composerRef.current?.focus());
+    },
+    [selectSurface],
+  );
 
   const mergeMessage = useCallback(
     (event: NostrEvent) => {
@@ -468,16 +507,44 @@ export function HiveChatPage() {
         )}
         <button
           type="button"
-          className={`flex h-9 w-full items-center rounded border border-[#BFD4FF] bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED] ${
-            collapsed ? "justify-center px-0" : "gap-2 px-2.5"
-          }`}
-          aria-current="page"
+          className={`flex h-9 w-full items-center rounded border ${
+            surface === "chat"
+              ? "border-[#BFD4FF] bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
+              : "border-transparent text-[#526178] hover:bg-[#F7FAFC]"
+          } ${collapsed ? "justify-center px-0" : "gap-2 px-2.5"}`}
+          aria-current={surface === "chat" ? "page" : undefined}
+          onClick={() => selectSurface("chat")}
           title="bricko-lab"
         >
           <Hash size={15} className="shrink-0" />
           {!collapsed && (
             <span className="min-w-0 flex-1 truncate text-left text-[13px] font-bold">
               bricko-lab
+            </span>
+          )}
+        </button>
+
+        {!collapsed && (
+          <div className="mb-2 mt-5 px-1 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#607086]">
+            Workspace
+          </div>
+        )}
+        <button
+          type="button"
+          className={`flex h-9 w-full items-center rounded border ${
+            surface === "repositories"
+              ? "border-[#FFD3C9] bg-[#FFF1EB] text-[#D95336] shadow-[inset_3px_0_0_#FF6F52]"
+              : "border-transparent text-[#526178] hover:bg-[#F7FAFC]"
+          } ${collapsed ? "justify-center px-0" : "gap-2 px-2.5"}`}
+          aria-current={surface === "repositories" ? "page" : undefined}
+          data-testid="open-github-repositories"
+          onClick={() => selectSurface("repositories")}
+          title="Repositories"
+        >
+          <GitBranch size={15} className="shrink-0" />
+          {!collapsed && (
+            <span className="min-w-0 flex-1 truncate text-left text-[13px] font-bold">
+              Repositories
             </span>
           )}
         </button>
@@ -616,7 +683,7 @@ export function HiveChatPage() {
             <div className="hidden min-w-0 sm:block">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-[15px] font-bold text-[#10233F]">
-                  Hive
+                  {surface === "repositories" ? "Repositories" : "Hive"}
                 </h1>
                 <span
                   className={`size-2 rounded-full shadow-sm ${toneClasses}`}
@@ -626,7 +693,15 @@ export function HiveChatPage() {
                 </span>
               </div>
               <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-[#607086]">
-                <Hash size={10} /> bricko-lab
+                {surface === "repositories" ? (
+                  <>
+                    <GitBranch size={10} /> BrickO-Brick
+                  </>
+                ) : (
+                  <>
+                    <Hash size={10} /> bricko-lab
+                  </>
+                )}
                 <span className="text-[#B6C0CE]">•</span>
                 <ShieldCheck size={10} /> private
               </p>
@@ -660,203 +735,223 @@ export function HiveChatPage() {
           </div>
         </header>
 
-        <div
-          className="mx-3 mt-3 flex min-h-16 shrink-0 items-center gap-3 rounded-xl border border-[#FFD3C9] bg-gradient-to-r from-[#FFF8F5] via-white to-[#FFF1EB] px-3.5 py-2 shadow-[0_8px_24px_rgba(244,124,82,0.1)] sm:mx-5"
-          aria-live="polite"
-          data-testid="bricko-status-banner"
-        >
-          <div className="relative grid size-12 shrink-0 place-items-center">
-            <BrickOPet
-              celebration={petCelebration?.variant ?? "sparkle"}
-              key={petCelebration?.eventId ?? petMode}
-              label={petStatus}
-              mode={petMode}
-              size="md"
-              testId="bricko-status-pet"
-            />
-            <span
-              className={`absolute bottom-0 right-0 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
-            />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-xs font-bold text-[#10233F]">
-              {agentState.label}
-            </div>
-            <div className="mt-0.5 truncate text-xs text-[#526178]">
-              {petStatus}
-            </div>
-          </div>
-          {connected && (waiting || typingVisible) && (
-            <div className="flex gap-1" aria-hidden="true">
-              {[0, 1, 2].map((dot) => (
-                <span
-                  key={dot}
-                  className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
-                  style={{ animationDelay: `${dot * 120}ms` }}
+        {surface === "repositories" ? (
+          <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC]">
+            <Suspense
+              fallback={
+                <div className="grid min-h-full place-items-center text-sm text-[#607086]">
+                  Loading repository catalog…
+                </div>
+              }
+            >
+              <OneBrickRepositoryCatalog onDiscuss={discussRepository} />
+            </Suspense>
+          </section>
+        ) : (
+          <>
+            <div
+              className="mx-3 mt-3 flex min-h-16 shrink-0 items-center gap-3 rounded-xl border border-[#FFD3C9] bg-gradient-to-r from-[#FFF8F5] via-white to-[#FFF1EB] px-3.5 py-2 shadow-[0_8px_24px_rgba(244,124,82,0.1)] sm:mx-5"
+              aria-live="polite"
+              data-testid="bricko-status-banner"
+            >
+              <div className="relative grid size-12 shrink-0 place-items-center">
+                <BrickOPet
+                  celebration={petCelebration?.variant ?? "sparkle"}
+                  key={petCelebration?.eventId ?? petMode}
+                  label={petStatus}
+                  mode={petMode}
+                  size="md"
+                  testId="bricko-status-pet"
                 />
-              ))}
-            </div>
-          )}
-        </div>
-
-        <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
-          <div className="mx-auto max-w-3xl">
-            {messages.length === 0 && !error && (
-              <div className="grid min-h-[45vh] place-items-center text-center">
-                <div className="max-w-md">
-                  <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
-                    <img
-                      alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
-                      className="aspect-square w-full rounded-xl object-cover"
-                      src={brickoOperationsUrl}
-                    />
-                  </div>
-                  <h2 className="mt-4 text-base font-bold text-[#10233F]">
-                    Welcome, Bricksters — let&apos;s build something fun!
-                  </h2>
-                  <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
-                    Bring bold ideas, stubborn bugs, and seemingly impossible
-                    projects. BrickO brought virtual snacks—let&apos;s turn
-                    “maybe” into “shipped” together.
-                  </p>
-                  <p className="mx-auto mt-3 max-w-sm rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-2 text-xs font-semibold text-[#573129]">
-                    Interface language: English. Chat in any language.
-                  </p>
+                <span
+                  className={`absolute bottom-0 right-0 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-[#10233F]">
+                  {agentState.label}
+                </div>
+                <div className="mt-0.5 truncate text-xs text-[#526178]">
+                  {petStatus}
                 </div>
               </div>
-            )}
+              {connected && (waiting || typingVisible) && (
+                <div className="flex gap-1" aria-hidden="true">
+                  {[0, 1, 2].map((dot) => (
+                    <span
+                      key={dot}
+                      className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
+                      style={{ animationDelay: `${dot * 120}ms` }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
 
-            {messages.map((message) => {
-              const mine = message.pubkey === identity.pubkey;
-              const day = formatMessageDay(message.created_at);
-              const showDay = day !== previousDay;
-              previousDay = day;
-              return (
-                <div key={message.id}>
-                  {showDay && (
-                    <div className="my-6 flex items-center gap-3">
-                      <div className="h-px flex-1 bg-[#D8DEE8]" />
-                      <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#607086]">
-                        {day}
-                      </span>
-                      <div className="h-px flex-1 bg-[#D8DEE8]" />
+            <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
+              <div className="mx-auto max-w-3xl">
+                {messages.length === 0 && !error && (
+                  <div className="grid min-h-[45vh] place-items-center text-center">
+                    <div className="max-w-md">
+                      <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
+                        <img
+                          alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
+                          className="aspect-square w-full rounded-xl object-cover"
+                          src={brickoOperationsUrl}
+                        />
+                      </div>
+                      <h2 className="mt-4 text-base font-bold text-[#10233F]">
+                        Welcome, Bricksters — let&apos;s build something fun!
+                      </h2>
+                      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
+                        Bring bold ideas, stubborn bugs, and seemingly
+                        impossible projects. BrickO brought virtual
+                        snacks—let&apos;s turn “maybe” into “shipped” together.
+                      </p>
+                      <p className="mx-auto mt-3 max-w-sm rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-2 text-xs font-semibold text-[#573129]">
+                        Interface language: English. Chat in any language.
+                      </p>
                     </div>
-                  )}
-                  <article
-                    className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
-                  >
-                    {!mine && <BrickOPet mode="still" size="sm" />}
-                    <div
-                      className={`max-w-[86%] sm:max-w-[78%] ${mine ? "items-end" : "items-start"}`}
-                    >
-                      <div
-                        className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
-                      >
-                        <span className="text-[11px] font-bold text-[#42526B]">
-                          {mine ? "You" : "BrickO"}
-                        </span>
-                        <time className="text-[10px] text-[#607086]">
-                          {formatMessageTime(message.created_at)}
-                        </time>
-                      </div>
-                      <div
-                        className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
-                          mine
-                            ? "border border-[#F2B09F] bg-[#FFF0EB] text-[#44201A] shadow-[#FF6F52]/10"
-                            : "border border-[#D8DEE8] bg-white text-[#172033]"
-                        }`}
-                      >
-                        <div
-                          className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-a:text-[#9D321F]" : "prose-a:text-[#E35E43]"}`}
-                        >
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {message.content}
-                          </ReactMarkdown>
-                        </div>
-                      </div>
-                      {mine && (
-                        <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
-                          <CheckCircle2 size={10} /> Sent
+                  </div>
+                )}
+
+                {messages.map((message) => {
+                  const mine = message.pubkey === identity.pubkey;
+                  const day = formatMessageDay(message.created_at);
+                  const showDay = day !== previousDay;
+                  previousDay = day;
+                  return (
+                    <div key={message.id}>
+                      {showDay && (
+                        <div className="my-6 flex items-center gap-3">
+                          <div className="h-px flex-1 bg-[#D8DEE8]" />
+                          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#607086]">
+                            {day}
+                          </span>
+                          <div className="h-px flex-1 bg-[#D8DEE8]" />
                         </div>
                       )}
+                      <article
+                        className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
+                      >
+                        {!mine && <BrickOPet mode="still" size="sm" />}
+                        <div
+                          className={`max-w-[86%] sm:max-w-[78%] ${mine ? "items-end" : "items-start"}`}
+                        >
+                          <div
+                            className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
+                          >
+                            <span className="text-[11px] font-bold text-[#42526B]">
+                              {mine ? "You" : "BrickO"}
+                            </span>
+                            <time className="text-[10px] text-[#607086]">
+                              {formatMessageTime(message.created_at)}
+                            </time>
+                          </div>
+                          <div
+                            className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
+                              mine
+                                ? "border border-[#F2B09F] bg-[#FFF0EB] text-[#44201A] shadow-[#FF6F52]/10"
+                                : "border border-[#D8DEE8] bg-white text-[#172033]"
+                            }`}
+                          >
+                            <div
+                              className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-a:text-[#9D321F]" : "prose-a:text-[#E35E43]"}`}
+                            >
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {message.content}
+                              </ReactMarkdown>
+                            </div>
+                          </div>
+                          {mine && (
+                            <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
+                              <CheckCircle2 size={10} /> Sent
+                            </div>
+                          )}
+                        </div>
+                      </article>
                     </div>
-                  </article>
-                </div>
-              );
-            })}
+                  );
+                })}
 
-            {typingVisible && (
-              <div className="mb-5 flex items-end gap-2.5" aria-live="polite">
-                <div className="size-8 shrink-0" aria-hidden="true" />
-                <div>
-                  <div className="mb-1.5 px-1 text-[11px] font-bold text-[#42526B]">
-                    BrickO
+                {typingVisible && (
+                  <div
+                    className="mb-5 flex items-end gap-2.5"
+                    aria-live="polite"
+                  >
+                    <div className="size-8 shrink-0" aria-hidden="true" />
+                    <div>
+                      <div className="mb-1.5 px-1 text-[11px] font-bold text-[#42526B]">
+                        BrickO
+                      </div>
+                      <div className="flex h-11 items-center gap-1 rounded border border-[#D8DEE8] bg-white px-4">
+                        {[0, 1, 2].map((dot) => (
+                          <span
+                            key={dot}
+                            className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
+                            style={{ animationDelay: `${dot * 120}ms` }}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex h-11 items-center gap-1 rounded border border-[#D8DEE8] bg-white px-4">
-                    {[0, 1, 2].map((dot) => (
-                      <span
-                        key={dot}
-                        className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
-                        style={{ animationDelay: `${dot * 120}ms` }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </section>
-
-        <form
-          onSubmit={send}
-          className="shrink-0 border-t border-[#D8DEE8] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5"
-        >
-          <div className="mx-auto max-w-3xl">
-            {error && (
-              <div
-                className="mb-3 flex items-center gap-2 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"
-                role="alert"
-              >
-                <WifiOff size={13} className="shrink-0" />
-                <span className="truncate">{error}</span>
-              </div>
-            )}
-            <div className="flex items-end gap-2 rounded border border-[#D8DEE8] bg-white p-2 shadow-[0_8px_24px_rgba(16,35,63,0.08)] transition focus-within:border-[#FF6F52]/60 focus-within:ring-4 focus-within:ring-[#FF6F52]/10">
-              <textarea
-                ref={composerRef}
-                value={text}
-                onChange={(event) => setText(event.target.value)}
-                onKeyDown={handleComposerKeyDown}
-                maxLength={65_536}
-                rows={1}
-                placeholder="Message BrickO…"
-                className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"
-              />
-              <button
-                type="submit"
-                disabled={busy || !text.trim() || !connected}
-                className="grid size-11 shrink-0 place-items-center rounded bg-[#FF6F52] text-white transition hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#8491A4]"
-                aria-label="Send"
-              >
-                {busy ? (
-                  <RefreshCw size={17} className="animate-spin" />
-                ) : (
-                  <Send size={17} />
                 )}
-              </button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-xs text-[#526178]">
-              <span className="flex items-center gap-1.5">
-                <Clock3 size={11} /> Enter to send · Shift+Enter for a new line
-              </span>
-              <span className="font-semibold text-[#573129]">
-                Interface: English · Chat: any language
-              </span>
-              <span>{text.length.toLocaleString("en-US")}/65,536</span>
-            </div>
-          </div>
-        </form>
+                <div ref={messagesEndRef} />
+              </div>
+            </section>
+
+            <form
+              onSubmit={send}
+              className="shrink-0 border-t border-[#D8DEE8] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5"
+            >
+              <div className="mx-auto max-w-3xl">
+                {error && (
+                  <div
+                    className="mb-3 flex items-center gap-2 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"
+                    role="alert"
+                  >
+                    <WifiOff size={13} className="shrink-0" />
+                    <span className="truncate">{error}</span>
+                  </div>
+                )}
+                <div className="flex items-end gap-2 rounded border border-[#D8DEE8] bg-white p-2 shadow-[0_8px_24px_rgba(16,35,63,0.08)] transition focus-within:border-[#FF6F52]/60 focus-within:ring-4 focus-within:ring-[#FF6F52]/10">
+                  <textarea
+                    ref={composerRef}
+                    value={text}
+                    onChange={(event) => setText(event.target.value)}
+                    onKeyDown={handleComposerKeyDown}
+                    maxLength={65_536}
+                    rows={1}
+                    placeholder="Message BrickO…"
+                    className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy || !text.trim() || !connected}
+                    className="grid size-11 shrink-0 place-items-center rounded bg-[#FF6F52] text-white transition hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#8491A4]"
+                    aria-label="Send"
+                  >
+                    {busy ? (
+                      <RefreshCw size={17} className="animate-spin" />
+                    ) : (
+                      <Send size={17} />
+                    )}
+                  </button>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-xs text-[#526178]">
+                  <span className="flex items-center gap-1.5">
+                    <Clock3 size={11} /> Enter to send · Shift+Enter for a new
+                    line
+                  </span>
+                  <span className="font-semibold text-[#573129]">
+                    Interface: English · Chat: any language
+                  </span>
+                  <span>{text.length.toLocaleString("en-US")}/65,536</span>
+                </div>
+              </div>
+            </form>
+          </>
+        )}
       </main>
     </div>
   );

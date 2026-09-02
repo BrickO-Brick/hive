@@ -125,6 +125,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/onebrick/sso/exchange",
             post(api::onebrick_sso::exchange),
         )
+        .route(
+            api::onebrick_github::CATALOG_PATH,
+            get(api::onebrick_github::repositories),
+        )
         // Moderation queue reads (NIP-98 auth + mod-authz gate, L6)
         .route("/moderation/reports", get(api::bridge::moderation_reports))
         .route("/moderation/audit", get(api::bridge::moderation_audit))

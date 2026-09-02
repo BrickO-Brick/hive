@@ -14,3 +14,20 @@ read-only GitHub credential have been provisioned and tested.
 
 Use the root scripts and the commands in `docs/OPERATOR_RUNBOOK.md`. Never run
 `docker compose down -v`.
+
+## BrickO-Brick repository catalog
+
+The Repositories view inside `/app` reads repository metadata through the
+authenticated relay endpoint. GitHub credentials never reach the browser.
+Before deployment, set these values in the owner-only Hive environment file:
+
+```dotenv
+BUZZ_ONEBRICK_GITHUB_ORG=BrickO-Brick
+BUZZ_ONEBRICK_GITHUB_TOKEN=<fine-grained read-only token>
+```
+
+Restrict the token to the `BrickO-Brick` organization, select **All
+repositories**, and grant only repository **Metadata: read-only** access. Do
+not grant contents, administration, pull-request, or write permissions. The
+catalog endpoint fails closed with `503 Service Unavailable` when the token is
+missing or still contains the template placeholder.
