@@ -137,8 +137,7 @@
   }
 
   .bricko-pet--still .bricko-pet__image {
-    animation: bricko-pet-settle 0.7s cubic-bezier(0.2, 0.85, 0.25, 1.15)
-      both;
+    animation: bricko-pet-settle 0.7s cubic-bezier(0.2, 0.85, 0.25, 1.15) both;
   }
 
   .bricko-pet--idle {
@@ -150,8 +149,7 @@
   }
 
   .bricko-pet--idle:hover .bricko-pet__image {
-    animation: bricko-pet-greet 0.78s cubic-bezier(0.2, 0.85, 0.25, 1.2)
-      both;
+    animation: bricko-pet-greet 0.78s cubic-bezier(0.2, 0.85, 0.25, 1.2) both;
   }
 
   .bricko-pet--idle .bricko-pet__shadow {
@@ -238,13 +236,13 @@
   }
 
   .bricko-pet--celebrate.bricko-pet--sparkle {
-    animation: bricko-pet-celebrate-hop 1.15s
-      cubic-bezier(0.2, 0.85, 0.25, 1.2) both;
+    animation: bricko-pet-celebrate-hop 1.15s cubic-bezier(0.2, 0.85, 0.25, 1.2)
+      both;
   }
 
   .bricko-pet--celebrate.bricko-pet--check {
-    animation: bricko-pet-celebrate-check 1s
-      cubic-bezier(0.2, 0.85, 0.25, 1.18) both;
+    animation: bricko-pet-celebrate-check 1s cubic-bezier(0.2, 0.85, 0.25, 1.18)
+      both;
   }
 
   .bricko-pet--celebrate.bricko-pet--code {
