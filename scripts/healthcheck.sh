@@ -14,7 +14,11 @@ hive_compose ps
 curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${host_port}/health"
 echo
 
-for service in relay postgres redis minio; do
+services=(relay redis minio)
+if [[ "${HIVE_EXPECT_LOCAL_POSTGRES:-false}" == true ]]; then
+  services+=(postgres)
+fi
+for service in "${services[@]}"; do
   cid="$(hive_compose ps -q "${service}")"
   [[ -n "${cid}" ]] || { echo "Missing service: ${service}" >&2; exit 1; }
   state="$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "${cid}")"

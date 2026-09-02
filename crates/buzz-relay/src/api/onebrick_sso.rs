@@ -91,10 +91,12 @@ pub async fn exchange(
         .await
         .map_err(|error| internal_error(&format!("Mantap SSO provisioning: {error}")))?;
 
-    let inserted = match outcome {
+    let (inserted, membership_changed, role) = match outcome {
         buzz_db::mantap_sso::MantapSsoProvisionOutcome::Provisioned {
             relay_member_inserted,
-        } => relay_member_inserted,
+            relay_membership_changed,
+            role,
+        } => (relay_member_inserted, relay_membership_changed, role),
         buzz_db::mantap_sso::MantapSsoProvisionOutcome::Replayed => {
             return Err(api_error(StatusCode::UNAUTHORIZED, "sso_ticket_replayed"));
         }
@@ -107,6 +109,8 @@ pub async fn exchange(
         if let Err(error) = publish_nip43_member_added(&tenant, &state, &pubkey_hex).await {
             tracing::warn!(%error, "failed to publish NIP-43 member-added after Mantap SSO");
         }
+    }
+    if membership_changed {
         if let Err(error) = publish_nip43_membership_list(&tenant, &state).await {
             tracing::warn!(%error, "failed to publish NIP-43 roster after Mantap SSO");
         }
@@ -123,7 +127,7 @@ pub async fn exchange(
         "email": claims.email,
         "pubkey": pubkey_hex,
         "channel_id": channel_id,
-        "role": "member"
+        "role": role.as_str()
     })))
 }
 
