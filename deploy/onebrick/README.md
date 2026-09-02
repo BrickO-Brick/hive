@@ -25,10 +25,12 @@ Before deployment, set these values in the owner-only Hive environment file:
 BUZZ_ONEBRICK_GITHUB_ORG=BrickO-Brick
 BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE=user
 BUZZ_ONEBRICK_GITHUB_TOKEN=<fine-grained read-only token>
+BUZZ_BRICK_IO_GITHUB_TOKEN=<brick-io fine-grained metadata read-only token>
 ```
 
-Restrict the token to the `BrickO-Brick` organization, select **All
-repositories**, and grant only repository **Metadata: read-only** access. Do
-not grant contents, administration, pull-request, or write permissions. The
-catalog endpoint fails closed with `503 Service Unavailable` when the token is
-missing or still contains the template placeholder.
+Use separate fine-grained tokens for the personal `BrickO-Brick` owner and the
+`brick-io` organization. For each token, select **All repositories** and grant
+only repository **Metadata: read-only** access. Do not grant contents,
+administration, pull-request, or write permissions. The catalog endpoint fails
+closed with `503 Service Unavailable` when either token is missing or still
+contains the template placeholder.

@@ -541,9 +541,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        organization: "BrickO-Brick",
+        organizations: ["BrickO-Brick", "brick-io"],
         repositories: [
           {
+            owner: "BrickO-Brick",
             name: "hive",
             description: "Collaboration workspace",
             url: "https://github.com/BrickO-Brick/hive",
@@ -554,6 +555,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             language: "Rust",
           },
           {
+            owner: "BrickO-Brick",
             name: "mantul-be",
             description: "Mantul backend",
             url: "https://github.com/BrickO-Brick/mantul-be",
@@ -724,16 +726,16 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByTestId("open-github-repositories").click();
   await expect(
-    page.getByRole("heading", { name: "BrickO-Brick" }),
+    page.getByRole("heading", { name: "BrickO-Brick + brick-io" }),
   ).toBeVisible();
-  await expect(page.getByText("2 repository tersedia")).toBeVisible();
+  await expect(page.getByText("2 repositories available", { exact: false })).toBeVisible();
   await expect(page.getByTestId("github-repository-hive")).toBeVisible();
   await page.getByRole("button", { name: "Mantul", exact: true }).click();
   await expect(page.getByTestId("github-repository-hive")).toBeHidden();
   await expect(page.getByTestId("github-repository-mantul-be")).toBeVisible();
   await page
     .getByTestId("github-repository-mantul-be")
-    .getByRole("button", { name: "Diskusikan" })
+    .getByRole("button", { name: "Start discussion" })
     .click();
   await expect(page.getByPlaceholder("Message BrickO…")).toHaveValue(
     /BrickO-Brick\/mantul-be/,

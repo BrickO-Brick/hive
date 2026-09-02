@@ -147,7 +147,7 @@ export function HiveChatPage() {
     (repository: OneBrickGitHubRepository) => {
       selectSurface("chat");
       setText(
-        `@BrickO let's discuss the BrickO-Brick/${repository.name} repository. Start with its purpose, main code areas, test status, and risks we should review.`,
+        `@BrickO let's start a new discussion about ${repository.owner}/${repository.name}. Focus this topic on: `,
       );
       requestAnimationFrame(() => composerRef.current?.focus());
     },
