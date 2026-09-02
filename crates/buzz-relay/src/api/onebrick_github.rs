@@ -23,6 +23,22 @@ const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_UPSTREAM_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REPOSITORIES: usize = 100;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitHubAccountType {
+    Organization,
+    User,
+}
+
+impl GitHubAccountType {
+    fn from_env(value: &str) -> Option<Self> {
+        match value {
+            "organization" => Some(Self::Organization),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRepository {
     name: String,
@@ -73,6 +89,17 @@ fn valid_repository_name(value: &str) -> bool {
 
 fn bounded_text(value: String, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+fn catalog_url(account: &str, account_type: GitHubAccountType) -> String {
+    match account_type {
+        GitHubAccountType::Organization => format!(
+            "{GITHUB_API_ROOT}/orgs/{account}/repos?type=all&sort=updated&direction=desc&per_page={MAX_REPOSITORIES}"
+        ),
+        GitHubAccountType::User => format!(
+            "{GITHUB_API_ROOT}/user/repos?affiliation=owner&visibility=all&sort=updated&direction=desc&per_page={MAX_REPOSITORIES}"
+        ),
+    }
 }
 
 fn parse_catalog(
@@ -217,6 +244,14 @@ pub(crate) async fn repositories(
             "GitHub repository catalog is not configured",
         ));
     }
+    let account_type = std::env::var("BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE")
+        .unwrap_or_else(|_| "organization".to_string());
+    let account_type = GitHubAccountType::from_env(&account_type).ok_or_else(|| {
+        api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GitHub repository catalog is not configured",
+        )
+    })?;
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -227,9 +262,7 @@ pub(crate) async fn repositories(
                 "GitHub repository catalog is unavailable",
             )
         })?;
-    let url = format!(
-        "{GITHUB_API_ROOT}/orgs/{organization}/repos?type=all&sort=updated&direction=desc&per_page={MAX_REPOSITORIES}"
-    );
+    let url = catalog_url(&organization, account_type);
     let response = client
         .get(url)
         .timeout(UPSTREAM_TIMEOUT)
@@ -292,5 +325,20 @@ mod tests {
         assert!(valid_github_organization("BrickO-Brick"));
         assert!(!valid_github_organization("-BrickO"));
         assert!(!valid_github_organization("BrickO/other"));
+    }
+
+    #[test]
+    fn selects_the_authenticated_owner_endpoint_for_user_accounts() {
+        assert_eq!(
+            GitHubAccountType::from_env("user"),
+            Some(GitHubAccountType::User)
+        );
+        assert_eq!(
+            catalog_url("BrickO-Brick", GitHubAccountType::User),
+            format!(
+                "{GITHUB_API_ROOT}/user/repos?affiliation=owner&visibility=all&sort=updated&direction=desc&per_page={MAX_REPOSITORIES}"
+            )
+        );
+        assert_eq!(GitHubAccountType::from_env("team"), None);
     }
 }
