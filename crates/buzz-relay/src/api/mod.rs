@@ -9,6 +9,7 @@ pub mod invites;
 pub mod media;
 pub mod mesh_demo;
 pub mod nip05;
+pub mod onebrick_github;
 pub mod onebrick_sso;
 pub mod operator;
 pub mod workflows;
