@@ -46,6 +46,7 @@ services:
       BUZZ_ONEBRICK_GITHUB_ORG: ${BUZZ_ONEBRICK_GITHUB_ORG:-BrickO-Brick}
       BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE: ${BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE:-user}
       BUZZ_ONEBRICK_GITHUB_TOKEN: ${BUZZ_ONEBRICK_GITHUB_TOKEN:-}
+      BUZZ_BRICK_IO_GITHUB_TOKEN: ${BUZZ_BRICK_IO_GITHUB_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-buzz_relay=info,buzz_db=info,buzz_auth=info,buzz_pubsub=info,tower_http=info}
     ports:
       - ${HIVE_HTTP_BIND:-127.0.0.1:3300}:3000

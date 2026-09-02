@@ -19,6 +19,7 @@ mod linux_media;
 #[cfg(target_os = "macos")]
 mod macos_notifications;
 mod managed_agents;
+mod mantap_sso;
 mod media_proxy;
 #[cfg(feature = "mesh-llm")]
 mod mesh_llm;
@@ -83,6 +84,7 @@ use managed_agents::{
     restart_managed_agent_runtime, start_managed_agent_runtime, stop_managed_agent_runtime,
     try_regenerate_nest,
 };
+use mantap_sso::*;
 #[cfg(not(feature = "mesh-llm"))]
 use mesh_llm_stubs::*;
 #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
@@ -536,6 +538,9 @@ pub fn run() {
             acknowledge_pending_navigation_deep_link,
             clear_pending_navigation_deep_links,
             take_pending_entity_deep_link,
+            start_mantap_login,
+            request_mantap_otp,
+            cancel_mantap_login,
             acknowledge_pending_entity_deep_link,
             start_builderlab_login,
             cancel_builderlab_login,

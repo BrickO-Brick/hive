@@ -6,9 +6,12 @@ import {
   getIdentity,
   importIdentity,
   persistCurrentIdentity,
+  requestMantapOtp,
+  startMantapLogin,
 } from "@/shared/api/tauriIdentity";
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
+import { Input } from "@/shared/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +28,6 @@ import {
   resetEncryptedBackupSession,
   useEncryptedBackupSession,
 } from "./EncryptedBackupCreator";
-import { IdentityKeyHelpDialog } from "./IdentityKeyHelpDialog";
 import { IdentityRecoveryPairing } from "./IdentityRecoveryPairing";
 import {
   NostrKeyImportForm,
@@ -90,6 +92,13 @@ export function MachineOnboardingFlow({
     React.useState<OnboardingTransitionDirection>("forward");
   const [error, setError] = React.useState<string | null>(null);
   const [isPending, setIsPending] = React.useState(false);
+  const [mantapDialogOpen, setMantapDialogOpen] = React.useState(false);
+  const [mantapStage, setMantapStage] = React.useState<"credentials" | "otp">(
+    "credentials",
+  );
+  const [mantapUsername, setMantapUsername] = React.useState("");
+  const [mantapPassword, setMantapPassword] = React.useState("");
+  const [mantapOtp, setMantapOtp] = React.useState("");
   const [identityWasImported, setIdentityWasImported] = React.useState(false);
   const [keyImportStage, setKeyImportStage] =
     React.useState<NostrKeyImportStage>("key-entry");
@@ -129,11 +138,32 @@ export function MachineOnboardingFlow({
     [],
   );
 
-  const loadFreshIdentity = React.useCallback(async () => {
+  const requestOtp = React.useCallback(async () => {
     setIsPending(true);
     setError(null);
     try {
+      await requestMantapOtp(mantapUsername.trim(), mantapPassword);
+      setMantapStage("otp");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not send OTP.");
+    } finally {
+      setIsPending(false);
+    }
+  }, [mantapPassword, mantapUsername]);
+
+  const signInWithMantap = React.useCallback(async () => {
+    setIsPending(true);
+    setError(null);
+    try {
+      const mantap = await startMantapLogin(
+        mantapUsername.trim(),
+        mantapPassword,
+        mantapOtp,
+      );
       const identity = await getIdentity();
+      if (identity.pubkey !== mantap.pubkey) {
+        throw new Error("Mantap returned a different Hive identity.");
+      }
       queryClient.setQueryData(["identity"], identity);
       setSelectedPubkey(identity.pubkey);
       setIdentityStorage(identity.storage);
@@ -141,15 +171,20 @@ export function MachineOnboardingFlow({
       setTransitionDirection("forward");
       setReturningFromSecurity(false);
       setBackupSubview("created");
+      setMantapDialogOpen(false);
+      setMantapPassword("");
+      setMantapOtp("");
       setPage("backup");
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : "Failed to load identity",
+        cause instanceof Error
+          ? cause.message
+          : "Failed to sign in with Mantap",
       );
     } finally {
       setIsPending(false);
     }
-  }, [queryClient]);
+  }, [mantapOtp, mantapPassword, mantapUsername, queryClient]);
 
   const loadRecoveredIdentity = React.useCallback(async () => {
     setIsPending(true);
@@ -336,33 +371,15 @@ export function MachineOnboardingFlow({
                   <Button
                     className={ONBOARDING_LANDING_CTA_CLASS}
                     disabled={isPending}
-                    onClick={() => void loadFreshIdentity()}
-                    type="button"
-                  >
-                    {isPending
-                      ? "Loading identity…"
-                      : selectedPubkey
-                        ? "Continue setup"
-                        : "Create a new identity key"}
-                  </Button>
-                  <Button
-                    className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
-                    disabled={isPending}
                     onClick={() => {
-                      setKeyImportDialog(null);
-                      setKeyImportStage("key-entry");
-                      setTransitionDirection("forward");
-                      setPage("key-import");
+                      setError(null);
+                      setMantapDialogOpen(true);
                     }}
                     type="button"
-                    variant="ghost"
                   >
-                    {selectedPubkey
-                      ? "Use a different key instead"
-                      : "Use an existing key"}
+                    Sign in with Mantap
                   </Button>
                 </div>
-                <IdentityKeyHelpDialog />
               </div>
             </OnboardingSlideTransition>
           ) : page === "key-import" ? (
@@ -591,6 +608,90 @@ export function MachineOnboardingFlow({
             />
           )}
         </div>
+        <Dialog
+          open={mantapDialogOpen}
+          onOpenChange={(open) => {
+            if (isPending) return;
+            setMantapDialogOpen(open);
+            if (!open) {
+              setMantapStage("credentials");
+              setMantapPassword("");
+              setMantapOtp("");
+              setError(null);
+            }
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogTitle>
+              {mantapStage === "credentials" ? "Sign in to Mantap" : "Enter your OTP"}
+            </DialogTitle>
+            <DialogDescription>
+              {mantapStage === "credentials"
+                ? "Use your OneBrick account. Hive will request an OTP from Mantap."
+                : "Enter the 4-digit code sent to your registered email."}
+            </DialogDescription>
+            <form
+              className="mt-4 space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void (mantapStage === "credentials" ? requestOtp() : signInWithMantap());
+              }}
+            >
+              {mantapStage === "credentials" ? (
+                <>
+                  <label className="block space-y-2 text-sm font-medium">
+                    <span>OneBrick email</span>
+                    <Input
+                      autoComplete="username"
+                      autoFocus
+                      onChange={(event) => setMantapUsername(event.target.value)}
+                      placeholder="name@onebrick.io"
+                      required
+                      type="email"
+                      value={mantapUsername}
+                    />
+                  </label>
+                  <label className="block space-y-2 text-sm font-medium">
+                    <span>Password</span>
+                    <Input
+                      autoComplete="current-password"
+                      onChange={(event) => setMantapPassword(event.target.value)}
+                      required
+                      type="password"
+                      value={mantapPassword}
+                    />
+                  </label>
+                </>
+              ) : (
+                <label className="block space-y-2 text-sm font-medium">
+                  <span>4-digit OTP</span>
+                  <Input
+                    autoComplete="one-time-code"
+                    autoFocus
+                    inputMode="numeric"
+                    maxLength={4}
+                    onChange={(event) =>
+                      setMantapOtp(event.target.value.replace(/\D/g, "").slice(0, 4))
+                    }
+                    pattern="[0-9]{4}"
+                    required
+                    value={mantapOtp}
+                  />
+                </label>
+              )}
+              {error ? <p className="text-sm text-destructive">{error}</p> : null}
+              <Button className="w-full" disabled={isPending} type="submit">
+                {isPending
+                  ? mantapStage === "credentials"
+                    ? "Sending OTP…"
+                    : "Signing in…"
+                  : mantapStage === "credentials"
+                    ? "Continue with OTP"
+                    : "Verify and sign in"}
+              </Button>
+            </form>
+          </DialogContent>
+        </Dialog>
       </OnboardingFooterProvider>
     </div>
   );

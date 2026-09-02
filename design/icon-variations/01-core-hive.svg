@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Hive icon concept 1 — Core Hive</title>
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="900" y2="940"><stop stop-color="#ff9575"/><stop offset=".55" stop-color="#ff6f52"/><stop offset="1" stop-color="#e94f32"/></linearGradient>
+    <filter id="s"><feDropShadow dx="0" dy="26" stdDeviation="28" flood-color="#7d251b" flood-opacity=".3"/></filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#bg)"/>
+  <path d="M512 174 752 312v276L512 726 272 588V312z" fill="#fff8f2" stroke="#172033" stroke-width="30" stroke-linejoin="round" filter="url(#s)"/>
+  <path d="m790 205 92 53v106l-92 53-92-53V258z" fill="#ffba45" stroke="#172033" stroke-width="23"/>
+  <path d="m802 642 102 59v118l-102 59-102-59V701z" fill="#ff8a5b" stroke="#172033" stroke-width="23"/>
+  <g transform="translate(352 348) scale(12)" fill="#ff6f52"><path d="M9.326 13.31h7.987a1.33 1.33 0 0 0 0-2.663H9.326a1.331 1.331 0 1 0 0 2.662Z"/><path d="M2.662 6.922v11.447a1.331 1.331 0 0 0 1.331 1.331h1.331v2.929a1.331 1.331 0 0 0 2.663 0v-5.591H5.324V6.922h10.649v-5.59a1.331 1.331 0 0 0-2.662 0v2.927H1.331a1.331 1.331 0 0 0 0 2.663h1.331Zm18.636 0v10.116H10.649v5.59a1.331 1.331 0 0 0 2.662 0V19.7h11.98a1.331 1.331 0 0 0 0-2.662H23.96V5.59a1.331 1.331 0 0 0-1.331-1.331h-1.331V1.33a1.331 1.331 0 0 0-2.662 0v5.591h2.662Z"/></g>
+</svg>

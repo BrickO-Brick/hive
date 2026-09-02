@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Hive tile concept 4 — Connected Hive</title>
+  <defs><radialGradient id="bg"><stop stop-color="#29344b"/><stop offset="1" stop-color="#111725"/></radialGradient><filter id="g"><feDropShadow dx="0" dy="0" stdDeviation="22" flood-color="#ff6f52" flood-opacity=".42"/></filter><symbol id="brick" viewBox="0 0 27 24"><path d="M9.326 13.31h7.987a1.33 1.33 0 0 0 0-2.663H9.326a1.331 1.331 0 1 0 0 2.662Z"/><path d="M2.662 6.922v11.447a1.331 1.331 0 0 0 1.331 1.331h1.331v2.929a1.331 1.331 0 0 0 2.663 0v-5.591H5.324V6.922h10.649v-5.59a1.331 1.331 0 0 0-2.662 0v2.927H1.331a1.331 1.331 0 0 0 0 2.663h1.331Zm18.636 0v10.116H10.649v5.59a1.331 1.331 0 0 0 2.662 0V19.7h11.98a1.331 1.331 0 0 0 0-2.662H23.96V5.59a1.331 1.331 0 0 0-1.331-1.331h-1.331V1.33a1.331 1.331 0 0 0-2.662 0v5.591h2.662Z"/></symbol></defs>
+  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#bg)"/>
+  <g stroke="#ff8a68" stroke-width="22" stroke-linecap="round"><path d="M512 512 292 278M512 512l240-238M512 512 282 752M512 512l246 242"/></g>
+  <g stroke="#fff8f2" stroke-width="18" filter="url(#g)"><rect x="174" y="160" width="236" height="236" rx="64" fill="#ff6f52"/><rect x="634" y="156" width="236" height="236" rx="64" fill="#ffbd4a"/><rect x="164" y="634" width="236" height="236" rx="64" fill="#ff8a68"/><rect x="640" y="636" width="236" height="236" rx="64" fill="#ff6f52"/><path d="M512 326 696 432v212L512 750 328 644V432z" fill="#fff8f2"/></g>
+  <g fill="#172033"><circle cx="292" cy="248" r="34"/><path d="M230 342c14-48 110-48 124 0z"/><circle cx="752" cy="244" r="34"/><path d="M690 338c14-48 110-48 124 0z"/><circle cx="282" cy="722" r="34"/><path d="M220 816c14-48 110-48 124 0z"/><circle cx="758" cy="724" r="34"/><path d="M696 818c14-48 110-48 124 0z"/></g>
+  <use href="#brick" x="422" y="431" width="180" height="160" fill="#ff6f52"/>
+</svg>
