@@ -81,6 +81,13 @@ fn validate_date_str(s: &str) -> bool {
         && bytes[8..].iter().all(|b| b.is_ascii_digit())
 }
 
+fn partition_lookup_names(table_name: &str, suffix: &str) -> (String, String) {
+    (
+        format!("{table_name}_p{suffix}"),
+        format!("{table_name}_p_future"),
+    )
+}
+
 async fn ensure_partition(
     pool: &PgPool,
     table_name: &str,
@@ -110,24 +117,44 @@ async fn ensure_partition(
         )));
     }
 
-    let partition_name = format!("{table_name}_p{suffix}");
-
+    let (partition_name, future_partition_name) = partition_lookup_names(table_name, suffix);
     let row = sqlx::query(
         r#"
         SELECT COUNT(*) as cnt
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = current_schema()
-          AND c.relname = $1
-          AND c.relispartition = true
+        FROM pg_catalog.pg_inherits inheritance
+        JOIN pg_catalog.pg_class child ON child.oid = inheritance.inhrelid
+        JOIN pg_catalog.pg_namespace child_namespace ON child_namespace.oid = child.relnamespace
+        JOIN pg_catalog.pg_class parent ON parent.oid = inheritance.inhparent
+        JOIN pg_catalog.pg_namespace parent_namespace ON parent_namespace.oid = parent.relnamespace
+        WHERE child_namespace.nspname = current_schema()
+          AND parent_namespace.nspname = current_schema()
+          AND parent.relname = $1
+          AND child.relispartition = true
+          AND (
+              child.relname = $2
+              OR (
+                  child.relname = $3
+                  AND pg_catalog.pg_get_expr(child.relpartbound, child.oid, true)
+                      LIKE '%TO (MAXVALUE)%'
+                  AND pg_catalog.split_part(
+                      pg_catalog.pg_get_expr(child.relpartbound, child.oid, true),
+                      '''',
+                      2
+                  )::timestamptz <= $4::timestamptz
+              )
+          )
         "#,
     )
+    .bind(table_name)
     .bind(&partition_name)
+    .bind(&future_partition_name)
+    .bind(start_date_str)
     .fetch_one(pool)
     .await?;
 
     let cnt: i64 = row.try_get("cnt")?;
     if cnt > 0 {
+        info!(partition_name, "partition range already covered");
         return Ok(());
     }
 
@@ -188,5 +215,13 @@ mod tests {
         assert!(PARTITIONED_TABLES.contains(&"delivery_log"));
         assert!(!PARTITIONED_TABLES.contains(&"api_tokens"));
         assert!(!PARTITIONED_TABLES.contains(&"users"));
+    }
+
+    #[test]
+    fn lookup_includes_the_right_edge_catch_all_partition() {
+        assert_eq!(
+            partition_lookup_names("events", "2026_09"),
+            ("events_p2026_09".to_owned(), "events_p_future".to_owned())
+        );
     }
 }
