@@ -407,18 +407,34 @@ fn list_pull_requests(
         .map_err(|error| format!("GitHub returned invalid pull request metadata: {error}"))
 }
 
+struct PublishExactCommitRequest<'a> {
+    owner: &'a str,
+    name: &'a str,
+    repos_dir: Option<&'a str>,
+    expected_commit: &'a str,
+    expected_result_tree: &'a str,
+    branch_name: &'a str,
+    base_branch: &'a str,
+    expected_github_login: &'a str,
+    title: &'a str,
+    body: &'a str,
+}
+
 fn publish_exact_commit_blocking(
-    owner: &str,
-    name: &str,
-    repos_dir: Option<&str>,
-    expected_commit: &str,
-    expected_result_tree: &str,
-    branch_name: &str,
-    base_branch: &str,
-    expected_github_login: &str,
-    title: &str,
-    body: &str,
+    request: PublishExactCommitRequest<'_>,
 ) -> Result<GitHubRepositoryPublishResult, String> {
+    let PublishExactCommitRequest {
+        owner,
+        name,
+        repos_dir,
+        expected_commit,
+        expected_result_tree,
+        branch_name,
+        base_branch,
+        expected_github_login,
+        title,
+        body,
+    } = request;
     if branch_name == base_branch {
         return Err(
             "The publication branch must be different from the PR base branch.".to_string(),
@@ -638,18 +654,18 @@ pub async fn publish_github_repository_change(
     let title = validate_text(&title, "PR title", MAX_PR_TITLE_CHARS)?;
     let body = validate_text(&body, "PR body", MAX_PR_BODY_CHARS)?;
     tauri::async_runtime::spawn_blocking(move || {
-        publish_exact_commit_blocking(
-            &owner,
-            &name,
-            repos_dir.as_deref(),
-            &expected_commit,
-            &expected_result_tree,
-            &branch_name,
-            &base_branch,
-            &expected_github_login,
-            &title,
-            &body,
-        )
+        publish_exact_commit_blocking(PublishExactCommitRequest {
+            owner: &owner,
+            name: &name,
+            repos_dir: repos_dir.as_deref(),
+            expected_commit: &expected_commit,
+            expected_result_tree: &expected_result_tree,
+            branch_name: &branch_name,
+            base_branch: &base_branch,
+            expected_github_login: &expected_github_login,
+            title: &title,
+            body: &body,
+        })
     })
     .await
     .map_err(|error| format!("GitHub publication task failed: {error}"))?
