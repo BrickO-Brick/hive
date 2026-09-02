@@ -1,5 +1,4 @@
 import {
-  Activity,
   CheckCircle2,
   Clock3,
   Hash,
@@ -76,14 +75,14 @@ function normalizePresence(value: string): Presence {
 }
 
 function formatMessageTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("id-ID", {
+  return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp * 1000));
 }
 
 function formatMessageDay(timestamp: number): string {
-  return new Intl.DateTimeFormat("id-ID", {
+  return new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -151,7 +150,9 @@ export function HiveChatPage() {
       });
       setMessages(events.sort((a, b) => a.created_at - b.created_at));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Gagal memuat pesan.");
+      setError(
+        cause instanceof Error ? cause.message : "Unable to load messages.",
+      );
     }
   }, [identity]);
 
@@ -293,50 +294,49 @@ export function HiveChatPage() {
   const agentState = (() => {
     if (!connected) {
       return {
-        label:
-          connection === "connecting" ? "Menghubungkan…" : "Menyambung ulang…",
-        detail: "Menunggu koneksi aman ke Hive",
+        label: connection === "connecting" ? "Connecting…" : "Reconnecting…",
+        detail: "Waiting for a secure connection to Hive",
         tone: "amber" as const,
       };
     }
     if (typingVisible) {
       return {
-        label: "Sedang menjawab…",
-        detail: "BrickO sedang menulis balasan untuk Anda",
+        label: "Writing a response…",
+        detail: "BrickO is coding and composing a reply",
         tone: "violet" as const,
       };
     }
     if (waiting) {
       return {
-        label: "Sedang menyiapkan jawaban…",
-        detail: "Pesan sudah diterima dan sedang diproses",
+        label: "Preparing a response…",
+        detail: "Your message was received and is being processed",
         tone: "violet" as const,
       };
     }
     if (presence === "online") {
       return {
-        label: "Online dan siap",
-        detail: "BrickO siap menerima instruksi berikutnya",
+        label: "Online and ready",
+        detail: "BrickO is ready for the next instruction",
         tone: "emerald" as const,
       };
     }
     if (presence === "away") {
       return {
-        label: "Sedang idle",
-        detail: "BrickO tetap terhubung ke workspace",
+        label: "Idle",
+        detail: "BrickO is still connected to the workspace",
         tone: "amber" as const,
       };
     }
     if (presence === "offline") {
       return {
-        label: "Sedang offline",
-        detail: "Pesan tetap tersimpan aman di channel",
+        label: "Offline",
+        detail: "Messages remain safely stored in the channel",
         tone: "slate" as const,
       };
     }
     return {
-      label: "Memeriksa status…",
-      detail: "Koneksi Hive aktif",
+      label: "Checking status…",
+      detail: "Hive connection is active",
       tone: "slate" as const,
     };
   })();
@@ -357,18 +357,18 @@ export function HiveChatPage() {
           ? "idle"
           : "offline";
   const petStatus = typingVisible
-    ? "BrickO sedang ngoding dan menyusun jawaban…"
+    ? "BrickO is coding and composing a response…"
     : waiting
-      ? "BrickO sedang memikirkan langkah berikutnya…"
+      ? "BrickO is thinking through the next step…"
       : petCelebration?.variant === "check"
-        ? "Selesai — BrickO memberi tanda beres."
+        ? "Done — BrickO gives it the all-clear."
         : petCelebration?.variant === "code"
-          ? "Selesai — BrickO menutup sesi coding dengan rapi."
+          ? "Done — BrickO wraps up the coding session."
           : petCelebration
-            ? "Selesai — BrickO merayakan hasilnya."
+            ? "Done — BrickO celebrates the result."
             : connected
-              ? "BrickO siap menjadi coding partner Anda."
-              : "BrickO menunggu koneksi kembali.";
+              ? "BrickO is ready to be your coding partner."
+              : "BrickO is waiting for the connection to return.";
 
   const send = async (event: FormEvent) => {
     event.preventDefault();
@@ -388,7 +388,9 @@ export function HiveChatPage() {
       setText("");
       composerRef.current?.focus();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Pesan gagal dikirim.");
+      setError(
+        cause instanceof Error ? cause.message : "Unable to send message.",
+      );
     } finally {
       setBusy(false);
     }
@@ -436,18 +438,12 @@ export function HiveChatPage() {
           }`}
           aria-label={
             mobile
-              ? "Tutup menu navigasi"
+              ? "Close navigation menu"
               : collapsed
-                ? "Tampilkan menu navigasi"
-                : "Sembunyikan menu navigasi"
+                ? "Show navigation menu"
+                : "Hide navigation menu"
           }
-          title={
-            mobile
-              ? "Tutup menu"
-              : collapsed
-                ? "Tampilkan menu"
-                : "Sembunyikan menu"
-          }
+          title={mobile ? "Close menu" : collapsed ? "Show menu" : "Hide menu"}
         >
           {mobile ? (
             <X size={17} />
@@ -463,11 +459,11 @@ export function HiveChatPage() {
         className={`min-h-0 flex-1 overflow-y-auto overflow-x-hidden ${
           collapsed ? "px-2 py-3" : "px-3 py-4"
         }`}
-        aria-label="Navigasi Hive"
+        aria-label="Hive navigation"
       >
         {!collapsed && (
           <div className="mb-2 px-1 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#607086]">
-            Percakapan
+            Conversations
           </div>
         )}
         <button
@@ -495,14 +491,14 @@ export function HiveChatPage() {
           className={`mt-2 rounded border border-[#D8DEE8] bg-[#F7FAFC] ${
             collapsed ? "grid h-10 place-items-center p-0" : "p-3"
           }`}
-          aria-label="Status BrickO"
+          aria-label="BrickO status"
           title={
             collapsed ? `${agentState.label} — ${agentState.detail}` : undefined
           }
         >
           <div className={`flex items-start ${collapsed ? "" : "gap-2.5"}`}>
             <div className="relative size-8 shrink-0">
-              <BrickOPet mode={petMode} size="sm" />
+              <BrickOPet mode="still" size="sm" />
               <span
                 className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
               />
@@ -540,7 +536,7 @@ export function HiveChatPage() {
           className={`rounded border border-[#D8DEE8] bg-white ${
             collapsed ? "grid h-9 place-items-center" : "p-2.5"
           }`}
-          title={connected ? "Realtime tersambung" : "Sedang menyambung"}
+          title={connected ? "Realtime connected" : "Connecting"}
         >
           <div
             className={`flex items-center text-[11px] font-semibold text-[#42526B] ${
@@ -552,8 +548,7 @@ export function HiveChatPage() {
             ) : (
               <WifiOff size={13} className="text-[#D9861C]" />
             )}
-            {!collapsed &&
-              (connected ? "Realtime tersambung" : "Sedang menyambung")}
+            {!collapsed && (connected ? "Realtime connected" : "Connecting")}
           </div>
           {!collapsed && (
             <div className="mt-2 truncate border-t border-[#E2E8F0] pt-2 text-[10px] text-[#607086]">
@@ -583,7 +578,7 @@ export function HiveChatPage() {
             data-testid="mobile-navigation-backdrop"
             className="absolute inset-0 bg-[#10213F]/35 backdrop-blur-[1px]"
             onClick={() => setMobileNavigationOpen(false)}
-            aria-label="Tutup menu navigasi"
+            aria-label="Close navigation menu"
           />
           <aside
             data-testid="mobile-navigation"
@@ -602,7 +597,7 @@ export function HiveChatPage() {
               data-testid="mobile-navigation-open"
               onClick={() => setMobileNavigationOpen(true)}
               className="grid size-8 shrink-0 place-items-center rounded border border-[#FF6F52] bg-[#FF6F52] text-white shadow-[0_6px_14px_rgba(255,111,82,0.22)] transition hover:bg-[#E35E43] md:hidden"
-              aria-label="Buka menu navigasi"
+              aria-label="Open navigation menu"
             >
               <Menu size={17} />
             </button>
@@ -650,7 +645,7 @@ export function HiveChatPage() {
               type="button"
               onClick={() => void refresh()}
               className="grid size-9 place-items-center text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#FF6F52]"
-              aria-label="Muat ulang"
+              aria-label="Refresh"
             >
               <RefreshCw size={15} />
             </button>
@@ -658,45 +653,51 @@ export function HiveChatPage() {
               type="button"
               onClick={logout}
               className="grid size-9 place-items-center border-l border-[#D8DEE8] text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#C93F4A]"
-              aria-label="Keluar"
+              aria-label="Sign out"
             >
               <LogOut size={15} />
             </button>
           </div>
         </header>
 
-        {(waiting || typingVisible || !connected) && (
-          <div
-            className="mx-3 mt-3 flex shrink-0 items-center gap-3 rounded border border-[#D8DEE8] bg-[#F7FAFC] px-3.5 py-2.5 sm:mx-5"
-            aria-live="polite"
-          >
-            <div className="relative grid size-8 place-items-center rounded bg-[#EAF1F8] text-[#2F6FED]">
-              {connected ? <Activity size={16} /> : <WifiOff size={15} />}
-              {connected && (
-                <span className="absolute inset-0 animate-ping rounded border border-[#2F6FED]/25" />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold text-[#10233F]">
-                {agentState.label}
-              </div>
-              <div className="mt-0.5 truncate text-[11px] text-[#607086]">
-                {agentState.detail}
-              </div>
-            </div>
-            {connected && (waiting || typingVisible) && (
-              <div className="flex gap-1" aria-hidden="true">
-                {[0, 1, 2].map((dot) => (
-                  <span
-                    key={dot}
-                    className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
-                    style={{ animationDelay: `${dot * 120}ms` }}
-                  />
-                ))}
-              </div>
-            )}
+        <div
+          className="mx-3 mt-3 flex min-h-16 shrink-0 items-center gap-3 rounded-xl border border-[#FFD3C9] bg-gradient-to-r from-[#FFF8F5] via-white to-[#FFF1EB] px-3.5 py-2 shadow-[0_8px_24px_rgba(244,124,82,0.1)] sm:mx-5"
+          aria-live="polite"
+          data-testid="bricko-status-banner"
+        >
+          <div className="relative grid size-12 shrink-0 place-items-center">
+            <BrickOPet
+              celebration={petCelebration?.variant ?? "sparkle"}
+              key={petCelebration?.eventId ?? petMode}
+              label={petStatus}
+              mode={petMode}
+              size="md"
+              testId="bricko-status-pet"
+            />
+            <span
+              className={`absolute bottom-0 right-0 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
+            />
           </div>
-        )}
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-bold text-[#10233F]">
+              {agentState.label}
+            </div>
+            <div className="mt-0.5 truncate text-xs text-[#526178]">
+              {petStatus}
+            </div>
+          </div>
+          {connected && (waiting || typingVisible) && (
+            <div className="flex gap-1" aria-hidden="true">
+              {[0, 1, 2].map((dot) => (
+                <span
+                  key={dot}
+                  className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
+                  style={{ animationDelay: `${dot * 120}ms` }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
 
         <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
           <div className="mx-auto max-w-3xl">
@@ -705,7 +706,7 @@ export function HiveChatPage() {
                 <div className="max-w-md">
                   <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
                     <img
-                      alt="Tim Brickster sedang ngoding bersama BrickO, BrickA, BrickI, dan BrickR"
+                      alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
                       className="aspect-square w-full rounded-xl object-cover"
                       src={brickoOperationsUrl}
                     />
@@ -714,9 +715,12 @@ export function HiveChatPage() {
                     Welcome, Bricksters — let&apos;s build something fun!
                   </h2>
                   <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
-                    Bawa ide berani, bug yang keras kepala, dan proyek yang
-                    kelihatannya mustahil. BrickO bawa virtual snacks — sekarang
-                    kita ubah “mungkin” menjadi “shipped” bersama!
+                    Bring bold ideas, stubborn bugs, and seemingly impossible
+                    projects. BrickO brought virtual snacks—let&apos;s turn
+                    “maybe” into “shipped” together.
+                  </p>
+                  <p className="mx-auto mt-3 max-w-sm rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-2 text-xs font-semibold text-[#573129]">
+                    Interface language: English. Chat in any language.
                   </p>
                 </div>
               </div>
@@ -749,7 +753,7 @@ export function HiveChatPage() {
                         className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
                       >
                         <span className="text-[11px] font-bold text-[#42526B]">
-                          {mine ? "Anda" : "BrickO"}
+                          {mine ? "You" : "BrickO"}
                         </span>
                         <time className="text-[10px] text-[#607086]">
                           {formatMessageTime(message.created_at)}
@@ -758,12 +762,12 @@ export function HiveChatPage() {
                       <div
                         className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
                           mine
-                            ? "bg-[#FF6F52] text-white shadow-[#FF6F52]/10"
+                            ? "border border-[#F2B09F] bg-[#FFF0EB] text-[#44201A] shadow-[#FF6F52]/10"
                             : "border border-[#D8DEE8] bg-white text-[#172033]"
                         }`}
                       >
                         <div
-                          className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-invert prose-a:text-white" : "prose-a:text-[#E35E43]"}`}
+                          className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-a:text-[#9D321F]" : "prose-a:text-[#E35E43]"}`}
                         >
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {message.content}
@@ -772,7 +776,7 @@ export function HiveChatPage() {
                       </div>
                       {mine && (
                         <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
-                          <CheckCircle2 size={10} /> Terkirim
+                          <CheckCircle2 size={10} /> Sent
                         </div>
                       )}
                     </div>
@@ -783,7 +787,7 @@ export function HiveChatPage() {
 
             {typingVisible && (
               <div className="mb-5 flex items-end gap-2.5" aria-live="polite">
-                <BrickOPet mode="thinking" size="sm" />
+                <div className="size-8 shrink-0" aria-hidden="true" />
                 <div>
                   <div className="mb-1.5 px-1 text-[11px] font-bold text-[#42526B]">
                     BrickO
@@ -809,32 +813,6 @@ export function HiveChatPage() {
           className="shrink-0 border-t border-[#D8DEE8] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5"
         >
           <div className="mx-auto max-w-3xl">
-            <div className="relative mb-2.5 flex min-h-16 items-center gap-2 overflow-visible rounded-3xl border border-[#FFD3C9] bg-gradient-to-r from-[#FFF8F5] via-white to-[#FFF1EB] px-3 py-2 shadow-[0_10px_28px_rgba(244,124,82,0.12)]">
-              <span
-                aria-hidden
-                className="absolute right-5 top-3 size-2 rounded-full bg-[#FFB39C]/50"
-              />
-              <span
-                aria-hidden
-                className="absolute bottom-4 right-10 size-1.5 rounded-full bg-[#F47C52]/35"
-              />
-              <BrickOPet
-                celebration={petCelebration?.variant ?? "sparkle"}
-                key={petCelebration?.eventId ?? petMode}
-                label={petStatus}
-                mode={petMode}
-                size="md"
-                testId="bricko-companion"
-              />
-              <div className="min-w-0 flex-1" aria-live="polite">
-                <div className="text-xs font-bold text-[#10233F]">
-                  BrickO lagi nemenin
-                </div>
-                <div className="mt-0.5 line-clamp-2 text-2xs leading-relaxed text-[#607086]">
-                  {petStatus}
-                </div>
-              </div>
-            </div>
             {error && (
               <div
                 className="mb-3 flex items-center gap-2 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"
@@ -852,14 +830,14 @@ export function HiveChatPage() {
                 onKeyDown={handleComposerKeyDown}
                 maxLength={65_536}
                 rows={1}
-                placeholder="Ketik pesan untuk BrickO…"
+                placeholder="Message BrickO…"
                 className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"
               />
               <button
                 type="submit"
                 disabled={busy || !text.trim() || !connected}
                 className="grid size-11 shrink-0 place-items-center rounded bg-[#FF6F52] text-white transition hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#8491A4]"
-                aria-label="Kirim"
+                aria-label="Send"
               >
                 {busy ? (
                   <RefreshCw size={17} className="animate-spin" />
@@ -868,12 +846,14 @@ export function HiveChatPage() {
                 )}
               </button>
             </div>
-            <div className="mt-2 flex items-center justify-between px-1 text-[10px] text-[#607086]">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-xs text-[#526178]">
               <span className="flex items-center gap-1.5">
-                <Clock3 size={10} /> Enter untuk kirim · Shift+Enter untuk baris
-                baru
+                <Clock3 size={11} /> Enter to send · Shift+Enter for a new line
               </span>
-              <span>{text.length.toLocaleString("id-ID")}/65.536</span>
+              <span className="font-semibold text-[#573129]">
+                Interface: English · Chat: any language
+              </span>
+              <span>{text.length.toLocaleString("en-US")}/65,536</span>
             </div>
           </div>
         </form>

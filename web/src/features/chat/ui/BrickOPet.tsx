@@ -1,8 +1,8 @@
-import celebrateCheckUrl from "@/assets/bricko-pet/celebrate-check.png";
-import celebrateCodeUrl from "@/assets/bricko-pet/celebrate-code.png";
-import celebrateSparkleUrl from "@/assets/bricko-pet/celebrate-sparkle.png";
-import idleUrl from "@/assets/bricko-pet/idle.png";
-import thinkingUrl from "@/assets/bricko-pet/thinking.png";
+import celebrateCheckUrl from "@/assets/bricko-pet/celebrate-check-v2.png";
+import celebrateCodeUrl from "@/assets/bricko-pet/celebrate-code-v2.png";
+import celebrateSparkleUrl from "@/assets/bricko-pet/celebrate-sparkle-v2.png";
+import idleUrl from "@/assets/bricko-pet/idle-v2.png";
+import thinkingUrl from "@/assets/bricko-pet/thinking-v2.png";
 
 export type BrickOPetMode =
   | "still"
@@ -62,47 +62,12 @@ export function BrickOPet({
       role="img"
     >
       <span aria-hidden className="bricko-pet__shadow" />
-      {mode === "thinking" ? (
-        <span aria-hidden className="bricko-pet__trail">
-          <span />
-          <span />
-          <span />
-        </span>
-      ) : null}
       <img
         alt=""
         className="bricko-pet__image"
         draggable={false}
         src={sprite.url}
       />
-      {mode === "thinking" ? (
-        <span aria-hidden className="bricko-pet__thoughts">
-          <span />
-          <span />
-          <span />
-        </span>
-      ) : null}
-      {mode === "celebrate" ? (
-        <span aria-hidden className="bricko-pet__celebration">
-          <span>
-            {celebration === "check"
-              ? "✓"
-              : celebration === "code"
-                ? "&lt;/&gt;"
-                : "✦"}
-          </span>
-          <span>
-            {celebration === "check"
-              ? "●"
-              : celebration === "code"
-                ? "{ }"
-                : "✧"}
-          </span>
-          <span>
-            {celebration === "check" ? "✓" : celebration === "code" ? "/" : "✦"}
-          </span>
-        </span>
-      ) : null}
     </span>
   );
 }

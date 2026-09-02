@@ -157,7 +157,7 @@ test("Hive rotates a historical conflicting key once and completes SSO", async (
   const ticket = mantapTicket("mantap-user:bricki", "bricki@onebrick.io");
   await page.goto(`/mantul-sso#ticket=${ticket}`);
   await expect(
-    page.getByText("Menyelaraskan akun Mantap dengan identitas Hive Anda…"),
+    page.getByText("Syncing your Mantap account with your Hive identity…"),
   ).toBeVisible();
   await expect(page).toHaveURL(/\/app$/);
 
@@ -182,11 +182,11 @@ test("Hive shows an actionable SSO error instead of redirecting in a loop", asyn
   await expect(page).toHaveURL(/\/mantul-sso$/);
   await expect(
     page.getByText(
-      "Hive sedang tidak dapat memvalidasi Mantap. Silakan coba lagi sebentar lagi.",
+      "Hive cannot validate Mantap right now. Please try again shortly.",
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Kembali ke Mantap" }),
+    page.getByRole("button", { name: "Return to Mantap" }),
   ).toBeVisible();
 });
 
@@ -528,6 +528,11 @@ test("invite download falls back for mobile and non-desktop devices", async ({
 test("Hive shows BrickO realtime activity from relay signals", async ({
   page,
 }, testInfo) => {
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+
   await page.addInitScript(() => {
     const userPubkey =
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
@@ -678,30 +683,49 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.goto("/app");
-  await expect(page.getByText("Realtime tersambung")).toBeVisible();
-  await expect(page.getByText("Online dan siap").first()).toBeVisible();
+  await expect(page.getByText("Realtime connected")).toBeVisible();
+  await expect(page.getByText("Online and ready").first()).toBeVisible();
   await expect(page.getByText("Sudah aktif.")).toBeVisible();
 
-  const composer = page.getByPlaceholder("Ketik pesan untuk BrickO…");
+  const composer = page.getByPlaceholder("Message BrickO…");
   await composer.fill("Tolong cek status Hive sekarang");
   await composer.press("Enter");
   await expect(page.getByText("Tolong cek status Hive sekarang")).toBeVisible();
-  await expect(
-    page.getByText("Sedang menyiapkan jawaban…").first(),
-  ).toBeVisible();
-  const companion = page.getByTestId("bricko-companion");
-  await expect(companion).toHaveAttribute("data-mode", "thinking");
-  await expect(companion).toHaveAttribute("data-sprite", "thinking");
+  await expect(page.getByText("Preparing a response…").first()).toBeVisible();
+  const statusPet = page.getByTestId("bricko-status-pet");
+  await expect(page.getByTestId("bricko-companion")).toHaveCount(0);
+  await expect(statusPet).toHaveAttribute("data-mode", "thinking");
+  await expect(statusPet).toHaveAttribute("data-sprite", "thinking");
   expect(
-    await companion.evaluate(
+    await statusPet.evaluate(
       (element) => getComputedStyle(element).animationName,
     ),
   ).toContain("bricko-pet-thinking-drift");
-  expect(
-    await companion
-      .locator(".bricko-pet__image")
-      .evaluate((element) => getComputedStyle(element).animationName),
-  ).toContain("bricko-pet-thinking-code");
+  await expect
+    .poll(() =>
+      statusPet
+        .locator(".bricko-pet__image")
+        .evaluate((element) => getComputedStyle(element).animationName),
+    )
+    .toContain("bricko-pet-thinking-code");
+  await expect(
+    page.getByText("Interface: English · Chat: any language"),
+  ).toBeVisible();
+
+  const userMessage = page.getByText("Tolong cek status Hive sekarang");
+  const userBubbleColors = await userMessage.evaluate((element) => {
+    const bubble = element.closest(".rounded");
+    if (!bubble) throw new Error("User message bubble was not found");
+    const styles = getComputedStyle(bubble);
+    return {
+      backgroundColor: styles.backgroundColor,
+      color: styles.color,
+    };
+  });
+  expect(userBubbleColors).toEqual({
+    backgroundColor: "rgb(255, 240, 235)",
+    color: "rgb(68, 32, 26)",
+  });
 
   await page.evaluate(
     ({ agentPubkey, channelId }) => {
@@ -724,7 +748,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
     },
   );
-  await expect(page.getByText("Sedang menjawab…").first()).toBeVisible();
+  await expect(page.getByText("Writing a response…").first()).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("hive-activity.png"),
     fullPage: true,
@@ -754,11 +778,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByText("Semua sistem Hive siap dan koneksi realtime stabil."),
   ).toBeVisible();
-  await expect(page.getByText("Online dan siap").first()).toBeVisible();
-  await expect(companion).toHaveAttribute("data-mode", "celebrate");
-  await expect(companion).toHaveAttribute("data-sprite", "celebrate-code");
+  await expect(page.getByText("Online and ready").first()).toBeVisible();
+  await expect(statusPet).toHaveAttribute("data-mode", "celebrate");
+  await expect(statusPet).toHaveAttribute("data-sprite", "celebrate-code");
   expect(
-    await companion.evaluate(
+    await statusPet.evaluate(
       (element) => getComputedStyle(element).animationName,
     ),
   ).toContain("bricko-pet-celebrate-code");
@@ -838,4 +862,5 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .getByTestId("mobile-navigation-backdrop")
     .click({ position: { x: 350, y: 80 } });
   await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+  expect(consoleErrors).toEqual([]);
 });
