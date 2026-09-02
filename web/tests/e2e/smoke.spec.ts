@@ -728,7 +728,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByRole("heading", { name: "BrickO-Brick + brick-io" }),
   ).toBeVisible();
-  await expect(page.getByText("2 repositories available", { exact: false })).toBeVisible();
+  await expect(
+    page.getByText("2 repositories available", { exact: false }),
+  ).toBeVisible();
   await expect(page.getByTestId("github-repository-hive")).toBeVisible();
   await page.getByRole("button", { name: "Mantul", exact: true }).click();
   await expect(page.getByTestId("github-repository-hive")).toBeHidden();
