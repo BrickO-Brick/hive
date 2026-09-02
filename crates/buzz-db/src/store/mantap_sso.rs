@@ -9,6 +9,15 @@ use uuid::Uuid;
 use crate::error::{DbError, Result};
 use crate::Db;
 
+const REASSIGN_SUBJECT_NIP05_QUERY: &str =
+    "UPDATE users SET nip05_handle = NULL, updated_at = transaction_timestamp() \
+     WHERE community_id = $1 AND pubkey <> $2 \
+     AND lower(nip05_handle) = lower($3) \
+     AND EXISTS (SELECT 1 FROM mantap_sso_bindings \
+       WHERE mantap_sso_bindings.community_id = users.community_id \
+       AND mantap_sso_bindings.pubkey = users.pubkey \
+       AND mantap_sso_bindings.subject = $4)";
+
 /// Result of consuming one Mantap SSO ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MantapSsoProvisionOutcome {
@@ -104,6 +113,7 @@ pub async fn provision_mantap_sso(
     .rows_affected()
         == 1;
     if !ticket_inserted {
+        tx.rollback().await?;
         return Ok(MantapSsoProvisionOutcome::Replayed);
     }
 
@@ -118,6 +128,9 @@ pub async fn provision_mantap_sso(
         .as_ref()
         .is_some_and(|row| row.get::<String, _>("subject") != input.subject)
     {
+        // Preserve this one-time ticket for the client's single bounded retry
+        // after it selects a new key for the authoritative Mantap subject.
+        tx.rollback().await?;
         return Ok(MantapSsoProvisionOutcome::PubkeyConflict);
     }
 
@@ -134,6 +147,18 @@ pub async fn provision_mantap_sso(
     .bind(input.access)
     .execute(&mut *tx)
     .await?;
+
+    // A browser-key transition may leave this subject's NIP-05 handle on its
+    // historical profile. Release only a handle whose old key is proven to be
+    // bound to the same Mantap subject. Another subject's handle remains a
+    // hard uniqueness conflict, while old messages stay on their original key.
+    sqlx::query(REASSIGN_SUBJECT_NIP05_QUERY)
+        .bind(input.community_id.as_uuid())
+        .bind(input.pubkey)
+        .bind(input.email)
+        .bind(input.subject)
+        .execute(&mut *tx)
+        .await?;
 
     let display_name = input.email.split('@').next().unwrap_or(input.email);
     sqlx::query(
@@ -344,6 +369,23 @@ mod tests {
             vec![
                 ("01".repeat(32), "member".to_owned()),
                 ("02".repeat(32), "member".to_owned()),
+            ]
+        );
+
+        let profiles: Vec<(Vec<u8>, Option<String>)> = sqlx::query_as(
+            "SELECT pubkey, nip05_handle FROM users \
+             WHERE community_id = $1 AND pubkey = ANY($2) ORDER BY pubkey",
+        )
+        .bind(community_uuid)
+        .bind(vec![first_key.as_slice(), second_key.as_slice()])
+        .fetch_all(&pool)
+        .await
+        .expect("read transitioned NIP-05 profiles");
+        assert_eq!(
+            profiles,
+            vec![
+                (first_key.to_vec(), None),
+                (second_key.to_vec(), Some("owner@onebrick.io".to_owned())),
             ]
         );
     }

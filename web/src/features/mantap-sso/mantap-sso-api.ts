@@ -1,14 +1,60 @@
 import { makeNip98AuthHeader } from "@/shared/lib/nip98";
 import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
+import {
+  ensureMantapBrowserIdentity,
+  type MantapIdentityHint,
+  rotateMantapBrowserIdentity,
+} from "@/shared/lib/nostr-signer";
 
 export type HiveIdentity = {
   email: string;
   pubkey: string;
   channelId: string;
   role: string;
+  subject?: string;
 };
 
 const SESSION_KEY = "hive.mantap.identity.v1";
+
+export class MantapSsoExchangeError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+  ) {
+    super(code);
+    this.name = "MantapSsoExchangeError";
+  }
+}
+
+/**
+ * Read an unverified hint only to select a browser-local key. The relay still
+ * validates the signed ticket before it grants any membership.
+ */
+export function readMantapTicketIdentity(
+  ticket: string,
+): MantapIdentityHint | null {
+  try {
+    const parts = ticket.split(".");
+    if (parts.length !== 3) return null;
+    const encoded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(
+      atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")),
+    ) as { sub?: unknown; email?: unknown };
+    if (
+      typeof payload.sub !== "string" ||
+      payload.sub.length === 0 ||
+      payload.sub.length > 255 ||
+      typeof payload.email !== "string"
+    ) {
+      return null;
+    }
+    const email = payload.email.trim().toLowerCase();
+    if (!email || email.length > 320) return null;
+    return { subject: payload.sub, email };
+  } catch {
+    return null;
+  }
+}
 
 export async function exchangeMantapTicket(
   ticket: string,
@@ -29,16 +75,62 @@ export async function exchangeMantapTicket(
     string,
     unknown
   >;
-  if (!response.ok)
-    throw new Error(String(payload.error ?? `HTTP ${response.status}`));
+  if (!response.ok) {
+    throw new MantapSsoExchangeError(
+      String(payload.error ?? `HTTP ${response.status}`),
+      response.status,
+    );
+  }
   const identity = {
     email: String(payload.email),
     pubkey: String(payload.pubkey),
     channelId: String(payload.channel_id),
     role: String(payload.role),
+    subject: typeof payload.subject === "string" ? payload.subject : undefined,
   };
   window.localStorage.setItem(SESSION_KEY, JSON.stringify(identity));
   return identity;
+}
+
+let activeExchange:
+  | { ticket: string; promise: Promise<HiveIdentity> }
+  | undefined;
+
+/**
+ * Share a one-time ticket exchange across Strict Mode effects and perform at
+ * most one key rotation when a historical browser key belongs to another
+ * Mantap subject.
+ */
+export function exchangeMantapTicketWithRecovery(
+  ticket: string,
+  onRecovering?: () => void,
+): Promise<HiveIdentity> {
+  if (activeExchange?.ticket === ticket) return activeExchange.promise;
+
+  const hint = readMantapTicketIdentity(ticket);
+  const promise = (async () => {
+    ensureMantapBrowserIdentity(hint ?? undefined);
+    try {
+      return await exchangeMantapTicket(ticket);
+    } catch (error) {
+      if (
+        !(error instanceof MantapSsoExchangeError) ||
+        error.code !== "nostr_key_already_bound" ||
+        !hint
+      ) {
+        throw error;
+      }
+      onRecovering?.();
+      rotateMantapBrowserIdentity(hint);
+      return exchangeMantapTicket(ticket);
+    }
+  })();
+  activeExchange = { ticket, promise };
+  const clear = () => {
+    if (activeExchange?.promise === promise) activeExchange = undefined;
+  };
+  void promise.then(clear, clear);
+  return promise;
 }
 
 export function loadHiveIdentity(): HiveIdentity | null {

@@ -1,6 +1,26 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
+function mantapTicket(subject: string, email: string): string {
+  const header = Buffer.from(
+    JSON.stringify({ alg: "HS256", typ: "JWT" }),
+  ).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: subject, email })).toString(
+    "base64url",
+  );
+  return `${header}.${payload}.test-signature`;
+}
+
+function nip98Pubkey(authorization: string | undefined): string {
+  expect(authorization).toMatch(/^Nostr /);
+  const event = JSON.parse(
+    Buffer.from(authorization?.slice("Nostr ".length) ?? "", "base64").toString(
+      "utf8",
+    ),
+  ) as { pubkey: string };
+  return event.pubkey;
+}
+
 test("home page loads with Buzz branding", async ({ page }) => {
   await page.goto("/");
   await expect(
@@ -39,6 +59,137 @@ test("Hive redirects a missing SSO ticket to Mantap", async ({ page }) => {
   await page.goto("/mantul-sso");
 
   await expect(page).toHaveURL("https://mantap.onebrick.io/");
+});
+
+test("Hive switches Mantap accounts without rebinding their browser identities", async ({
+  page,
+}) => {
+  const observed: Array<{ subject: string; pubkey: string }> = [];
+  const subjectsByTicket = new Map([
+    [
+      mantapTicket("mantap-user:bricki", "bricki@onebrick.io"),
+      "mantap-user:bricki",
+    ],
+    [
+      mantapTicket("mantap-user:bricko", "bricko@onebrick.io"),
+      "mantap-user:bricko",
+    ],
+  ]);
+
+  await page.route("**/api/onebrick/sso/exchange", async (route) => {
+    const request = route.request();
+    const { ticket } = request.postDataJSON() as { ticket: string };
+    const subject = subjectsByTicket.get(ticket);
+    expect(subject).toBeTruthy();
+    const pubkey = nip98Pubkey(request.headers().authorization);
+    observed.push({ subject: subject ?? "", pubkey });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        email:
+          subject === "mantap-user:bricki"
+            ? "bricki@onebrick.io"
+            : "bricko@onebrick.io",
+        subject,
+        pubkey,
+        channel_id: "62ae672f-ab7b-4619-b013-13eec0111943",
+        role: "member",
+      }),
+    });
+  });
+
+  const brickiTicket = [...subjectsByTicket.entries()].find(
+    ([, subject]) => subject === "mantap-user:bricki",
+  )?.[0];
+  const brickoTicket = [...subjectsByTicket.entries()].find(
+    ([, subject]) => subject === "mantap-user:bricko",
+  )?.[0];
+  expect(brickiTicket).toBeTruthy();
+  expect(brickoTicket).toBeTruthy();
+
+  await page.goto(`/mantul-sso#ticket=${brickiTicket}`);
+  await expect(page).toHaveURL(/\/app$/);
+  await page.goto(`/mantul-sso#ticket=${brickoTicket}`);
+  await expect(page).toHaveURL(/\/app$/);
+  await page.goto(`/mantul-sso#ticket=${brickiTicket}`);
+  await expect(page).toHaveURL(/\/app$/);
+
+  expect(observed).toHaveLength(3);
+  expect(observed[0].pubkey).not.toBe(observed[1].pubkey);
+  expect(observed[2].pubkey).toBe(observed[0].pubkey);
+});
+
+test("Hive rotates a historical conflicting key once and completes SSO", async ({
+  page,
+}) => {
+  const pubkeys: string[] = [];
+  let attempt = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem("hive.mantap.nostr-secret.v1", `${"00".repeat(31)}01`);
+  });
+  await page.route("**/api/onebrick/sso/exchange", async (route) => {
+    attempt += 1;
+    const pubkey = nip98Pubkey(route.request().headers().authorization);
+    pubkeys.push(pubkey);
+    if (attempt === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "nostr_key_already_bound" }),
+      });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        email: "bricki@onebrick.io",
+        subject: "mantap-user:bricki",
+        pubkey,
+        channel_id: "62ae672f-ab7b-4619-b013-13eec0111943",
+        role: "member",
+      }),
+    });
+  });
+
+  const ticket = mantapTicket("mantap-user:bricki", "bricki@onebrick.io");
+  await page.goto(`/mantul-sso#ticket=${ticket}`);
+  await expect(
+    page.getByText(
+      "Synchronizing your Mantap account with your Hive identity…",
+    ),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/app$/);
+
+  expect(attempt).toBe(2);
+  expect(pubkeys[0]).not.toBe(pubkeys[1]);
+});
+
+test("Hive shows an actionable SSO error instead of redirecting in a loop", async ({
+  page,
+}) => {
+  await page.route("**/api/onebrick/sso/exchange", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "mantap_sso_unavailable" }),
+    });
+  });
+
+  const ticket = mantapTicket("mantap-user:bricki", "bricki@onebrick.io");
+  await page.goto(`/mantul-sso#ticket=${ticket}`);
+
+  await expect(page).toHaveURL(/\/mantul-sso$/);
+  await expect(
+    page.getByText(
+      "Hive cannot verify Mantap right now. Please try again shortly.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Back to Mantap" }),
+  ).toBeVisible();
 });
 
 test("invite requires age and legal consent before opening Buzz", async ({
