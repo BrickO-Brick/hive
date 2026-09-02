@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockBridge } from "../helpers/bridge";
-import { passThroughBackupStep } from "../helpers/onboarding";
+import { signInWithMantap } from "../helpers/onboarding";
 
 function runtime(
   id: "buzz-agent" | "claude" | "codex" | "goose",
@@ -38,8 +38,7 @@ function runtime(
 async function navigateToSetupPage(
   page: Parameters<typeof installMockBridge>[0],
 ) {
-  await page.getByRole("button", { name: "Sign in with Mantap" }).click();
-  await passThroughBackupStep(page);
+  await signInWithMantap(page);
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
 }
 

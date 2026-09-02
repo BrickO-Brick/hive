@@ -139,7 +139,6 @@ export default defineConfig({
         "**/global-agent-config-screenshots.spec.ts",
         "**/doctor-states.spec.ts",
         "**/onboarding-avatar-skip.spec.ts",
-        "**/onboarding-backup.spec.ts",
         "**/onboarding-agent-defaults.spec.ts",
         "**/nostr-bind.spec.ts",
         "**/mobile-pairing-qr.spec.ts",
