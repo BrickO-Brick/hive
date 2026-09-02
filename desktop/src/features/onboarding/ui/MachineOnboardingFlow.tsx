@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
+import { HiveWordmark } from "@/shared/ui/buzz-logo/HiveWordmark";
 import { BackupStep } from "./BackupStep";
 import { DefaultConfigStep } from "./DefaultConfigStep";
 import { DownloadKeyStep } from "./DownloadKeyStep";
@@ -26,7 +27,6 @@ import {
 } from "./EncryptedBackupCreator";
 import { IdentityKeyHelpDialog } from "./IdentityKeyHelpDialog";
 import { IdentityRecoveryPairing } from "./IdentityRecoveryPairing";
-import { LandingBees } from "./LandingBees";
 import {
   NostrKeyImportForm,
   type NostrKeyImportStage,
@@ -293,7 +293,6 @@ export function MachineOnboardingFlow({
       data-testid="machine-onboarding-gate"
     >
       <StartupWindowDragRegion />
-      {page === "identity" ? <LandingBees /> : null}
       {page !== "identity" && !isSecuritySubview ? (
         <OnboardingChrome
           current={page === "config" ? 4 : page === "setup" ? 3 : 2}
@@ -307,53 +306,64 @@ export function MachineOnboardingFlow({
         >
           {page === "identity" ? (
             <OnboardingSlideTransition
-              className="flex w-full max-w-[720px] flex-col items-center text-center"
+              className="grid w-full items-center gap-8 px-6 text-left md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:px-10"
               direction={transitionDirection}
               transitionKey={`machine-identity-${transitionDirection}`}
             >
-              <img
-                alt="Buzz"
-                className="w-full max-w-[600px]"
-                src="/landing/buzz-wordmark.png"
-              />
-              <p className="mt-2 max-w-[560px] text-center text-2xl font-normal leading-none text-foreground">
-                Your people, your agents, your projects —<br />
-                all in one place.
-              </p>
-              {error ? (
-                <p className="mt-4 text-sm text-destructive">{error}</p>
-              ) : null}
-              <div className="mt-10 flex flex-col items-center gap-3">
-                <Button
-                  className={ONBOARDING_LANDING_CTA_CLASS}
-                  disabled={isPending}
-                  onClick={() => void loadFreshIdentity()}
-                  type="button"
-                >
-                  {isPending
-                    ? "Loading identity…"
-                    : selectedPubkey
-                      ? "Continue setup"
-                      : "Create a new identity key"}
-                </Button>
-                <Button
-                  className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
-                  disabled={isPending}
-                  onClick={() => {
-                    setKeyImportDialog(null);
-                    setKeyImportStage("key-entry");
-                    setTransitionDirection("forward");
-                    setPage("key-import");
-                  }}
-                  type="button"
-                  variant="ghost"
-                >
-                  {selectedPubkey
-                    ? "Use a different key instead"
-                    : "Use an existing key"}
-                </Button>
+              <div className="relative mx-auto w-full max-w-[420px] overflow-hidden rounded-[2rem] bg-white/95 p-3 shadow-[0_2rem_5rem_rgb(73_28_19_/_0.18)] ring-1 ring-black/10">
+                <img
+                  alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
+                  className="aspect-square w-full rounded-[1.4rem] object-cover"
+                  data-testid="onboarding-team-hero"
+                  src="/branding/bricko-operations.jpg"
+                />
               </div>
-              <IdentityKeyHelpDialog />
+              <div className="flex flex-col items-center text-center md:items-start md:text-left">
+                <HiveWordmark className="w-full max-w-[440px] text-brand" />
+                <p className="mt-3 max-w-[500px] text-2xl font-normal leading-tight text-foreground">
+                  Brickster, BrickO, and all the projects, in one place,
+                  let&apos;s collaborate!
+                </p>
+                <p className="mt-4 max-w-[460px] text-sm leading-6 text-foreground/70">
+                  Welcome, Bricksters! Bring the bold ideas, stubborn bugs, and
+                  impossible-looking tasks. BrickO brought the virtual snacks —
+                  let&apos;s turn “maybe” into “shipped” together.
+                </p>
+                {error ? (
+                  <p className="mt-4 text-sm text-destructive">{error}</p>
+                ) : null}
+                <div className="mt-8 flex flex-col items-center gap-3 md:items-start">
+                  <Button
+                    className={ONBOARDING_LANDING_CTA_CLASS}
+                    disabled={isPending}
+                    onClick={() => void loadFreshIdentity()}
+                    type="button"
+                  >
+                    {isPending
+                      ? "Loading identity…"
+                      : selectedPubkey
+                        ? "Continue setup"
+                        : "Create a new identity key"}
+                  </Button>
+                  <Button
+                    className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
+                    disabled={isPending}
+                    onClick={() => {
+                      setKeyImportDialog(null);
+                      setKeyImportStage("key-entry");
+                      setTransitionDirection("forward");
+                      setPage("key-import");
+                    }}
+                    type="button"
+                    variant="ghost"
+                  >
+                    {selectedPubkey
+                      ? "Use a different key instead"
+                      : "Use an existing key"}
+                  </Button>
+                </div>
+                <IdentityKeyHelpDialog />
+              </div>
             </OnboardingSlideTransition>
           ) : page === "key-import" ? (
             <OnboardingSlideTransition
@@ -381,7 +391,7 @@ export function MachineOnboardingFlow({
                     "Enter your backup password to restore your identity."
                   ) : (
                     <p>
-                      Paste your private key to sign in to Buzz. You can also
+                      Paste your private key to sign in to Hive. You can also
                       use a{" "}
                       <button
                         className="rounded-sm font-medium underline decoration-foreground/40 underline-offset-4 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
@@ -450,7 +460,7 @@ export function MachineOnboardingFlow({
                       Restore from a backup file
                     </DialogTitle>
                     <DialogDescription className="mx-auto mt-4 max-w-[28rem] text-sm leading-6 text-foreground/80">
-                      Choose the encrypted backup file you saved from Buzz.
+                      Choose the encrypted backup file you saved from Hive.
                     </DialogDescription>
                     <NostrKeyImportForm
                       footerMode="inline"
@@ -480,12 +490,12 @@ export function MachineOnboardingFlow({
                     <DialogTitle className="text-balance px-8 text-3xl font-normal text-foreground">
                       {identityLost
                         ? "Recover from your phone"
-                        : "Use your Buzz identity"}
+                        : "Use your Hive identity"}
                     </DialogTitle>
                     <DialogDescription className="mt-4 text-sm leading-6 text-foreground/80">
                       {phoneRecoveryStep === "loading" ||
                       phoneRecoveryStep === "qr"
-                        ? "Scan this code with a signed-in Buzz phone."
+                        ? "Scan this code with a signed-in Hive phone."
                         : "Confirm the code before sharing your identity."}
                     </DialogDescription>
                     <div className="mt-5">

@@ -33,7 +33,7 @@ export function RecoveryScreen({
           }}
           type="button"
         >
-          Relaunch Buzz
+          Relaunch Hive
         </Button>
       </div>
     </div>

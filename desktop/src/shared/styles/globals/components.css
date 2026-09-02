@@ -272,14 +272,15 @@
   }
 
   .buzz-onboarding-neutral-theme.buzz-startup-shell {
-    /* Dot grid over the chartreuse→light-blue gradient (dots layer first so
+    /* Dot grid over the coral→blush→warm-white field (dots layer first so
        they sit on top). The welcome page overrides this with dots over a flat
-       chartreuse fill below. */
+       coral fill below. */
     background-image:
-      radial-gradient(circle, rgb(0 0 0 / 0.08) 1px, transparent 1px),
+      radial-gradient(circle, rgb(73 28 19 / 0.11) 1px, transparent 1px),
       linear-gradient(
         to bottom,
-        var(--buzz-welcome-chartreuse),
+        var(--buzz-welcome-chartreuse) 0%,
+        var(--buzz-onboarding-shell-middle) 45%,
         var(--buzz-onboarding-shell-bottom)
       );
     background-size:
@@ -289,29 +290,32 @@
 
   .buzz-onboarding-neutral-theme.buzz-startup-shell.buzz-onboarding-welcome {
     background-color: var(--buzz-welcome-chartreuse);
-    /* Landing is a flat chartreuse field, so the docked-footer scrim must match
-       it (not the gradient's light-blue bottom) to stay invisible. */
+    /* Landing is a flat coral field, so the docked-footer scrim must match it
+       to stay invisible. */
     --buzz-onboarding-shell-bottom: var(--buzz-welcome-chartreuse);
     /* Subtle dot grid: 2px dots spaced on a 24px lattice. */
     background-image: radial-gradient(
       circle,
-      rgb(0 0 0 / 0.08) 1px,
+      rgb(73 28 19 / 0.11) 1px,
       transparent 1px
     );
     background-size: 24px 24px;
   }
 
   .buzz-onboarding-neutral-theme {
-    /* Landing "chartreuse" — the welcome background; reused for the CTA label. */
-    --buzz-welcome-chartreuse: #d7d72e;
+    /* Brick coral — the welcome background; reused for the landing CTA label. */
+    --buzz-welcome-chartreuse: #ff6f52;
+    /* Soft blush gives the white key field separation without falling back to
+       the previous yellow/blue palette. */
+    --buzz-onboarding-shell-middle: #ffb5a4;
     /* Bottom stop of the onboarding shell gradient; also the docked-footer
        scrim color so content scrolling under the CTA fades into the page. */
-    --buzz-onboarding-shell-bottom: #d7e7f6;
-    /* Label color for the primary onboarding CTA (light blue on the dark pill). */
-    --buzz-onboarding-cta-label: #d7e6f0;
-    /* Olive ink for the backup step's private key and its "never share" caption,
+    --buzz-onboarding-shell-bottom: #fff1ec;
+    /* Label color for the primary onboarding CTA (soft coral on the dark pill). */
+    --buzz-onboarding-cta-label: #ffb5a4;
+    /* Deep coral ink for private keys and security captions,
        reading against the fuzzy-white key frame. */
-    --buzz-onboarding-backup-ink: #717106;
+    --buzz-onboarding-backup-ink: #8c321f;
     --background: 0 0% 100%;
     --foreground: 0 0% 9%;
     --primary: 0 0% 9%;
@@ -329,11 +333,11 @@
     --buzz-onboarding-emoji-picker-color: 23, 23, 23;
     --buzz-onboarding-emoji-picker-input: 255, 255, 255;
     --buzz-onboarding-avatar-dialog-bg: 255 255 255;
-    --buzz-onboarding-avatar-accent-bg: 240 240 205;
-    --buzz-onboarding-avatar-accent-fg: 113 113 6;
-    --buzz-onboarding-avatar-action-bg: 23 23 23;
-    --buzz-onboarding-avatar-action-fg: 240 240 205;
-    --buzz-onboarding-avatar-control-fg: 113 113 6;
+    --buzz-onboarding-avatar-accent-bg: 255 224 217;
+    --buzz-onboarding-avatar-accent-fg: 140 50 31;
+    --buzz-onboarding-avatar-action-bg: 45 23 18;
+    --buzz-onboarding-avatar-action-fg: 255 229 223;
+    --buzz-onboarding-avatar-control-fg: 140 50 31;
     --buzz-onboarding-avatar-dialog-shadow: 0 0 0;
   }
 
@@ -409,11 +413,11 @@
     --buzz-onboarding-emoji-picker-color: 250, 250, 250;
     --buzz-onboarding-emoji-picker-input: 10, 10, 10;
     --buzz-onboarding-avatar-dialog-bg: 24 24 20;
-    --buzz-onboarding-avatar-accent-bg: 211 211 163;
-    --buzz-onboarding-avatar-accent-fg: 24 24 20;
-    --buzz-onboarding-avatar-action-bg: 113 113 6;
-    --buzz-onboarding-avatar-action-fg: 240 240 205;
-    --buzz-onboarding-avatar-control-fg: 224 224 176;
+    --buzz-onboarding-avatar-accent-bg: 92 39 29;
+    --buzz-onboarding-avatar-accent-fg: 255 225 218;
+    --buzz-onboarding-avatar-action-bg: 255 111 82;
+    --buzz-onboarding-avatar-action-fg: 38 18 14;
+    --buzz-onboarding-avatar-control-fg: 255 166 146;
     --buzz-onboarding-avatar-dialog-shadow: 0 0 0;
   }
 
@@ -439,11 +443,11 @@
     --buzz-onboarding-emoji-picker-color: 23, 23, 23;
     --buzz-onboarding-emoji-picker-input: 255, 255, 255;
     --buzz-onboarding-avatar-dialog-bg: 255 255 255;
-    --buzz-onboarding-avatar-accent-bg: 240 240 205;
-    --buzz-onboarding-avatar-accent-fg: 113 113 6;
-    --buzz-onboarding-avatar-action-bg: 23 23 23;
-    --buzz-onboarding-avatar-action-fg: 240 240 205;
-    --buzz-onboarding-avatar-control-fg: 113 113 6;
+    --buzz-onboarding-avatar-accent-bg: 255 224 217;
+    --buzz-onboarding-avatar-accent-fg: 140 50 31;
+    --buzz-onboarding-avatar-action-bg: 45 23 18;
+    --buzz-onboarding-avatar-action-fg: 255 229 223;
+    --buzz-onboarding-avatar-control-fg: 140 50 31;
     --buzz-onboarding-avatar-dialog-shadow: 0 0 0;
   }
 
@@ -467,11 +471,11 @@
     --buzz-onboarding-emoji-picker-color: 250, 250, 250;
     --buzz-onboarding-emoji-picker-input: 10, 10, 10;
     --buzz-onboarding-avatar-dialog-bg: 24 24 20;
-    --buzz-onboarding-avatar-accent-bg: 211 211 163;
-    --buzz-onboarding-avatar-accent-fg: 24 24 20;
-    --buzz-onboarding-avatar-action-bg: 113 113 6;
-    --buzz-onboarding-avatar-action-fg: 240 240 205;
-    --buzz-onboarding-avatar-control-fg: 224 224 176;
+    --buzz-onboarding-avatar-accent-bg: 92 39 29;
+    --buzz-onboarding-avatar-accent-fg: 255 225 218;
+    --buzz-onboarding-avatar-action-bg: 255 111 82;
+    --buzz-onboarding-avatar-action-fg: 38 18 14;
+    --buzz-onboarding-avatar-control-fg: 255 166 146;
     --buzz-onboarding-avatar-dialog-shadow: 0 0 0;
   }
 

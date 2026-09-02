@@ -21,10 +21,10 @@ function nip98Pubkey(authorization: string | undefined): string {
   return event.pubkey;
 }
 
-test("home page loads with Buzz branding", async ({ page }) => {
+test("home page loads with Hive branding", async ({ page }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("main").getByRole("img", { name: "Buzz" }),
+    page.getByRole("main").getByRole("img", { name: "Hive" }),
   ).toBeVisible();
 });
 
@@ -157,9 +157,7 @@ test("Hive rotates a historical conflicting key once and completes SSO", async (
   const ticket = mantapTicket("mantap-user:bricki", "bricki@onebrick.io");
   await page.goto(`/mantul-sso#ticket=${ticket}`);
   await expect(
-    page.getByText(
-      "Synchronizing your Mantap account with your Hive identity…",
-    ),
+    page.getByText("Menyelaraskan akun Mantap dengan identitas Hive Anda…"),
   ).toBeVisible();
   await expect(page).toHaveURL(/\/app$/);
 
@@ -184,15 +182,15 @@ test("Hive shows an actionable SSO error instead of redirecting in a loop", asyn
   await expect(page).toHaveURL(/\/mantul-sso$/);
   await expect(
     page.getByText(
-      "Hive cannot verify Mantap right now. Please try again shortly.",
+      "Hive sedang tidak dapat memvalidasi Mantap. Silakan coba lagi sebentar lagi.",
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Back to Mantap" }),
+    page.getByRole("button", { name: "Kembali ke Mantap" }),
   ).toBeVisible();
 });
 
-test("invite requires age and legal consent before opening Buzz", async ({
+test("invite requires age and legal consent before opening Hive", async ({
   page,
 }) => {
   await page.route("**/api/join-policy", async (route) => {
@@ -256,10 +254,10 @@ test("invite requires age and legal consent before opening Buzz", async ({
 
   const ageConfirmation = page.getByLabel("I am 18 years of age or older.");
   const agreementConfirmation = page.getByLabel(
-    "I agree to the Buzz Terms of Service and Privacy Policy.",
+    "I agree to the Hive Terms of Service and Privacy Policy.",
   );
   const acceptInvite = page.getByRole("button", {
-    name: "Accept invite in Buzz",
+    name: "Accept invite in Hive",
   });
 
   await expect(ageConfirmation).toBeVisible();
@@ -285,7 +283,7 @@ test("invite requires age and legal consent before opening Buzz", async ({
   await page
     .locator("label")
     .filter({
-      hasText: "I agree to the Buzz Terms of Service and Privacy Policy.",
+      hasText: "I agree to the Hive Terms of Service and Privacy Policy.",
     })
     .click({ position: { x: 8, y: 8 } });
   await expect(agreementConfirmation).toBeChecked();
@@ -691,6 +689,19 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByText("Sedang menyiapkan jawaban…").first(),
   ).toBeVisible();
+  const companion = page.getByTestId("bricko-companion");
+  await expect(companion).toHaveAttribute("data-mode", "thinking");
+  await expect(companion).toHaveAttribute("data-sprite", "thinking");
+  expect(
+    await companion.evaluate(
+      (element) => getComputedStyle(element).animationName,
+    ),
+  ).toContain("bricko-pet-thinking-drift");
+  expect(
+    await companion
+      .locator(".bricko-pet__image")
+      .evaluate((element) => getComputedStyle(element).animationName),
+  ).toContain("bricko-pet-thinking-code");
 
   await page.evaluate(
     ({ agentPubkey, channelId }) => {
@@ -744,6 +755,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByText("Semua sistem Hive siap dan koneksi realtime stabil."),
   ).toBeVisible();
   await expect(page.getByText("Online dan siap").first()).toBeVisible();
+  await expect(companion).toHaveAttribute("data-mode", "celebrate");
+  await expect(companion).toHaveAttribute("data-sprite", "celebrate-code");
+  expect(
+    await companion.evaluate(
+      (element) => getComputedStyle(element).animationName,
+    ),
+  ).toContain("bricko-pet-celebrate-code");
+  await page.waitForTimeout(1_150);
 
   await page.screenshot({
     path: testInfo.outputPath("hive-polished.png"),
@@ -753,7 +772,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   const desktopNavigation = page.getByTestId("desktop-navigation");
   await expect(desktopNavigation).toHaveCSS("width", "200px");
   await expect(
-    desktopNavigation.getByRole("img", { name: "Brick" }),
+    desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("01-desktop-navigation-expanded.png"),
@@ -763,7 +782,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await page.getByTestId("sidebar-toggle").click();
   await expect(desktopNavigation).toHaveCSS("width", "52px");
   await expect(
-    desktopNavigation.getByRole("img", { name: "Brick" }),
+    desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("02-desktop-navigation-collapsed.png"),
@@ -801,7 +820,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await page.getByTestId("mobile-navigation-open").click();
   await expect(page.getByTestId("mobile-navigation")).toBeVisible();
   await expect(
-    page.getByTestId("mobile-navigation").getByRole("img", { name: "Brick" }),
+    page.getByTestId("mobile-navigation").getByRole("img", { name: "Hive" }),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("06-mobile-navigation-open.png"),

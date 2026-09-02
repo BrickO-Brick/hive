@@ -1,4 +1,4 @@
-import { BuzzMark } from "@/shared/ui/buzz-logo/BuzzMark";
+import hiveLogoUrl from "../../../../../web/src/assets/hive-logo.svg";
 
 /**
  * Positions in the first-launch flow: landing, identity/key, harness setup,
@@ -12,7 +12,7 @@ const ONBOARDING_CTA_SHAPE = "h-[2.375rem] rounded-full px-6";
 
 /**
  * Primary-CTA styling for the in-step onboarding pages: the shared pill with a
- * light-blue label (`--buzz-onboarding-cta-label`, available on any
+ * coral label (`--buzz-onboarding-cta-label`, available on any
  * `.buzz-onboarding-neutral-theme` subtree).
  */
 export const ONBOARDING_PRIMARY_CTA_CLASS = `${ONBOARDING_CTA_SHAPE} text-[var(--buzz-onboarding-cta-label)]`;
@@ -22,8 +22,7 @@ export const ONBOARDING_SECURITY_PRIMARY_CTA_CLASS = `${ONBOARDING_CTA_SHAPE} bg
 
 /**
  * Primary-CTA styling for the landing screen only: the shared pill with the
- * chartreuse label (`--buzz-welcome-chartreuse`). The blue label is reserved
- * for the CTAs inside the steps.
+ * coral label (`--buzz-welcome-chartreuse`).
  */
 export const ONBOARDING_LANDING_CTA_CLASS = `${ONBOARDING_CTA_SHAPE} text-[var(--buzz-welcome-chartreuse)]`;
 
@@ -47,7 +46,7 @@ export const ONBOARDING_SECURITY_ICON_CLASS =
 
 /**
  * Shared onboarding chrome shown on every page after the landing screen: a
- * static Buzz mark pinned to the top-left, and a centered pagination track that
+ * Hive lockup pinned to the top-left, and a centered pagination track that
  * sits above the page title. The active page reads as a longer bar; inactive
  * pages are dots.
  */
@@ -63,8 +62,11 @@ export function OnboardingChrome({
       aria-hidden
       className="pointer-events-none fixed inset-x-0 top-12 z-10 flex items-center px-6 text-foreground"
     >
-      <span className="block w-11" data-testid="onboarding-logo">
-        <BuzzMark className="h-auto w-full" />
+      <span
+        className="flex h-10 items-center rounded-xl bg-white/95 px-3 shadow-sm ring-1 ring-black/10"
+        data-testid="onboarding-logo"
+      >
+        <img alt="Hive" className="h-7 w-auto" src={hiveLogoUrl} />
       </span>
       <div
         className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-2"

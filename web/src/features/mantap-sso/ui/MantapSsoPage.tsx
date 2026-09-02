@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import brickoOperationsUrl from "@/assets/bricko-operations.jpg";
 import {
   exchangeMantapTicketWithRecovery,
   MantapSsoExchangeError,
@@ -9,13 +10,13 @@ type SsoState = "validating" | "recovering" | "failed";
 function failureMessage(error: unknown): string {
   if (error instanceof MantapSsoExchangeError) {
     if (error.code === "invalid_sso_ticket") {
-      return "Your Mantap session has expired. Open Hive from Mantap to start a new session.";
+      return "Sesi Mantap sudah kedaluwarsa. Buka Hive lagi dari Mantap untuk membuat sesi baru.";
     }
     if (error.code === "mantap_sso_unavailable") {
-      return "Hive cannot verify Mantap right now. Please try again shortly.";
+      return "Hive sedang tidak dapat memvalidasi Mantap. Silakan coba lagi sebentar lagi.";
     }
   }
-  return "Hive could not connect your Mantap account. Open Hive from Mantap to try again.";
+  return "Kami belum bisa menyambungkan akun Mantap Anda ke Hive. Buka kembali Hive dari Mantap untuk mencoba lagi.";
 }
 
 export function MantapSsoPage() {
@@ -50,39 +51,49 @@ export function MantapSsoPage() {
 
   const status =
     state === "recovering"
-      ? "Synchronizing your Mantap account with your Hive identity…"
+      ? "Menyelaraskan akun Mantap dengan identitas Hive Anda…"
       : state === "failed"
         ? errorMessage
-        : "Validating your Mantap session…";
+        : "Memvalidasi sesi Mantap Anda…";
 
   return (
     <div
-      className="grid min-h-dvh place-items-center bg-slate-950 p-6 text-slate-100"
+      className="grid min-h-dvh place-items-center bg-[#171412] p-6 text-[#fff1ec]"
       data-onebrick-sso-handoff="onebrick-sso-handoff-v1"
     >
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl">
-        <div className="mb-5 inline-flex rounded-2xl bg-violet-500/15 px-3 py-1 text-sm font-semibold text-violet-300">
-          Hive × Mantap
-        </div>
-        <h1 className="text-2xl font-semibold">Connecting to Hive</h1>
-        <p className="mt-2 text-sm text-slate-300">
-          Secure sign-in in progress
-        </p>
-        <p
-          className={`mt-3 text-sm leading-6 ${state === "failed" ? "text-red-300" : "text-slate-400"}`}
-          aria-live="polite"
-        >
-          {status}
-        </p>
-        {state === "failed" ? (
-          <button
-            className="mt-5 rounded-xl bg-violet-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-violet-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-300"
-            onClick={() => window.location.assign("https://mantap.onebrick.io")}
-            type="button"
+      <div className="grid w-full max-w-3xl overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-2xl md:grid-cols-2">
+        <img
+          alt="BrickO sedang pair-programming bersama tim"
+          className="h-full min-h-64 w-full object-cover"
+          src={brickoOperationsUrl}
+        />
+        <div className="p-8">
+          <div className="mb-5 inline-flex rounded-2xl bg-[#ff6f52]/15 px-3 py-1 text-sm font-semibold text-[#ffb5a4]">
+            Hive × Mantap
+          </div>
+          <h1 className="text-2xl font-semibold">Masuk ke Hive</h1>
+          <p className="mt-3 text-sm leading-6 text-[#fff1ec]/80">
+            Welcome, Bricksters! Ide besar, bug bandel, dan virtual snacks sudah
+            siap — waktunya bikin sesuatu yang mantap bersama BrickO.
+          </p>
+          <p
+            className={`mt-4 text-sm leading-6 ${state === "failed" ? "text-[#ffd0c5]" : "text-[#ffb5a4]"}`}
+            aria-live="polite"
           >
-            Back to Mantap
-          </button>
-        ) : null}
+            {status}
+          </p>
+          {state === "failed" ? (
+            <button
+              className="mt-5 rounded-xl bg-[#ff6f52] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#ff8067] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ffb5a4]"
+              onClick={() =>
+                window.location.assign("https://mantap.onebrick.io")
+              }
+              type="button"
+            >
+              Kembali ke Mantap
+            </button>
+          ) : null}
+        </div>
       </div>
     </div>
   );

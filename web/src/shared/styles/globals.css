@@ -98,3 +98,437 @@
     font-family: "Inter Variable", Inter, "Avenir Next", "Segoe UI", sans-serif;
   }
 }
+
+@layer components {
+  .bricko-pet {
+    position: relative;
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    isolation: isolate;
+    overflow: visible;
+    filter: drop-shadow(0 0.45rem 0.6rem rgb(51 51 51 / 0.16));
+    transform-origin: 50% 88%;
+  }
+
+  .bricko-pet__image {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+    transform-origin: 50% 86%;
+    user-select: none;
+    will-change: transform;
+  }
+
+  .bricko-pet__shadow {
+    position: absolute;
+    z-index: 0;
+    bottom: 4%;
+    left: 20%;
+    width: 60%;
+    height: 13%;
+    border-radius: 999px;
+    background: rgb(244 124 82 / 0.2);
+    filter: blur(0.2rem);
+    transform-origin: center;
+  }
+
+  .bricko-pet--still .bricko-pet__image {
+    animation: bricko-pet-settle 0.7s cubic-bezier(0.2, 0.85, 0.25, 1.15)
+      both;
+  }
+
+  .bricko-pet--idle {
+    animation: bricko-pet-wander 5.6s ease-in-out infinite;
+  }
+
+  .bricko-pet--idle .bricko-pet__image {
+    animation: bricko-pet-hover 2.35s ease-in-out infinite;
+  }
+
+  .bricko-pet--idle:hover .bricko-pet__image {
+    animation: bricko-pet-greet 0.78s cubic-bezier(0.2, 0.85, 0.25, 1.2)
+      both;
+  }
+
+  .bricko-pet--idle .bricko-pet__shadow {
+    animation: bricko-pet-shadow 2.35s ease-in-out infinite;
+  }
+
+  .bricko-pet--thinking {
+    animation: bricko-pet-thinking-drift 1.4s ease-in-out infinite alternate;
+  }
+
+  .bricko-pet--thinking .bricko-pet__image {
+    animation: bricko-pet-thinking-code 0.62s ease-in-out infinite alternate;
+  }
+
+  .bricko-pet--thinking .bricko-pet__shadow {
+    animation: bricko-pet-shadow-fast 0.62s ease-in-out infinite alternate;
+  }
+
+  .bricko-pet--offline .bricko-pet__image {
+    filter: grayscale(0.7) saturate(0.55);
+    opacity: 0.72;
+    transform: translateY(5%) rotate(-3deg);
+  }
+
+  .bricko-pet__trail,
+  .bricko-pet__thoughts,
+  .bricko-pet__celebration {
+    position: absolute;
+    inset: -24%;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .bricko-pet__trail span {
+    position: absolute;
+    left: 6%;
+    width: 26%;
+    height: 4%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgb(244 124 82 / 0.72));
+    opacity: 0;
+    animation: bricko-pet-trail 0.9s ease-out infinite;
+  }
+
+  .bricko-pet__trail span:nth-child(1) {
+    top: 47%;
+  }
+
+  .bricko-pet__trail span:nth-child(2) {
+    top: 61%;
+    animation-delay: 0.18s;
+  }
+
+  .bricko-pet__trail span:nth-child(3) {
+    top: 74%;
+    animation-delay: 0.36s;
+  }
+
+  .bricko-pet__thoughts span {
+    position: absolute;
+    width: 16%;
+    aspect-ratio: 1;
+    border-radius: 999px;
+    background: #f47c52;
+    box-shadow: 0 0 0 0.16rem rgb(255 255 255 / 0.92);
+    animation: bricko-pet-thought 1.05s ease-in-out infinite;
+  }
+
+  .bricko-pet__thoughts span:nth-child(1) {
+    top: 10%;
+    left: 6%;
+  }
+
+  .bricko-pet__thoughts span:nth-child(2) {
+    top: -2%;
+    left: 42%;
+    animation-delay: 0.14s;
+  }
+
+  .bricko-pet__thoughts span:nth-child(3) {
+    top: 12%;
+    right: 4%;
+    animation-delay: 0.28s;
+  }
+
+  .bricko-pet--celebrate.bricko-pet--sparkle {
+    animation: bricko-pet-celebrate-hop 1.15s
+      cubic-bezier(0.2, 0.85, 0.25, 1.2) both;
+  }
+
+  .bricko-pet--celebrate.bricko-pet--check {
+    animation: bricko-pet-celebrate-check 1s
+      cubic-bezier(0.2, 0.85, 0.25, 1.18) both;
+  }
+
+  .bricko-pet--celebrate.bricko-pet--code {
+    animation: bricko-pet-celebrate-code 1.1s
+      cubic-bezier(0.2, 0.85, 0.25, 1.12) both;
+  }
+
+  .bricko-pet--celebrate .bricko-pet__shadow {
+    animation: bricko-pet-shadow-finish 1.1s ease-out both;
+  }
+
+  .bricko-pet__celebration span {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    min-width: 1.1em;
+    color: #f47c52;
+    font-size: 0.72em;
+    font-weight: 900;
+    line-height: 1;
+    opacity: 0;
+    animation: bricko-pet-burst 1.35s ease-out both;
+  }
+
+  .bricko-pet__celebration span:nth-child(1) {
+    top: 0;
+    left: 4%;
+    --bricko-burst-x: -42%;
+    --bricko-burst-y: -58%;
+  }
+
+  .bricko-pet__celebration span:nth-child(2) {
+    top: -12%;
+    left: 42%;
+    animation-delay: 0.09s;
+    --bricko-burst-x: 0%;
+    --bricko-burst-y: -72%;
+  }
+
+  .bricko-pet__celebration span:nth-child(3) {
+    top: 2%;
+    right: 2%;
+    animation-delay: 0.18s;
+    --bricko-burst-x: 46%;
+    --bricko-burst-y: -54%;
+  }
+
+  .bricko-pet--check .bricko-pet__celebration span {
+    color: #25a65a;
+  }
+
+  .bricko-pet--code .bricko-pet__celebration span {
+    color: #1e2a3a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.5em;
+  }
+}
+
+@keyframes bricko-pet-settle {
+  from {
+    opacity: 0;
+    transform: translateY(-12%) rotate(4deg) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0) scale(1);
+  }
+}
+
+@keyframes bricko-pet-wander {
+  0%,
+  100% {
+    transform: translateX(-5%) rotate(-1.5deg);
+  }
+  50% {
+    transform: translateX(5%) rotate(1.5deg);
+  }
+}
+
+@keyframes bricko-pet-hover {
+  0%,
+  100% {
+    transform: translateY(1%) rotate(-1deg) scale(0.98);
+  }
+  48% {
+    transform: translateY(-7%) rotate(1.5deg) scale(1.03);
+  }
+  72% {
+    transform: translateY(-3%) rotate(-0.5deg) scale(1.01);
+  }
+}
+
+@keyframes bricko-pet-greet {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0) scale(1);
+  }
+  28% {
+    transform: translateY(-9%) rotate(-5deg) scale(1.06);
+  }
+  54% {
+    transform: translateY(-5%) rotate(5deg) scale(1.04);
+  }
+  78% {
+    transform: translateY(-2%) rotate(-2deg) scale(1.01);
+  }
+}
+
+@keyframes bricko-pet-thinking-drift {
+  from {
+    transform: translateX(-4%) rotate(-1deg);
+  }
+  to {
+    transform: translateX(4%) rotate(1deg);
+  }
+}
+
+@keyframes bricko-pet-thinking-code {
+  0% {
+    transform: translateY(1%) rotate(-1.2deg) scale(0.985);
+  }
+  55% {
+    transform: translateY(-5%) rotate(1deg) scale(1.025);
+  }
+  100% {
+    transform: translateY(-2%) rotate(-0.4deg) scale(1.01);
+  }
+}
+
+@keyframes bricko-pet-shadow {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scaleX(1);
+  }
+  50% {
+    opacity: 0.36;
+    transform: scaleX(0.76);
+  }
+}
+
+@keyframes bricko-pet-shadow-fast {
+  from {
+    opacity: 0.65;
+    transform: scaleX(0.92);
+  }
+  to {
+    opacity: 0.34;
+    transform: scaleX(0.7);
+  }
+}
+
+@keyframes bricko-pet-trail {
+  0% {
+    opacity: 0;
+    transform: translateX(55%) scaleX(0.45);
+  }
+  35% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-70%) scaleX(1.2);
+  }
+}
+
+@keyframes bricko-pet-thought {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(30%) scale(0.62);
+  }
+  45% {
+    opacity: 1;
+    transform: translateY(-28%) scale(1);
+  }
+}
+
+@keyframes bricko-pet-celebrate-hop {
+  0% {
+    opacity: 1;
+    transform: translateY(14%) rotate(-7deg) scale(0.76);
+  }
+  42% {
+    opacity: 1;
+    transform: translateY(-16%) rotate(6deg) scale(1.1);
+  }
+  72% {
+    transform: translateY(2%) rotate(-2deg) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(0) scale(1);
+  }
+}
+
+@keyframes bricko-pet-celebrate-check {
+  0% {
+    opacity: 1;
+    transform: translateX(-14%) translateY(-8%) rotate(-8deg) scale(0.78);
+  }
+  58% {
+    opacity: 1;
+    transform: translateX(3%) translateY(3%) rotate(3deg) scale(1.07);
+  }
+  78% {
+    transform: translateX(-1%) translateY(-1%) rotate(-1deg) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0) rotate(0) scale(1);
+  }
+}
+
+@keyframes bricko-pet-celebrate-code {
+  0% {
+    opacity: 1;
+    transform: translateX(16%) translateY(5%) rotate(7deg) scale(0.78);
+  }
+  48% {
+    opacity: 1;
+    transform: translateX(-5%) translateY(-7%) rotate(-4deg) scale(1.06);
+  }
+  76% {
+    transform: translateX(2%) translateY(1%) rotate(1deg) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0) rotate(0) scale(1);
+  }
+}
+
+@keyframes bricko-pet-shadow-finish {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.45);
+  }
+  52% {
+    opacity: 0.25;
+    transform: scaleX(0.62);
+  }
+  100% {
+    opacity: 0.72;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes bricko-pet-burst {
+  0% {
+    opacity: 0;
+    transform: translate(0, 28%) scale(0.35) rotate(-12deg);
+  }
+  28% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--bricko-burst-x), var(--bricko-burst-y))
+      scale(1.25) rotate(10deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bricko-pet--idle,
+  .bricko-pet--thinking,
+  .bricko-pet--celebrate,
+  .bricko-pet--still .bricko-pet__image,
+  .bricko-pet--idle .bricko-pet__image,
+  .bricko-pet--idle:hover .bricko-pet__image,
+  .bricko-pet--thinking .bricko-pet__image,
+  .bricko-pet__shadow,
+  .bricko-pet__trail span,
+  .bricko-pet__thoughts span,
+  .bricko-pet__celebration span {
+    animation: none;
+  }
+
+  .bricko-pet__trail span,
+  .bricko-pet__thoughts span,
+  .bricko-pet__celebration span {
+    opacity: 0.85;
+  }
+
+  .bricko-pet__trail span {
+    opacity: 0;
+  }
+}

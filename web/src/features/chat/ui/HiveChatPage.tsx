@@ -1,12 +1,10 @@
 import {
   Activity,
-  Bot,
   CheckCircle2,
   Clock3,
   Hash,
   LogOut,
   Menu,
-  MessageCircleMore,
   PanelLeftClose,
   RefreshCw,
   Send,
@@ -24,7 +22,8 @@ import {
   useRef,
   useState,
 } from "react";
-import brickLogoUrl from "@/assets/brick-logo.svg";
+import hiveLogoUrl from "@/assets/hive-logo.svg";
+import brickoOperationsUrl from "@/assets/bricko-operations.jpg";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -44,11 +43,26 @@ import {
   signNostrEvent,
 } from "@/shared/lib/nostr-signer";
 import { relayWsUrl } from "@/shared/lib/relay-url";
+import {
+  BrickOPet,
+  type BrickOCelebration,
+  type BrickOPetMode,
+} from "./BrickOPet";
 
 type Presence = "online" | "away" | "offline" | "unknown";
 
 const TYPING_VISIBLE_MS = 7_000;
+const PET_CELEBRATION_MS = 2_400;
 const SIDEBAR_STATE_STORAGE_KEY = "hive.navigation.collapsed.v1";
+
+function celebrationForEvent(eventId: string): BrickOCelebration {
+  const variants: BrickOCelebration[] = ["sparkle", "check", "code"];
+  const fingerprint = [...eventId].reduce(
+    (sum, character) => sum + character.charCodeAt(0),
+    0,
+  );
+  return variants[fingerprint % variants.length] ?? "sparkle";
+}
 
 function eventTag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
@@ -88,6 +102,10 @@ export function HiveChatPage() {
   const [typingAt, setTypingAt] = useState(0);
   const [typingVisible, setTypingVisible] = useState(false);
   const [pendingSince, setPendingSince] = useState<number | null>(null);
+  const [petCelebration, setPetCelebration] = useState<{
+    eventId: string;
+    variant: BrickOCelebration;
+  } | null>(null);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -106,6 +124,10 @@ export function HiveChatPage() {
         return [...byId.values()].sort((a, b) => a.created_at - b.created_at);
       });
       if (identity && event.pubkey !== identity.pubkey) {
+        setPetCelebration({
+          eventId: event.id,
+          variant: celebrationForEvent(event.id),
+        });
         setPendingSince((startedAt) => {
           if (startedAt && event.created_at * 1000 >= startedAt - 2_000) {
             return null;
@@ -234,6 +256,15 @@ export function HiveChatPage() {
   }, [typingVisible]);
 
   useEffect(() => {
+    if (!petCelebration) return;
+    const timeout = window.setTimeout(
+      () => setPetCelebration(null),
+      PET_CELEBRATION_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [petCelebration]);
+
+  useEffect(() => {
     if (!identity || !hasMantapBrowserIdentity()) {
       window.location.replace("https://mantap.onebrick.io");
     }
@@ -317,6 +348,28 @@ export function HiveChatPage() {
     slate: "bg-[#8491A4] shadow-[#8491A4]/30",
   }[agentState.tone];
 
+  const petMode: BrickOPetMode =
+    typingVisible || waiting
+      ? "thinking"
+      : petCelebration
+        ? "celebrate"
+        : connected
+          ? "idle"
+          : "offline";
+  const petStatus = typingVisible
+    ? "BrickO sedang ngoding dan menyusun jawaban…"
+    : waiting
+      ? "BrickO sedang memikirkan langkah berikutnya…"
+      : petCelebration?.variant === "check"
+        ? "Selesai — BrickO memberi tanda beres."
+        : petCelebration?.variant === "code"
+          ? "Selesai — BrickO menutup sesi coding dengan rapi."
+          : petCelebration
+            ? "Selesai — BrickO merayakan hasilnya."
+            : connected
+              ? "BrickO siap menjadi coding partner Anda."
+              : "BrickO menunggu koneksi kembali.";
+
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const content = text.trim();
@@ -365,9 +418,9 @@ export function HiveChatPage() {
       >
         {!collapsed && (
           <img
-            src={brickLogoUrl}
-            alt="Brick"
-            className="h-auto w-[92px] shrink-0"
+            src={hiveLogoUrl}
+            alt="Hive"
+            className="h-auto w-[104px] shrink-0"
           />
         )}
         <button
@@ -448,8 +501,8 @@ export function HiveChatPage() {
           }
         >
           <div className={`flex items-start ${collapsed ? "" : "gap-2.5"}`}>
-            <div className="relative grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
-              <Bot size={16} />
+            <div className="relative size-8 shrink-0">
+              <BrickOPet mode={petMode} size="sm" />
               <span
                 className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
               />
@@ -554,15 +607,15 @@ export function HiveChatPage() {
               <Menu size={17} />
             </button>
             <img
-              src={brickLogoUrl}
-              alt="Brick"
-              className="h-auto w-[92px] shrink-0 md:hidden"
+              src={hiveLogoUrl}
+              alt="Hive"
+              className="h-auto w-[104px] shrink-0 md:hidden"
             />
             {sidebarCollapsed && (
               <img
-                src={brickLogoUrl}
-                alt="Brick"
-                className="hidden h-auto w-[92px] shrink-0 md:block"
+                src={hiveLogoUrl}
+                alt="Hive"
+                className="hidden h-auto w-[104px] shrink-0 md:block"
               />
             )}
             <div className="hidden min-w-0 sm:block">
@@ -649,16 +702,21 @@ export function HiveChatPage() {
           <div className="mx-auto max-w-3xl">
             {messages.length === 0 && !error && (
               <div className="grid min-h-[45vh] place-items-center text-center">
-                <div>
-                  <div className="mx-auto grid size-14 place-items-center rounded border border-[#FFD3C9] bg-[#FFF3EF] text-[#FF6F52]">
-                    <MessageCircleMore size={27} />
+                <div className="max-w-md">
+                  <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
+                    <img
+                      alt="Tim Brickster sedang ngoding bersama BrickO, BrickA, BrickI, dan BrickR"
+                      className="aspect-square w-full rounded-xl object-cover"
+                      src={brickoOperationsUrl}
+                    />
                   </div>
                   <h2 className="mt-4 text-base font-bold text-[#10233F]">
-                    Mulai percakapan dengan BrickO
+                    Welcome, Bricksters — let&apos;s build something fun!
                   </h2>
                   <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
-                    Tanyakan pekerjaan, status sistem, atau minta bantuan pada
-                    workspace OneBrick ini.
+                    Bawa ide berani, bug yang keras kepala, dan proyek yang
+                    kelihatannya mustahil. BrickO bawa virtual snacks — sekarang
+                    kita ubah “mungkin” menjadi “shipped” bersama!
                   </p>
                 </div>
               </div>
@@ -683,11 +741,7 @@ export function HiveChatPage() {
                   <article
                     className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
                   >
-                    {!mine && (
-                      <div className="grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
-                        <Bot size={15} />
-                      </div>
-                    )}
+                    {!mine && <BrickOPet mode="still" size="sm" />}
                     <div
                       className={`max-w-[86%] sm:max-w-[78%] ${mine ? "items-end" : "items-start"}`}
                     >
@@ -729,9 +783,7 @@ export function HiveChatPage() {
 
             {typingVisible && (
               <div className="mb-5 flex items-end gap-2.5" aria-live="polite">
-                <div className="grid size-8 shrink-0 place-items-center rounded bg-[#10213F] text-white">
-                  <Bot size={15} />
-                </div>
+                <BrickOPet mode="thinking" size="sm" />
                 <div>
                   <div className="mb-1.5 px-1 text-[11px] font-bold text-[#42526B]">
                     BrickO
@@ -757,6 +809,32 @@ export function HiveChatPage() {
           className="shrink-0 border-t border-[#D8DEE8] bg-white px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:px-5"
         >
           <div className="mx-auto max-w-3xl">
+            <div className="relative mb-2.5 flex min-h-16 items-center gap-2 overflow-visible rounded-3xl border border-[#FFD3C9] bg-gradient-to-r from-[#FFF8F5] via-white to-[#FFF1EB] px-3 py-2 shadow-[0_10px_28px_rgba(244,124,82,0.12)]">
+              <span
+                aria-hidden
+                className="absolute right-5 top-3 size-2 rounded-full bg-[#FFB39C]/50"
+              />
+              <span
+                aria-hidden
+                className="absolute bottom-4 right-10 size-1.5 rounded-full bg-[#F47C52]/35"
+              />
+              <BrickOPet
+                celebration={petCelebration?.variant ?? "sparkle"}
+                key={petCelebration?.eventId ?? petMode}
+                label={petStatus}
+                mode={petMode}
+                size="md"
+                testId="bricko-companion"
+              />
+              <div className="min-w-0 flex-1" aria-live="polite">
+                <div className="text-xs font-bold text-[#10233F]">
+                  BrickO lagi nemenin
+                </div>
+                <div className="mt-0.5 line-clamp-2 text-2xs leading-relaxed text-[#607086]">
+                  {petStatus}
+                </div>
+              </div>
+            </div>
             {error && (
               <div
                 className="mb-3 flex items-center gap-2 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"

@@ -27,6 +27,11 @@ export default {
           "calc(var(--buzz-type-rem) * 2.5)",
           { lineHeight: "1.15", letterSpacing: "-0.02em" },
         ],
+        // 128px at the 16px type rem — the first-launch Hive wordmark.
+        brand: [
+          "calc(var(--buzz-type-rem) * 8)",
+          { lineHeight: "0.85", letterSpacing: "-0.065em" },
+        ],
         // 36px at the 16px type rem — backup-step private key.
         "nsec-key": [
           "calc(var(--buzz-type-rem) * 2.25)",

@@ -26,6 +26,7 @@ test("machine onboarding: landing, backup, setup docked CTAs", async ({
 
   const gate = page.getByTestId("machine-onboarding-gate");
   await expect(gate).toBeVisible();
+  await expect(page.getByTestId("onboarding-team-hero")).toBeVisible();
   await waitForAnimations(page);
   await page.screenshot({ path: `${SHOT_DIR}/01-landing.png` });
 
