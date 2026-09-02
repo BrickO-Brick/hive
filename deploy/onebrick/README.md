@@ -23,6 +23,7 @@ Before deployment, set these values in the owner-only Hive environment file:
 
 ```dotenv
 BUZZ_ONEBRICK_GITHUB_ORG=BrickO-Brick
+BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE=user
 BUZZ_ONEBRICK_GITHUB_TOKEN=<fine-grained read-only token>
 ```
 
