@@ -76,7 +76,7 @@ function categoryFor(repository: OneBrickGitHubRepository): RepositoryCategory {
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown update";
-  return new Intl.DateTimeFormat("id-ID", {
+  return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -97,20 +97,20 @@ function CatalogErrorState({
       <ShieldCheck className="mx-auto size-8 text-[#C93F4A]" />
       <h2 className="mt-3 text-base font-bold text-[#10233F]">
         {configurationMissing
-          ? "Koneksi katalog GitHub belum dipasang"
-          : "Katalog GitHub belum dapat dimuat"}
+          ? "GitHub catalog credentials are not configured"
+          : "The GitHub catalog could not be loaded"}
       </h2>
       <p className="mt-2 text-sm leading-6 text-[#607086]">
         {configurationMissing
-          ? "Hive memerlukan credential read-only di server untuk melihat repository private BrickO-Brick. Credential tidak pernah dikirim ke browser."
-          : "Hive gagal membaca metadata repository. Tidak ada aksi GitHub yang dijalankan."}
+          ? "Hive requires server-side, read-only credentials for private BrickO-Brick and brick-io repositories. Credentials are never sent to the browser."
+          : "Hive could not read repository metadata. No GitHub write action was performed."}
       </p>
       <button
         className="mx-auto mt-4 flex items-center gap-2 rounded-md border border-[#D8DEE8] bg-white px-3 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
         onClick={retry}
         type="button"
       >
-        <RefreshCw size={14} /> Coba lagi
+        <RefreshCw size={14} /> Try again
       </button>
     </div>
   );
@@ -153,7 +153,7 @@ export function OneBrickRepositoryCatalog({
       <div className="grid min-h-full place-items-center" aria-live="polite">
         <div className="text-center text-sm text-[#607086]">
           <LoaderCircle className="mx-auto mb-3 size-7 animate-spin text-[#FF6F52]" />
-          Memuat repository BrickO-Brick…
+          Loading OneBrick repositories…
         </div>
       </div>
     );
@@ -172,14 +172,14 @@ export function OneBrickRepositoryCatalog({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E35E43]">
-            <Boxes size={14} /> GitHub organization
+            <Boxes size={14} /> GitHub owners
           </div>
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-[#10233F]">
-            {catalog.data?.organization}
+            {catalog.data?.organizations.join(" + ")}
           </h2>
           <p className="mt-1 text-sm text-[#607086]">
-            {repositories.length} repository tersedia untuk diskusi bersama
-            BrickO.
+            {repositories.length} repositories available. Start as many
+            independent discussion topics as you need.
           </p>
         </div>
         <div className="relative w-full sm:max-w-sm">
@@ -188,17 +188,17 @@ export function OneBrickRepositoryCatalog({
             className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8491A4]"
           />
           <input
-            aria-label="Cari repository"
+            aria-label="Search repositories"
             className="h-10 w-full rounded-md border border-[#D8DEE8] bg-white pl-9 pr-3 text-sm outline-none focus:border-[#FF6F52]/70 focus:ring-4 focus:ring-[#FF6F52]/10"
             onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder="Cari repository…"
+            placeholder="Search repositories…"
             value={query}
           />
         </div>
       </div>
 
       <fieldset className="mt-5 flex gap-2 overflow-x-auto pb-1">
-        <legend className="sr-only">Kategori repository</legend>
+        <legend className="sr-only">Repository categories</legend>
         {CATEGORIES.map((item) => (
           <button
             aria-pressed={category === item}
@@ -218,7 +218,7 @@ export function OneBrickRepositoryCatalog({
 
       {filtered.length === 0 ? (
         <div className="mt-12 text-center text-sm text-[#607086]">
-          Tidak ada repository yang cocok dengan filter ini.
+          No repositories match these filters.
         </div>
       ) : (
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -238,7 +238,7 @@ export function OneBrickRepositoryCatalog({
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3 className="truncate text-sm font-bold text-[#10233F]">
-                    {repository.name}
+                    {repository.owner}/{repository.name}
                   </h3>
                   <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#607086]">
                     <span>{repositoryCategory}</span>
@@ -254,13 +254,13 @@ export function OneBrickRepositoryCatalog({
                 </div>
               </div>
               <p className="mt-3 line-clamp-3 flex-1 text-xs leading-5 text-[#607086]">
-                {repository.description || "Belum ada deskripsi repository."}
+                {repository.description || "No repository description yet."}
               </p>
               <div className="mt-3 flex items-center justify-between border-t border-[#E2E8F0] pt-3 text-[10px] text-[#8491A4]">
                 <span className="flex items-center gap-1">
                   <BookOpen size={11} /> {repository.default_branch}
                 </span>
-                <span>Diperbarui {formatUpdatedAt(repository.updated_at)}</span>
+                <span>Updated {formatUpdatedAt(repository.updated_at)}</span>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
@@ -268,7 +268,7 @@ export function OneBrickRepositoryCatalog({
                   onClick={() => onDiscuss(repository)}
                   type="button"
                 >
-                  <MessageCircle size={13} /> Diskusikan
+                  <MessageCircle size={13} /> Start discussion
                 </button>
                 <a
                   className="flex items-center justify-center gap-1.5 rounded-md border border-[#D8DEE8] px-2 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"

@@ -4,6 +4,7 @@ import { makeNip98AuthHeader } from "@/shared/lib/nip98";
 import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 
 export type OneBrickGitHubRepository = {
+  owner: string;
   name: string;
   description: string;
   url: string;
@@ -15,7 +16,7 @@ export type OneBrickGitHubRepository = {
 };
 
 export type OneBrickGitHubCatalog = {
-  organization: string;
+  organizations: string[];
   repositories: OneBrickGitHubRepository[];
 };
 
@@ -46,8 +47,19 @@ async function fetchCatalog(): Promise<OneBrickGitHubCatalog> {
     );
   }
   if (
-    typeof payload.organization !== "string" ||
+    !Array.isArray(payload.organizations) ||
+    !payload.organizations.every((owner) => typeof owner === "string") ||
     !Array.isArray(payload.repositories)
+  ) {
+    throw new GitHubCatalogError("invalid_catalog_response", 502);
+  }
+  if (
+    !payload.repositories.every(
+      (repository) =>
+        typeof repository === "object" &&
+        repository !== null &&
+        typeof (repository as { owner?: unknown }).owner === "string",
+    )
   ) {
     throw new GitHubCatalogError("invalid_catalog_response", 502);
   }

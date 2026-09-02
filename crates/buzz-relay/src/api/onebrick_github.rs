@@ -53,6 +53,7 @@ struct GitHubRepository {
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct CatalogRepository {
+    owner: String,
     name: String,
     description: String,
     url: String,
@@ -65,7 +66,7 @@ pub(crate) struct CatalogRepository {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct CatalogResponse {
-    organization: String,
+    organizations: Vec<String>,
     repositories: Vec<CatalogRepository>,
 }
 
@@ -139,6 +140,7 @@ fn parse_catalog(
                 ));
             }
             Ok(CatalogRepository {
+                owner: organization.to_string(),
                 name: repository.name,
                 description: bounded_text(repository.description.unwrap_or_default(), 500),
                 url: repository.html_url,
@@ -229,16 +231,20 @@ pub(crate) async fn repositories(
 ) -> Result<Json<CatalogResponse>, (StatusCode, Json<Value>)> {
     authenticated_member(&state, &headers).await?;
 
-    let organization =
+    let personal_owner =
         std::env::var("BUZZ_ONEBRICK_GITHUB_ORG").unwrap_or_else(|_| "BrickO-Brick".to_string());
-    if !valid_github_organization(&organization) {
+    if !valid_github_organization(&personal_owner) {
         return Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "GitHub repository catalog is not configured",
         ));
     }
-    let token = std::env::var("BUZZ_ONEBRICK_GITHUB_TOKEN").unwrap_or_default();
-    if token.trim().len() < 20 || token.len() > 512 || token.contains("CHANGE_ME") {
+    let personal_token = std::env::var("BUZZ_ONEBRICK_GITHUB_TOKEN").unwrap_or_default();
+    let brick_io_token = std::env::var("BUZZ_BRICK_IO_GITHUB_TOKEN").unwrap_or_default();
+    if [personal_token.as_str(), brick_io_token.as_str()]
+        .into_iter()
+        .any(|token| token.trim().len() < 20 || token.len() > 512 || token.contains("CHANGE_ME"))
+    {
         return Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "GitHub repository catalog is not configured",
@@ -262,37 +268,49 @@ pub(crate) async fn repositories(
                 "GitHub repository catalog is unavailable",
             )
         })?;
-    let url = catalog_url(&organization, account_type);
-    let response = client
-        .get(url)
-        .timeout(UPSTREAM_TIMEOUT)
-        .header("Accept", "application/vnd.github+json")
-        .header("Authorization", format!("Bearer {}", token.trim()))
-        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
-        .header("User-Agent", "OneBrick-Hive")
-        .send()
-        .await
-        .map_err(|error| {
-            tracing::warn!(
-                timeout = error.is_timeout(),
-                "GitHub catalog request failed"
-            );
-            api_error(
+    let sources = [
+        (personal_owner.as_str(), account_type, personal_token.trim()),
+        (
+            "brick-io",
+            GitHubAccountType::Organization,
+            brick_io_token.trim(),
+        ),
+    ];
+    let mut repositories = Vec::new();
+    for (owner, owner_type, source_token) in sources {
+        let response = client
+            .get(catalog_url(owner, owner_type))
+            .timeout(UPSTREAM_TIMEOUT)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {source_token}"))
+            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+            .header("User-Agent", "OneBrick-Hive")
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    owner,
+                    timeout = error.is_timeout(),
+                    "GitHub catalog request failed"
+                );
+                api_error(
+                    StatusCode::BAD_GATEWAY,
+                    "GitHub repository catalog is unavailable",
+                )
+            })?;
+        if !response.status().is_success() {
+            tracing::warn!(owner, status = %response.status(), "GitHub catalog request rejected");
+            return Err(api_error(
                 StatusCode::BAD_GATEWAY,
                 "GitHub repository catalog is unavailable",
-            )
-        })?;
-    if !response.status().is_success() {
-        tracing::warn!(status = %response.status(), "GitHub catalog request rejected");
-        return Err(api_error(
-            StatusCode::BAD_GATEWAY,
-            "GitHub repository catalog is unavailable",
-        ));
+            ));
+        }
+        let body = bounded_body(response).await?;
+        repositories.extend(parse_catalog(&body, owner)?);
     }
-    let body = bounded_body(response).await?;
-    let repositories = parse_catalog(&body, &organization)?;
+    repositories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(Json(CatalogResponse {
-        organization,
+        organizations: vec![personal_owner, "brick-io".to_string()],
         repositories,
     }))
 }
@@ -306,6 +324,7 @@ mod tests {
         let body = br#"[{"name":"hive","description":"Collaboration","html_url":"https://github.com/BrickO-Brick/hive","private":false,"default_branch":"main","updated_at":"2026-09-02T10:34:31Z","archived":false,"language":"Rust"}]"#;
         let repositories = parse_catalog(body, "BrickO-Brick").expect("valid catalog");
         assert_eq!(repositories.len(), 1);
+        assert_eq!(repositories[0].owner, "BrickO-Brick");
         assert_eq!(repositories[0].name, "hive");
         assert_eq!(repositories[0].visibility, "public");
     }
