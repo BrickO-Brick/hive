@@ -6,7 +6,8 @@
 - A/AAAA for `hive.onebrick.io` pointing to the intended EC2.
 - SaGad's 64-hex Nostr public key.
 - Immutable relay and agent image digests in GHCR.
-- Owner-only `/srv/hive/secrets/hive.env` and encrypted backup recipient.
+- Owner-only `/srv/hive/secrets/hive.env`, an external RDS `DATABASE_URL`,
+  the RDS CA bundle, and an encrypted backup recipient.
 - Caddy configured to join `hive_hive-net`; no Hive service joins a Mantap
   network.
 

@@ -36,10 +36,14 @@ resume_services() {
 trap resume_services EXIT
 
 hive_compose stop bricko-agent relay
-hive_compose exec -T postgres pg_dump \
-  --username "${POSTGRES_USER:-hive}" \
-  --dbname "${POSTGRES_DB:-hive}" \
-  --format custom > "${destination}/postgres.dump"
+# Use the same external PostgreSQL authority as the relay. The client runs as
+# an ephemeral operations container; credentials remain in the owner-only
+# Compose environment and are not placed on the host process command line.
+# DATABASE_URL expands inside the client container.
+# shellcheck disable=SC2016
+hive_compose --profile operations run --rm --no-deps --entrypoint /bin/sh postgres \
+  -euc 'pg_dump --dbname "$DATABASE_URL" --format custom' \
+  > "${destination}/postgres.dump"
 # The inner shell expands REDIS_PASSWORD from the container environment.
 # shellcheck disable=SC2016
 hive_compose exec -T redis sh -euc \

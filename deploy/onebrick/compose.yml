@@ -21,7 +21,7 @@ services:
       BUZZ_BIND_ADDR: 0.0.0.0:3000
       BUZZ_HEALTH_PORT: "8080"
       BUZZ_METRICS_PORT: "9102"
-      DATABASE_URL: postgres://${POSTGRES_USER:-hive}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hive}
+      DATABASE_URL: ${DATABASE_URL:?set the external PostgreSQL DATABASE_URL}
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
       BUZZ_S3_ENDPOINT: http://minio:9000
       BUZZ_S3_ADDRESSING_STYLE: path
@@ -48,9 +48,8 @@ services:
       - ${HIVE_HTTP_BIND:-127.0.0.1:3300}:3000
     volumes:
       - git-data:/data/git
+      - ${HIVE_RDS_CA_FILE:-/srv/hive/secrets/rds-global-bundle.pem}:/etc/ssl/certs/rds-global-bundle.pem:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       minio:
@@ -79,14 +78,17 @@ services:
 
   postgres:
     <<: *default-security
+    profiles: ["local-db", "operations"]
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hive}
       POSTGRES_USER: ${POSTGRES_USER:-hive}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ${HIVE_RDS_CA_FILE:-/srv/hive/secrets/rds-global-bundle.pem}:/etc/ssl/certs/rds-global-bundle.pem:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

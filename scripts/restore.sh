@@ -32,19 +32,11 @@ if [[ "$(hive_compose ps --status running -q bricko-agent)" != "" ]]; then
   agent_was_running=true
 fi
 hive_compose stop bricko-agent relay
-hive_compose exec -T postgres dropdb \
-  --username "${POSTGRES_USER:-hive}" \
-  --force \
-  --if-exists \
-  "${POSTGRES_DB:-hive}"
-hive_compose exec -T postgres createdb \
-  --username "${POSTGRES_USER:-hive}" \
-  --owner "${POSTGRES_USER:-hive}" \
-  "${POSTGRES_DB:-hive}"
-hive_compose exec -T postgres pg_restore \
-  --username "${POSTGRES_USER:-hive}" \
-  --dbname "${POSTGRES_DB:-hive}" \
-  --exit-on-error < "${backup_path}/postgres.dump"
+# DATABASE_URL expands inside the client container.
+# shellcheck disable=SC2016
+hive_compose --profile operations run --rm --no-deps --entrypoint /bin/sh postgres \
+  -euc 'pg_restore --clean --if-exists --no-owner --exit-on-error --dbname "$DATABASE_URL"' \
+  < "${backup_path}/postgres.dump"
 
 hive_compose stop redis minio
 hive_compose run --rm --no-deps --entrypoint /bin/sh redis -euc \
@@ -59,7 +51,7 @@ hive_compose cp "${backup_path}/redis-data/." redis:/data
 hive_compose cp "${backup_path}/minio-data/." minio:/data
 hive_compose cp "${backup_path}/git-data/." relay:/data/git
 hive_compose --profile operations run --rm --no-deps relay-data-init
-hive_compose up -d --wait postgres redis minio minio-init relay
+hive_compose up -d --wait redis minio minio-init relay
 "${SCRIPT_DIR}/healthcheck.sh"
 if [[ "${agent_was_running}" == true ]]; then
   hive_compose --profile agent up -d --wait bricko-agent

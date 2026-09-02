@@ -34,8 +34,8 @@ docker inspect reverse-proxy --format '{{json .NetworkSettings.Networks}}' \
   }
 
 hive_compose config --quiet
-hive_compose pull postgres redis minio minio-init
-hive_compose up -d --wait postgres redis minio minio-init relay
+hive_compose pull redis minio minio-init
+hive_compose up -d --wait redis minio minio-init relay
 "${SCRIPT_DIR}/healthcheck.sh"
 
 mkdir -p "${HIVE_RELEASE_DIR:-/srv/hive/state/releases}"

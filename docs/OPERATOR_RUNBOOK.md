@@ -14,8 +14,8 @@ Read-only status and log checks may use SSH directly. Never run concurrent
 Compose mutations outside the lock.
 
 ```bash
-# start core
-docker compose -p hive --env-file "$HIVE_ENV_FILE" -f deploy/onebrick/compose.yml up -d --wait postgres redis minio minio-init relay
+# start core (PostgreSQL is external RDS; local Postgres is operations/test only)
+docker compose -p hive --env-file "$HIVE_ENV_FILE" -f deploy/onebrick/compose.yml up -d --wait redis minio minio-init relay
 
 # stop without deleting state
 docker compose -p hive --env-file "$HIVE_ENV_FILE" -f deploy/onebrick/compose.yml down
@@ -68,9 +68,26 @@ image, or tracked file.
 
 An authenticated Mantap user launches **Open Hive**. Mantap issues a 45-second
 single-use ticket in the URL fragment, and the browser exchanges it with a
-NIP-98 proof from a browser-local key. The relay binds one Mantap subject to one
-Nostr key, adds ordinary relay/channel membership, and never changes an
-existing owner/admin role. A user can then return to `/app` from the same
-browser. A fresh browser creates a separate key bound to the same Mantap
-subject; remove lost or retired device keys through the governed membership
-workflow.
+NIP-98 proof from a browser-local key. The relay binds the Mantap subject to the
+browser's Nostr key, synchronizes the signed Mantap access claim into Hive
+workspace membership, and adds ordinary channel membership. A user can then
+return to `/app` from the same browser. A fresh browser creates a separate key
+bound to the same Mantap subject; subsequent exchanges synchronize the subject's
+role across every bound key. Remove lost or retired device keys through the
+governed membership workflow.
+
+## RDS authority and restore credentials
+
+Production `DATABASE_URL` points to a DML-only RDS runtime role and uses
+`sslmode=verify-full` with the CA mounted from
+`/srv/hive/secrets/rds-global-bundle.pem`. The relay never receives the
+DDL-capable migration credential. Backups use the runtime role. A destructive
+restore requires a temporary owner-only environment file whose `DATABASE_URL`
+uses the database owner/migration role; run it only under the shared deploy
+lock, then remove that temporary credential and restore the runtime URL before
+starting Hive.
+
+Mantap is authoritative for Hive workspace RBAC during SSO provisioning:
+`editor` and `admin` map to Hive `owner`; `reader` maps to ordinary Hive
+`member`. A subject's role is synchronized across all of its bound browser
+keys on every successful ticket exchange.
