@@ -191,7 +191,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 }
 
                 if let (Some(index), Some(files)) = (web_index, web_files) {
-                    if path.starts_with("/assets/") {
+                    if path.starts_with("/assets/") || path == "/favicon.svg" {
                         return files.oneshot(req).await.map(IntoResponse::into_response);
                     }
                     if should_serve_spa(path, serve_git_web_gui) {
@@ -693,6 +693,7 @@ mod tests {
             "/app",
             "/mantul-sso",
             "/assets/app.js",
+            "/favicon.svg",
         ] {
             let response = spa_response(state.clone(), "public.example", path).await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");

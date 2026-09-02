@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Hive</title>
+  <path d="M48 3l8 4.6v9.2l-8 4.6-8-4.6V7.6z" fill="#ffb53d" stroke="#172033" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M50 40l9 5.2v10.4L50 61l-9-5.4V45.2z" fill="#ff8a5b" stroke="#172033" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M29 4l23 13.3v26.5L29 57 6 43.8V17.3z" fill="#fff8f2" stroke="#172033" stroke-width="3" stroke-linejoin="round"/>
+  <g transform="translate(15.7 20.8) scale(.9)" fill="#ff6f52">
+    <path d="M9.33 13.31h7.98a1.33 1.33 0 0 0 0-2.66H9.33a1.33 1.33 0 0 0 0 2.66Z"/>
+    <path d="M2.66 6.92v11.45A1.33 1.33 0 0 0 4 19.7h1.33v2.93a1.33 1.33 0 0 0 2.66 0v-5.59H5.32V6.92h10.65V1.33a1.33 1.33 0 0 0-2.66 0v2.93H1.33a1.33 1.33 0 0 0 0 2.66h1.33Zm18.64 0v10.12H10.65v5.59a1.33 1.33 0 0 0 2.66 0V19.7h11.98a1.33 1.33 0 0 0 0-2.66h-1.33V5.59a1.33 1.33 0 0 0-1.33-1.33H21.3V1.33a1.33 1.33 0 0 0-2.66 0v5.59h2.66Z"/>
+  </g>
+</svg>
