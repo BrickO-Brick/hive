@@ -52,7 +52,10 @@ export type MantapLogin = {
   role: string;
 };
 
-export function requestMantapOtp(username: string, password: string): Promise<void> {
+export function requestMantapOtp(
+  username: string,
+  password: string,
+): Promise<void> {
   return invokeTauri<void>("request_mantap_otp", { username, password });
 }
 
