@@ -13,6 +13,7 @@ import {
   E2E_IDENTITY_OVERRIDE_STORAGE_KEY,
   seedActiveIdentity,
 } from "../helpers/onboarding";
+import { waitForAnimations } from "../helpers/animations";
 
 type RelayConnectionState =
   | "connected"
@@ -2018,9 +2019,9 @@ test("connected first-community profile keeps Back bottom-left and balances the 
   expect(nameKeyStyles.backgroundColor).toMatch(
     /^(rgba\(255, 255, 255, 0\.95\)|oklab\(.+ \/ 0\.95\))$/,
   );
-  expect(nameKeyStyles.borderColor).toBe("rgba(113, 113, 6, 0.28)");
+  expect(nameKeyStyles.borderColor).toBe("rgba(140, 50, 31, 0.28)");
   expect(nameKeyStyles.boxShadow).toContain(
-    "rgba(113, 113, 6, 0.5) 0px 0px 0px 1px inset",
+    "rgba(140, 50, 31, 0.5) 0px 0px 0px 1px inset",
   );
   expect(nameKeyStyles).toMatchObject({
     borderRadius: "16px",
@@ -2039,6 +2040,7 @@ test("connected first-community profile keeps Back bottom-left and balances the 
   await avatarButton.click();
   const avatarDialog = page.getByRole("dialog", { name: "Edit your avatar" });
   await expect(avatarDialog).toBeVisible();
+  await waitForAnimations(page);
   await expect(avatarDialog).toHaveAttribute(
     "data-system-color-scheme",
     "light",
@@ -2176,8 +2178,8 @@ test("connected first-community profile keeps Back bottom-left and balances the 
     return { backgroundColor: styles.backgroundColor, color: styles.color };
   });
   expect(saveStyles).toEqual({
-    backgroundColor: "rgb(23, 23, 23)",
-    color: "rgb(240, 240, 205)",
+    backgroundColor: "rgb(45, 23, 18)",
+    color: "rgb(255, 229, 223)",
   });
   const defaultDialogHeight = imageDialogHeight;
   await page.getByRole("tab", { name: "Emoji" }).click();
@@ -2228,8 +2230,8 @@ test("connected first-community profile keeps Back bottom-left and balances the 
     };
   });
   expect(captureButtonStyles).toMatchObject({
-    backgroundColor: "rgb(23, 23, 23)",
-    color: "rgb(240, 240, 205)",
+    backgroundColor: "rgb(45, 23, 18)",
+    color: "rgb(255, 229, 223)",
     height: "38px",
   });
   expect(captureButtonStyles.borderRadius).toBeGreaterThan(1_000);

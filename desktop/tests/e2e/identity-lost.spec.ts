@@ -16,8 +16,8 @@ test("normal first launch uses the already-persisted identity", async ({
 
   const gate = page.getByTestId("machine-onboarding-gate");
   await expect(gate).toBeVisible();
-  await expect(gate).toHaveCSS("background-color", "rgb(215, 215, 46)");
-  // Landing carries a subtle dot-grid pattern over the chartreuse fill.
+  await expect(gate).toHaveCSS("background-color", "rgb(255, 111, 82)");
+  // Landing carries a subtle dot-grid pattern over the coral fill.
   await expect(gate).toHaveCSS("background-image", /radial-gradient/);
   await expect(gate).toHaveCSS("color", "rgb(23, 23, 23)");
   await expect(
@@ -30,10 +30,10 @@ test("normal first launch uses the already-persisted identity", async ({
       name: "Your unique identity key has been created",
     }),
   ).toBeVisible();
-  // Non-landing pages layer the dot grid over the chartreuse→light-blue gradient.
+  // Non-landing pages layer the dot grid over the coral→warm-white gradient.
   await expect(gate).toHaveCSS(
     "background-image",
-    /radial-gradient\(.*\), linear-gradient\(.*rgb\(215, 215, 46\).*rgb\(215, 231, 246\)\)/s,
+    /radial-gradient\(.*\), linear-gradient\(.*rgb\(255, 111, 82\).*rgb\(255, 241, 236\)\)/s,
   );
   await expect(gate).toHaveCSS("color", "rgb(23, 23, 23)");
   const commands = await page.evaluate(

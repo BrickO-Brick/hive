@@ -6,9 +6,9 @@ import { installMockBridge } from "../helpers/bridge";
 const SAMPLE_NSEC =
   "nsec1u70xptkumvfc4k4hu0rc4fnzcexvw63zvq2ng9vmqujsaayhparqu8eju9";
 
-// --buzz-onboarding-backup-ink (#717106), the olive key ink shared with the
+// --buzz-onboarding-backup-ink (#8c321f), the coral key ink shared with the
 // backup step.
-const BACKUP_INK = "rgb(113, 113, 6)";
+const BACKUP_INK = "rgb(140, 50, 31)";
 
 test("key import masks the key with a reveal toggle", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
