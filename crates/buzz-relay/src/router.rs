@@ -195,7 +195,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 }
 
                 if let (Some(index), Some(files)) = (web_index, web_files) {
-                    if path.starts_with("/assets/") || path == "/favicon.svg" {
+                    if is_web_static_path(path) {
                         return files.oneshot(req).await.map(IntoResponse::into_response);
                     }
                     if should_serve_spa(path, serve_git_web_gui) {
@@ -241,6 +241,12 @@ fn is_admin_spa_path(path: &str) -> bool {
 /// the directory is not browsable.
 fn is_admin_static_path(path: &str) -> bool {
     path.starts_with("/assets/") || path == "/favicon.svg"
+}
+
+/// Files served from the public bundle directory verbatim. Keep root-level
+/// assets explicit so the bundle directory cannot be browsed accidentally.
+fn is_web_static_path(path: &str) -> bool {
+    path.starts_with("/assets/") || matches!(path, "/favicon.svg" | "/apple-touch-icon.png")
 }
 
 fn is_invite_landing_path(path: &str) -> bool {
@@ -605,12 +611,13 @@ mod tests {
     }
 
     /// A minimal built SPA: an index document, one hashed asset, and the
-    /// root-level favicon Vite copies out of `public/`.
+    /// root-level icons Vite copies out of `public/`.
     fn write_bundle(dir: &std::path::Path) {
         std::fs::create_dir_all(dir.join("assets")).expect("assets dir");
         std::fs::write(dir.join("index.html"), "<!doctype html>").expect("index.html");
         std::fs::write(dir.join("assets/app.js"), "export {};").expect("bundle asset");
         std::fs::write(dir.join("favicon.svg"), "<svg/>").expect("favicon");
+        std::fs::write(dir.join("apple-touch-icon.png"), "png").expect("touch icon");
     }
 
     async fn spa_response(
@@ -644,6 +651,7 @@ mod tests {
             "/feedback/abc",
             "/assets/app.js",
             "/favicon.svg",
+            "/apple-touch-icon.png",
         ] {
             let response = spa_response(state.clone(), "admin.example", path).await;
             assert_eq!(
@@ -655,6 +663,9 @@ mod tests {
                 "{path} must carry the admin CSP"
             );
         }
+
+        let response = spa_response(state, "public.example", "/nope.png").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
