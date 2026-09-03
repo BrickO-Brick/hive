@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{extract::State, http::HeaderMap, http::StatusCode, response::Json};
-use futures_util::StreamExt;
+use futures_util::{future::try_join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -223,6 +223,43 @@ async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>, (StatusCod
     Ok(body)
 }
 
+async fn fetch_catalog(
+    client: reqwest::Client,
+    owner: String,
+    owner_type: GitHubAccountType,
+    token: String,
+) -> Result<Vec<CatalogRepository>, (StatusCode, Json<Value>)> {
+    let response = client
+        .get(catalog_url(&owner, owner_type))
+        .timeout(UPSTREAM_TIMEOUT)
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {}", token.trim()))
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+        .header("User-Agent", "OneBrick-Hive")
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::warn!(
+                owner,
+                timeout = error.is_timeout(),
+                "GitHub catalog request failed"
+            );
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "GitHub repository catalog is unavailable",
+            )
+        })?;
+    if !response.status().is_success() {
+        tracing::warn!(owner, status = %response.status(), "GitHub catalog request rejected");
+        return Err(api_error(
+            StatusCode::BAD_GATEWAY,
+            "GitHub repository catalog is unavailable",
+        ));
+    }
+    let body = bounded_body(response).await?;
+    parse_catalog(&body, &owner)
+}
+
 /// Return the configured organization's repositories to an authenticated Hive
 /// member. The GitHub token remains server-side and only metadata is returned.
 pub(crate) async fn repositories(
@@ -241,9 +278,14 @@ pub(crate) async fn repositories(
     }
     let personal_token = std::env::var("BUZZ_ONEBRICK_GITHUB_TOKEN").unwrap_or_default();
     let brick_io_token = std::env::var("BUZZ_BRICK_IO_GITHUB_TOKEN").unwrap_or_default();
-    if [personal_token.as_str(), brick_io_token.as_str()]
-        .into_iter()
-        .any(|token| token.trim().len() < 20 || token.len() > 512 || token.contains("CHANGE_ME"))
+    let bricki_token = std::env::var("BUZZ_BRICKI_GITHUB_TOKEN").unwrap_or_default();
+    if [
+        personal_token.as_str(),
+        brick_io_token.as_str(),
+        bricki_token.as_str(),
+    ]
+    .into_iter()
+    .any(|token| token.trim().len() < 20 || token.len() > 512 || token.contains("CHANGE_ME"))
     {
         return Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -269,48 +311,31 @@ pub(crate) async fn repositories(
             )
         })?;
     let sources = [
-        (personal_owner.as_str(), account_type, personal_token.trim()),
+        (personal_owner.clone(), account_type, personal_token),
         (
-            "brick-io",
+            "brick-io".to_string(),
             GitHubAccountType::Organization,
-            brick_io_token.trim(),
+            brick_io_token,
+        ),
+        (
+            "BrickI-Brick".to_string(),
+            GitHubAccountType::User,
+            bricki_token,
         ),
     ];
-    let mut repositories = Vec::new();
-    for (owner, owner_type, source_token) in sources {
-        let response = client
-            .get(catalog_url(owner, owner_type))
-            .timeout(UPSTREAM_TIMEOUT)
-            .header("Accept", "application/vnd.github+json")
-            .header("Authorization", format!("Bearer {source_token}"))
-            .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
-            .header("User-Agent", "OneBrick-Hive")
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::warn!(
-                    owner,
-                    timeout = error.is_timeout(),
-                    "GitHub catalog request failed"
-                );
-                api_error(
-                    StatusCode::BAD_GATEWAY,
-                    "GitHub repository catalog is unavailable",
-                )
-            })?;
-        if !response.status().is_success() {
-            tracing::warn!(owner, status = %response.status(), "GitHub catalog request rejected");
-            return Err(api_error(
-                StatusCode::BAD_GATEWAY,
-                "GitHub repository catalog is unavailable",
-            ));
-        }
-        let body = bounded_body(response).await?;
-        repositories.extend(parse_catalog(&body, owner)?);
-    }
+    let catalogs =
+        try_join_all(sources.into_iter().map(|(owner, owner_type, token)| {
+            fetch_catalog(client.clone(), owner, owner_type, token)
+        }))
+        .await?;
+    let mut repositories = catalogs.into_iter().flatten().collect::<Vec<_>>();
     repositories.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(Json(CatalogResponse {
-        organizations: vec![personal_owner, "brick-io".to_string()],
+        organizations: vec![
+            personal_owner,
+            "brick-io".to_string(),
+            "BrickI-Brick".to_string(),
+        ],
         repositories,
     }))
 }
@@ -342,6 +367,7 @@ mod tests {
     #[test]
     fn validates_github_organization_names() {
         assert!(valid_github_organization("BrickO-Brick"));
+        assert!(valid_github_organization("BrickI-Brick"));
         assert!(!valid_github_organization("-BrickO"));
         assert!(!valid_github_organization("BrickO/other"));
     }
@@ -359,5 +385,15 @@ mod tests {
             )
         );
         assert_eq!(GitHubAccountType::from_env("team"), None);
+    }
+
+    #[test]
+    fn parses_bricki_repository_metadata() {
+        let body = br#"[{"name":"dummy","description":"Sandbox","html_url":"https://github.com/BrickI-Brick/dummy","private":true,"default_branch":"main","updated_at":"2026-09-03T02:34:31Z","archived":false,"language":"TypeScript"}]"#;
+        let repositories = parse_catalog(body, "BrickI-Brick").expect("valid catalog");
+        assert_eq!(repositories.len(), 1);
+        assert_eq!(repositories[0].owner, "BrickI-Brick");
+        assert_eq!(repositories[0].name, "dummy");
+        assert_eq!(repositories[0].visibility, "private");
     }
 }

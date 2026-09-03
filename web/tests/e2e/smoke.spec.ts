@@ -559,7 +559,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        organizations: ["BrickO-Brick", "brick-io"],
+        organizations: ["BrickO-Brick", "brick-io", "BrickI-Brick"],
         repositories: [
           {
             owner: "BrickO-Brick",
@@ -580,6 +580,17 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             visibility: "private",
             default_branch: "main",
             updated_at: "2026-09-02T01:07:29Z",
+            archived: false,
+            language: "TypeScript",
+          },
+          {
+            owner: "BrickI-Brick",
+            name: "dummy",
+            description: "BrickI sandbox",
+            url: "https://github.com/BrickI-Brick/dummy",
+            visibility: "private",
+            default_branch: "main",
+            updated_at: "2026-09-01T01:07:29Z",
             archived: false,
             language: "TypeScript",
           },
@@ -744,17 +755,39 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByTestId("open-github-repositories").click();
   await expect(
-    page.getByRole("heading", { name: "BrickO-Brick + brick-io" }),
+    page.getByRole("heading", {
+      name: "BrickO-Brick + brick-io + BrickI-Brick",
+    }),
   ).toBeVisible();
   await expect(
-    page.getByText("2 repositories available", { exact: false }),
+    page.getByText("3 repositories available", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByTestId("github-repository-hive")).toBeVisible();
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-hive"),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("github-repository-BrickI-Brick-dummy"),
+  ).toBeVisible();
+  const repositorySearch = page.getByRole("textbox", {
+    name: "Search repositories",
+  });
+  await repositorySearch.fill("BrickI-Brick");
+  await expect(
+    page.getByTestId("github-repository-BrickI-Brick-dummy"),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-hive"),
+  ).toBeHidden();
+  await repositorySearch.fill("");
   await page.getByRole("button", { name: "Mantul", exact: true }).click();
-  await expect(page.getByTestId("github-repository-hive")).toBeHidden();
-  await expect(page.getByTestId("github-repository-mantul-be")).toBeVisible();
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-hive"),
+  ).toBeHidden();
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-mantul-be"),
+  ).toBeVisible();
   await page
-    .getByTestId("github-repository-mantul-be")
+    .getByTestId("github-repository-BrickO-Brick-mantul-be")
     .getByRole("button", { name: "Start discussion" })
     .click();
   await expect(page.getByPlaceholder("Message BrickO…")).toHaveValue(

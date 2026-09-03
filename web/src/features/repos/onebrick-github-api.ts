@@ -35,7 +35,7 @@ async function fetchCatalog(): Promise<OneBrickGitHubCatalog> {
   const authorization = await makeNip98AuthHeader(url, "GET");
   const response = await fetch(url, {
     headers: { Authorization: authorization },
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(20_000),
   });
   const payload = (await response.json().catch(() => ({}))) as Partial<
     OneBrickGitHubCatalog & { error: string }

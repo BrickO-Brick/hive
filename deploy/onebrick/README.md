@@ -15,7 +15,7 @@ read-only GitHub credential have been provisioned and tested.
 Use the root scripts and the commands in `docs/OPERATOR_RUNBOOK.md`. Never run
 `docker compose down -v`.
 
-## BrickO-Brick repository catalog
+## OneBrick GitHub repository catalog
 
 The Repositories view inside `/app` reads repository metadata through the
 authenticated relay endpoint. GitHub credentials never reach the browser.
@@ -26,11 +26,12 @@ BUZZ_ONEBRICK_GITHUB_ORG=BrickO-Brick
 BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE=user
 BUZZ_ONEBRICK_GITHUB_TOKEN=<fine-grained read-only token>
 BUZZ_BRICK_IO_GITHUB_TOKEN=<brick-io fine-grained metadata read-only token>
+BUZZ_BRICKI_GITHUB_TOKEN=<BrickI-Brick fine-grained metadata read-only token>
 ```
 
-Use separate fine-grained tokens for the personal `BrickO-Brick` owner and the
-`brick-io` organization. For each token, select **All repositories** and grant
-only repository **Metadata: read-only** access. Do not grant contents,
-administration, pull-request, or write permissions. The catalog endpoint fails
-closed with `503 Service Unavailable` when either token is missing or still
-contains the template placeholder.
+Use separate fine-grained tokens for the personal `BrickO-Brick` and
+`BrickI-Brick` owners and the `brick-io` organization. For each token, select
+**All repositories** and grant only repository **Metadata: read-only** access.
+Do not grant contents, administration, pull-request, or write permissions. The
+catalog endpoint fails closed with `503 Service Unavailable` when any token is
+missing or still contains the template placeholder.
