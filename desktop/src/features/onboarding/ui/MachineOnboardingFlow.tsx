@@ -340,8 +340,8 @@ export function MachineOnboardingFlow({
                 </form>
 
                 <p className="mt-4 max-w-[500px] rounded-full bg-foreground px-4 py-2 text-xs font-semibold leading-5 text-background shadow-sm">
-                  ENGLISH INTERFACE ONLY · Your conversations can use any
-                  language.
+                  Build boldly, code joyfully, and make an impact—great work
+                  together becomes an experience worth remembering.
                 </p>
               </div>
             </OnboardingSlideTransition>
