@@ -1,5 +1,4 @@
 import {
-  CheckCircle2,
   Clock3,
   GitBranch,
   Hash,
@@ -9,7 +8,6 @@ import {
   PanelLeftClose,
   Plus,
   RefreshCw,
-  Reply,
   Send,
   ShieldCheck,
   Wifi,
@@ -29,8 +27,6 @@ import {
 } from "react";
 import hiveLogoUrl from "@/assets/hive-logo.svg";
 import brickoOperationsUrl from "@/assets/bricko-operations.jpg";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   clearHiveIdentity,
   loadHiveIdentity,
@@ -53,21 +49,20 @@ import {
   hasMantapBrowserIdentity,
   signNostrEvent,
 } from "@/shared/lib/nostr-signer";
-import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayWsUrl } from "@/shared/lib/relay-url";
 import {
   BrickOPet,
   type BrickOCelebration,
   type BrickOPetMode,
 } from "./BrickOPet";
+import { HiveMessage } from "./HiveMessage";
+import {
+  normalizePubkey,
+  participantPresentation,
+  useHiveParticipantDirectory,
+} from "./useHiveParticipantDirectory";
 
 type Presence = "online" | "away" | "offline" | "unknown";
-
-type ParticipantProfile = {
-  createdAt: number;
-  displayName: string | null;
-  nip05: string | null;
-};
 
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
@@ -103,56 +98,6 @@ function normalizePresence(value: string): Presence {
   return "unknown";
 }
 
-function normalizePubkey(pubkey: string): string {
-  return pubkey.trim().toLowerCase();
-}
-
-function memberRolesFromEvent(event: NostrEvent): Record<string, string> {
-  const roles: Record<string, string> = {};
-  for (const tag of event.tags) {
-    if (tag[0] !== "p" || !tag[1] || !tag[3]) continue;
-    roles[normalizePubkey(tag[1])] = tag[3];
-  }
-  return roles;
-}
-
-function profileFromEvent(event: NostrEvent): ParticipantProfile | null {
-  try {
-    const content = JSON.parse(event.content) as Record<string, unknown>;
-    const displayNameValue = content.display_name ?? content.name;
-    const nip05Value = content.nip05;
-    const displayName =
-      typeof displayNameValue === "string" && displayNameValue.trim()
-        ? displayNameValue.trim()
-        : null;
-    const nip05 =
-      typeof nip05Value === "string" && nip05Value.trim()
-        ? nip05Value.trim()
-        : null;
-    return { createdAt: event.created_at, displayName, nip05 };
-  } catch {
-    return null;
-  }
-}
-
-function participantInitials(label: string): string {
-  const parts = label
-    .split(/\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return parts
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
-
-function formatMessageTime(timestamp: number): string {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp * 1000));
-}
-
 function formatMessageDay(timestamp: number): string {
   return new Intl.DateTimeFormat("en-US", {
     weekday: "long",
@@ -164,9 +109,9 @@ function formatMessageDay(timestamp: number): string {
 export function HiveChatPage() {
   const identity = useMemo(loadHiveIdentity, []);
   const [messages, setMessages] = useState<NostrEvent[]>([]);
-  const [memberRoles, setMemberRoles] = useState<Record<string, string>>({});
-  const [profiles, setProfiles] = useState<Record<string, ParticipantProfile>>(
-    {},
+  const { agentPubkey, profiles } = useHiveParticipantDirectory(
+    identity,
+    messages,
   );
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -255,17 +200,6 @@ export function HiveChatPage() {
     );
   }, [selectSurface]);
 
-  const agentPubkey = useMemo(() => {
-    const botPubkeys = Object.entries(memberRoles)
-      .filter(([, role]) => role === "bot")
-      .map(([pubkey]) => pubkey);
-    const namedBrickO = botPubkeys.filter(
-      (pubkey) => profiles[pubkey]?.displayName?.toLowerCase() === "bricko",
-    );
-    if (namedBrickO.length === 1) return namedBrickO[0] ?? null;
-    return botPubkeys.length === 1 ? (botPubkeys[0] ?? null) : null;
-  }, [memberRoles, profiles]);
-
   const mergeMessage = useCallback(
     (event: NostrEvent) => {
       setMessages((current) => {
@@ -309,108 +243,6 @@ export function HiveChatPage() {
       );
     }
   }, [identity]);
-
-  useEffect(() => {
-    if (!identity) return;
-    let active = true;
-    let newestRosterAt = 0;
-
-    const applyRoster = (event: NostrEvent) => {
-      if (!active || event.created_at < newestRosterAt) return;
-      newestRosterAt = event.created_at;
-      setMemberRoles(memberRolesFromEvent(event));
-    };
-
-    void queryEvents(relayWsUrl(), {
-      kinds: [39002],
-      "#d": [identity.channelId],
-      limit: 1,
-    }).then(
-      (events) => {
-        const latest = events.reduce<NostrEvent | null>(
-          (current, event) =>
-            !current || event.created_at > current.created_at ? event : current,
-          null,
-        );
-        if (latest) applyRoster(latest);
-      },
-      () => {
-        // Message rendering remains available with safe, non-agent fallbacks.
-      },
-    );
-
-    const unsubscribe = subscribeEvents(
-      relayWsUrl(),
-      { kinds: [39002], "#d": [identity.channelId] },
-      applyRoster,
-      () => {
-        // The next reconnect or manual refresh can restore roster metadata.
-      },
-    );
-
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [identity]);
-
-  const profilePubkeys = useMemo(() => {
-    const pubkeys = new Set(
-      messages.map((message) => normalizePubkey(message.pubkey)),
-    );
-    for (const [pubkey, role] of Object.entries(memberRoles)) {
-      if (role === "bot") pubkeys.add(pubkey);
-    }
-    if (identity) pubkeys.add(normalizePubkey(identity.pubkey));
-    return [...pubkeys].filter(Boolean).sort();
-  }, [identity, memberRoles, messages]);
-  const profilePubkeyKey = profilePubkeys.join(",");
-
-  useEffect(() => {
-    const requestedProfilePubkeys = profilePubkeyKey.split(",").filter(Boolean);
-    if (requestedProfilePubkeys.length === 0) return;
-    let active = true;
-
-    const applyProfile = (event: NostrEvent) => {
-      if (!active) return;
-      const profile = profileFromEvent(event);
-      if (!profile) return;
-      const pubkey = normalizePubkey(event.pubkey);
-      setProfiles((current) => {
-        if ((current[pubkey]?.createdAt ?? -1) > profile.createdAt) {
-          return current;
-        }
-        return { ...current, [pubkey]: profile };
-      });
-    };
-
-    void queryEvents(relayWsUrl(), {
-      kinds: [0],
-      authors: requestedProfilePubkeys,
-      limit: requestedProfilePubkeys.length,
-    }).then(
-      (events) => {
-        for (const event of events) applyProfile(event);
-      },
-      () => {
-        // A compact pubkey remains visible when profile lookup is unavailable.
-      },
-    );
-
-    const unsubscribe = subscribeEvents(
-      relayWsUrl(),
-      { kinds: [0], authors: requestedProfilePubkeys },
-      applyProfile,
-      () => {
-        // Profile updates are best effort; signed message authorship is intact.
-      },
-    );
-
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [profilePubkeyKey]);
 
   useEffect(() => {
     void refresh();
@@ -1189,99 +1021,36 @@ export function HiveChatPage() {
                   )}
 
                 {visibleMessages.map((message) => {
-                  const messagePubkey = normalizePubkey(message.pubkey);
-                  const mine =
-                    messagePubkey === normalizePubkey(identity.pubkey);
-                  const fromBrickO =
-                    agentPubkey !== null &&
-                    messagePubkey === normalizePubkey(agentPubkey);
-                  const authorLabel = mine
-                    ? "You"
-                    : fromBrickO
-                      ? "BrickO"
-                      : (profiles[messagePubkey]?.displayName ??
-                        profiles[messagePubkey]?.nip05 ??
-                        `Member ${truncatePubkey(message.pubkey)}`);
+                  const { authorLabel, fromBrickO, mine } =
+                    participantPresentation(
+                      message.pubkey,
+                      identity.pubkey,
+                      agentPubkey,
+                      profiles,
+                    );
                   const day = formatMessageDay(message.created_at);
                   const showDay = day !== previousDay;
                   previousDay = day;
                   return (
-                    <div key={message.id}>
-                      {showDay && (
-                        <div className="my-6 flex items-center gap-3">
-                          <div className="h-px flex-1 bg-[#D8DEE8]" />
-                          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#607086]">
-                            {day}
-                          </span>
-                          <div className="h-px flex-1 bg-[#D8DEE8]" />
-                        </div>
-                      )}
-                      <article
-                        aria-label={`Message from ${authorLabel}`}
-                        className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
-                      >
-                        {!mine &&
-                          (fromBrickO ? (
-                            <BrickOPet mode="still" size="sm" />
-                          ) : (
-                            <div
-                              aria-hidden="true"
-                              className="grid size-8 shrink-0 place-items-center rounded-full bg-[#DDE7F5] text-[10px] font-extrabold text-[#27476F]"
-                            >
-                              {participantInitials(authorLabel)}
-                            </div>
-                          ))}
-                        <div
-                          className={`max-w-[86%] sm:max-w-[78%] ${mine ? "items-end" : "items-start"}`}
-                        >
-                          <div
-                            className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
-                          >
-                            <span className="text-[11px] font-bold text-[#42526B]">
-                              {authorLabel}
-                            </span>
-                            <time className="text-[10px] text-[#607086]">
-                              {formatMessageTime(message.created_at)}
-                            </time>
-                          </div>
-                          <div
-                            className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
-                              mine
-                                ? "border border-[#F2B09F] bg-[#FFF0EB] text-[#44201A] shadow-[#FF6F52]/10"
-                                : "border border-[#D8DEE8] bg-white text-[#172033]"
-                            }`}
-                          >
-                            <div
-                              className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-a:text-[#9D321F]" : "prose-a:text-[#E35E43]"}`}
-                            >
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {message.content}
-                              </ReactMarkdown>
-                            </div>
-                          </div>
-                          {mine && (
-                            <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
-                              <CheckCircle2 size={10} /> Sent
-                            </div>
-                          )}
-                          {activeDiscussion && (
-                            <button
-                              type="button"
-                              className="mt-1 flex items-center gap-1 px-1 text-[10px] font-bold text-[#526178] hover:text-[#1F55C5]"
-                              onClick={() => {
-                                setReplyTo(message);
-                                requestAnimationFrame(() =>
-                                  composerRef.current?.focus(),
-                                );
-                              }}
-                              aria-label={`Reply to ${mine ? "your message" : "BrickO"}`}
-                            >
-                              <Reply size={10} /> Reply in this thread
-                            </button>
-                          )}
-                        </div>
-                      </article>
-                    </div>
+                    <HiveMessage
+                      key={message.id}
+                      authorLabel={authorLabel}
+                      day={day}
+                      fromBrickO={fromBrickO}
+                      message={message}
+                      mine={mine}
+                      onReply={
+                        activeDiscussion
+                          ? () => {
+                              setReplyTo(message);
+                              requestAnimationFrame(() =>
+                                composerRef.current?.focus(),
+                              );
+                            }
+                          : undefined
+                      }
+                      showDay={showDay}
+                    />
                   );
                 })}
 
