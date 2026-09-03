@@ -214,8 +214,7 @@ jobs:
             ${{ steps.artifacts.outputs.installer }}.sig
 
   publish:
-    name: Publish Hive desktop release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
+    name: Validate and publish Hive desktop release
     needs: [setup, macos, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -242,12 +241,13 @@ jobs:
         run: |
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/desktop-v${VERSION}"
           bash desktop/scripts/generate-oss-latest-json.sh "$VERSION" \
-            "darwin-aarch64:staged/Hive_${VERSION}_aarch64.app.tar.gz.sig:${base}/Hive_${VERSION}_aarch64.app.tar.gz" \
-            "darwin-x86_64:staged/Hive_${VERSION}_x64.app.tar.gz.sig:${base}/Hive_${VERSION}_x64.app.tar.gz" \
+            "darwin-aarch64:staged/macos/Hive_${VERSION}_aarch64.app.tar.gz.sig:${base}/Hive_${VERSION}_aarch64.app.tar.gz" \
+            "darwin-x86_64:staged/macos/Hive_${VERSION}_x64.app.tar.gz.sig:${base}/Hive_${VERSION}_x64.app.tar.gz" \
             "windows-x86_64:staged/Hive_${VERSION}_x64-setup_alpha-unsigned.exe.sig:${base}/Hive_${VERSION}_x64-setup_alpha-unsigned.exe" \
             > staged/latest.json
           cp staged/latest.json staged/updater-manifest.json
       - name: Publish immutable version and rolling updater releases
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
         run: |
           set -euo pipefail
           tag="desktop-v${VERSION}"
@@ -260,7 +260,7 @@ jobs:
           else
             gh release create "$tag" --verify-tag --draft --title "Hive Desktop v${VERSION}" --notes "Hive ${VERSION} for macOS and Windows. The app checks this signed update channel automatically."
           fi
-          mapfile -t assets < <(find staged -maxdepth 1 -type f -print)
+          mapfile -t assets < <(find staged -type f ! -name latest.json -print)
           gh release upload "$tag" "${assets[@]}" --clobber
           gh release edit "$tag" --draft=false --latest
 
