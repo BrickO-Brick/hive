@@ -914,11 +914,107 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByPlaceholder("Message BrickO about mantul-be…"),
   ).toHaveValue(/BrickO-Brick\/mantul-be/);
 
+  await page.evaluate(() => {
+    const emit = (
+      window as Window & {
+        __hiveEmit?: (event: Record<string, unknown>) => void;
+      }
+    ).__hiveEmit;
+    const channelId = "62ae672f-ab7b-4619-b013-13eec0111943";
+    const discussionId = "11111111-2222-4333-8444-555555555555";
+    const agentPubkey = "22".repeat(32);
+    const userPubkey =
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+    const now = Math.floor(Date.now() / 1000);
+    const firstRoot = "d1".repeat(32);
+    const secondRoot = "d2".repeat(32);
+    const otherRoot = "e1".repeat(32);
+    const events = [
+      {
+        id: firstRoot,
+        pubkey: userPubkey,
+        created_at: now - 4,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["discussion", discussionId],
+        ],
+        content: "First top-level question",
+        sig: "00".repeat(64),
+      },
+      {
+        id: secondRoot,
+        pubkey: userPubkey,
+        created_at: now - 3,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["discussion", discussionId],
+        ],
+        content: "Second top-level question",
+        sig: "00".repeat(64),
+      },
+      {
+        id: "d3".repeat(32),
+        pubkey: agentPubkey,
+        created_at: now - 2,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["e", secondRoot, "", "root"],
+          ["e", secondRoot, "", "reply"],
+        ],
+        content: "Reply to the second root remains visible",
+        sig: "00".repeat(64),
+      },
+      {
+        id: otherRoot,
+        pubkey: userPubkey,
+        created_at: now - 1,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["discussion", "another-discussion"],
+        ],
+        content: "Question from another discussion",
+        sig: "00".repeat(64),
+      },
+      {
+        id: "e2".repeat(32),
+        pubkey: agentPubkey,
+        created_at: now,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["e", otherRoot, "", "root"],
+          ["e", otherRoot, "", "reply"],
+        ],
+        content: "Reply from another discussion",
+        sig: "00".repeat(64),
+      },
+    ];
+    for (const event of events) emit?.(event);
+  });
+
+  await expect(page.getByText("First top-level question")).toBeVisible();
+  await expect(page.getByText("Second top-level question")).toBeVisible();
+  await expect(
+    page.getByText("Reply to the second root remains visible"),
+  ).toBeVisible();
+  await expect(page.getByText("Question from another discussion")).toHaveCount(
+    0,
+  );
+  await expect(page.getByText("Reply from another discussion")).toHaveCount(0);
+
   const composer = page.getByPlaceholder("Message BrickO about mantul-be…");
   await composer.fill("Tolong cek status Hive sekarang");
   await composer.press("Enter");
   await expect(page.getByText("Tolong cek status Hive sekarang")).toBeVisible();
-  await page.getByRole("button", { name: "Reply to your message" }).click();
+  await page
+    .getByRole("article", { name: "Message from You" })
+    .filter({ hasText: "Tolong cek status Hive sekarang" })
+    .getByRole("button", { name: "Reply to your message" })
+    .click();
   await expect(page.getByText(/Replying to your message:/)).toBeVisible();
   await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
@@ -970,16 +1066,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         kind: 20002,
         tags: [
           ["h", channelId],
-          [
-            "e",
-            (
-              window as Window & {
-                __hiveLastPublished?: { id: string };
-              }
-            ).__hiveLastPublished?.id,
-            "",
-            "root",
-          ],
+          ["e", "d1".repeat(32), "", "root"],
           [
             "e",
             (
@@ -1019,16 +1106,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         kind: 9,
         tags: [
           ["h", channelId],
-          [
-            "e",
-            (
-              window as Window & {
-                __hiveLastPublished?: { id: string };
-              }
-            ).__hiveLastPublished?.id,
-            "",
-            "root",
-          ],
+          ["e", "d1".repeat(32), "", "root"],
           [
             "e",
             (
