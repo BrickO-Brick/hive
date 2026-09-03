@@ -1,4 +1,3 @@
-import hiveAppIcon from "@/assets/hive-icon.png";
 import {
   BUZZ_RELEASES_URL,
   type HiveDesktopRelease,
@@ -85,7 +84,7 @@ export function DownloadPage() {
             <img
               alt="Hive"
               className="h-11 w-11 rounded-[22%]"
-              src={hiveAppIcon}
+              src="/hive-icon.png"
             />
             <span className="text-xl">Hive</span>
           </a>
@@ -98,8 +97,8 @@ export function DownloadPage() {
         </header>
 
         <section className="pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
-          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[24%] bg-white shadow-[0_18px_60px_rgba(102,33,20,0.16)]">
-            <img alt="" className="h-16 w-16 rounded-[22%]" src={hiveAppIcon} />
+          <div className="mx-auto h-20 w-20 drop-shadow-[0_18px_30px_rgba(102,33,20,0.16)]">
+            <img alt="" className="h-full w-full" src="/hive-icon.png" />
           </div>
           <p className="mt-7 font-mono text-sm font-semibold uppercase tracking-[0.22em] text-[#8d2b1d]">
             Build together. Ship with impact.

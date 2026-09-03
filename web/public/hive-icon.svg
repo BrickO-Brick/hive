@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Hive Board — BrickO and team collaboration</title>
+  <defs>
+    <linearGradient id="bg" x1="90" y1="70" x2="920" y2="950"><stop stop-color="#fffdf9"/><stop offset="1" stop-color="#ffe2d5"/></linearGradient>
+    <linearGradient id="coral" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff8f70"/><stop offset="1" stop-color="#ef5538"/></linearGradient>
+    <filter id="s"><feDropShadow dx="0" dy="17" stdDeviation="19" flood-color="#172033" flood-opacity=".22"/></filter>
+    <symbol id="brick" viewBox="0 0 27 24"><path d="M9.326 13.31h7.987a1.33 1.33 0 0 0 0-2.663H9.326a1.331 1.331 0 1 0 0 2.662Z"/><path d="M2.662 6.922v11.447a1.331 1.331 0 0 0 1.331 1.331h1.331v2.929a1.331 1.331 0 0 0 2.663 0v-5.591H5.324V6.922h10.649v-5.59a1.331 1.331 0 0 0-2.662 0v2.927H1.331a1.331 1.331 0 0 0 0 2.663h1.331Zm18.636 0v10.116H10.649v5.59a1.331 1.331 0 0 0 2.662 0V19.7h11.98a1.331 1.331 0 0 0 0-2.662H23.96V5.59a1.331 1.331 0 0 0-1.331-1.331h-1.331V1.33a1.331 1.331 0 0 0-2.662 0v5.591h2.662Z"/></symbol>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#bg)"/>
+  <g transform="translate(72 34) scale(.86)">
+  <g stroke="#172033" stroke-width="17" stroke-linejoin="round" filter="url(#s)">
+    <path d="m512 120 146 84v168l-146 84-146-84V204z" fill="#ffbd4a"/>
+    <path d="m269 260 146 84v168l-146 84-146-84V344z" fill="#ffd8c8"/>
+    <path d="m755 260 146 84v168l-146 84-146-84V344z" fill="#ff8a68"/>
+    <path d="m512 400 146 84v168l-146 84-146-84V484z" fill="#172033"/>
+    <path d="m269 540 146 84v168l-146 84-146-84V624z" fill="#ff8a68"/>
+    <path d="m755 540 146 84v168l-146 84-146-84V624z" fill="#ffbd4a"/>
+    <path d="m512 680 146 84v168l-146 84-146-84V764z" fill="url(#coral)"/>
+  </g>
+  <g fill="#172033">
+    <circle cx="269" cy="382" r="31"/><path d="M212 470c13-46 101-46 114 0z"/>
+    <circle cx="755" cy="382" r="31"/><path d="M698 470c13-46 101-46 114 0z"/>
+    <circle cx="269" cy="661" r="31"/><path d="M212 749c13-46 101-46 114 0z"/>
+    <circle cx="755" cy="661" r="31"/><path d="M698 749c13-46 101-46 114 0z"/>
+  </g>
+  <use href="#brick" x="427" y="474" width="170" height="151" fill="#ff7559"/>
+  <g transform="translate(512 274)">
+    <path d="M0-91V-119" stroke="#172033" stroke-width="13" stroke-linecap="round"/>
+    <circle cx="0" cy="-132" r="15" fill="#ff6f52" stroke="#172033" stroke-width="9"/>
+    <rect x="-91" y="-86" width="182" height="132" rx="47" fill="#fff8f2" stroke="#172033" stroke-width="14"/>
+    <rect x="-70" y="-65" width="140" height="88" rx="29" fill="#172033" stroke="#ff6f52" stroke-width="10"/>
+    <path d="m-43-24 17-18 17 18M9-24l17-18 17 18" fill="none" stroke="#fff8f2" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M-20 0q20 18 40 0" fill="none" stroke="#fff8f2" stroke-width="9" stroke-linecap="round"/>
+    <path d="M-55 48v28M55 48v28" stroke="#172033" stroke-width="14" stroke-linecap="round"/>
+    <circle cx="0" cy="61" r="12" fill="#4cd964" stroke="#172033" stroke-width="7"/>
+  </g>
+  <g transform="translate(512 834)" fill="none" stroke="#fff8f2" stroke-width="13" stroke-linecap="round">
+    <circle cx="-54" cy="0" r="22" fill="#fff8f2"/><circle cx="54" cy="0" r="22" fill="#fff8f2"/><path d="M-25 0h50M0-25v50"/>
+  </g>
+  </g>
+</svg>
