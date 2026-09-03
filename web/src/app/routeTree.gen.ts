@@ -7,6 +7,7 @@
 import { Route as rootRouteImport } from "./routes/root";
 import { Route as reposRouteImport } from "./routes/repos";
 import { Route as mantulSsoRouteImport } from "./routes/mantul-sso";
+import { Route as downloadRouteImport } from "./routes/download";
 import { Route as appRouteImport } from "./routes/app";
 import { Route as indexRouteImport } from "./routes/index";
 import { Route as reposDotrepoIdRouteImport } from "./routes/repos.$repoId";
@@ -21,6 +22,11 @@ const reposRoute = reposRouteImport.update({
 const mantulSsoRoute = mantulSsoRouteImport.update({
   id: "/mantul-sso",
   path: "/mantul-sso",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const downloadRoute = downloadRouteImport.update({
+  id: "/download",
+  path: "/download",
   getParentRoute: () => rootRouteImport,
 } as any);
 const appRoute = appRouteImport.update({
@@ -53,6 +59,7 @@ const reposDotrepoIdDotblobDotsplatRoute =
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
   "/app": typeof appRoute;
+  "/download": typeof downloadRoute;
   "/mantul-sso": typeof mantulSsoRoute;
   "/repos": typeof reposRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -62,6 +69,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
   "/app": typeof appRoute;
+  "/download": typeof downloadRoute;
   "/mantul-sso": typeof mantulSsoRoute;
   "/repos": typeof reposRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -72,6 +80,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
   "/app": typeof appRoute;
+  "/download": typeof downloadRoute;
   "/mantul-sso": typeof mantulSsoRoute;
   "/repos": typeof reposRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -83,6 +92,7 @@ export interface FileRouteTypes {
   fullPaths:
     | "/"
     | "/app"
+    | "/download"
     | "/mantul-sso"
     | "/repos"
     | "/invite/$code"
@@ -92,6 +102,7 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/app"
+    | "/download"
     | "/mantul-sso"
     | "/repos"
     | "/invite/$code"
@@ -101,6 +112,7 @@ export interface FileRouteTypes {
     | "__root__"
     | "/"
     | "/app"
+    | "/download"
     | "/mantul-sso"
     | "/repos"
     | "/invite/$code"
@@ -111,6 +123,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
   appRoute: typeof appRoute;
+  downloadRoute: typeof downloadRoute;
   mantulSsoRoute: typeof mantulSsoRoute;
   reposRoute: typeof reposRoute;
   inviteDotcodeRoute: typeof inviteDotcodeRoute;
@@ -132,6 +145,13 @@ declare module "@tanstack/react-router" {
       path: "/mantul-sso";
       fullPath: "/mantul-sso";
       preLoaderRoute: typeof mantulSsoRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/download": {
+      id: "/download";
+      path: "/download";
+      fullPath: "/download";
+      preLoaderRoute: typeof downloadRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/app": {
@@ -175,6 +195,7 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
   appRoute: appRoute,
+  downloadRoute: downloadRoute,
   mantulSsoRoute: mantulSsoRoute,
   reposRoute: reposRoute,
   inviteDotcodeRoute: inviteDotcodeRoute,

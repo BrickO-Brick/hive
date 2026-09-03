@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.21
+
+### Hive desktop and web
+
+- Add the public Hive download center for Apple Silicon, Intel Mac, and Windows.
+- Publish Hive-owned desktop installers and a signed automatic-update manifest.
+- Point installed Hive clients and invite downloads at the Hive release channel.
+- Fix native Mantap password, OTP, recovery, and production-relay login end to end.
+
 ## v0.5.20
 
 ### Desktop and shared changes
