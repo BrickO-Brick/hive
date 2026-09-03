@@ -13,7 +13,9 @@ import {
   clearStoredProjectsAgentConversation,
   projectsConversationScope,
   readStoredProjectsAgentConversation,
+  readStoredProjectsWorkspaceId,
   writeStoredProjectsAgentConversation,
+  writeStoredProjectsWorkspaceId,
 } from "./projectAgentConversationStorage.ts";
 import {
   KIND_STREAM_MESSAGE,
@@ -95,6 +97,38 @@ test("conversation scopes fail closed without relay, signer, or resource", () =>
     projectsConversationScope("detail", WORKSPACE_ID, SELF_PUBKEY, ""),
     null,
   );
+});
+
+test("git workspace binding survives before the first chat message", () => {
+  const scope = projectsConversationScope(
+    "detail",
+    WORKSPACE_ID,
+    SELF_PUBKEY,
+    "30617:owner:buzz",
+  );
+  const gitWorkspaceId = "discussion-123";
+  writeStoredProjectsWorkspaceId(scope, gitWorkspaceId);
+  assert.equal(readStoredProjectsWorkspaceId(scope), gitWorkspaceId);
+
+  writeStoredProjectsWorkspaceId(scope, "../escape");
+  assert.equal(readStoredProjectsWorkspaceId(scope), gitWorkspaceId);
+});
+
+test("conversation pointer round-trips its exact git workspace", () => {
+  const scope = projectsConversationScope(
+    "detail",
+    WORKSPACE_ID,
+    SELF_PUBKEY,
+    "30617:owner:buzz",
+  );
+  const pointer = {
+    agentPubkey: AGENT_PUBKEY,
+    channelId: EXISTING_DM.id,
+    opener: OPENER,
+    workspaceId: "discussion-456",
+  };
+  writeStoredProjectsAgentConversation(scope, pointer);
+  assert.deepEqual(readStoredProjectsAgentConversation(scope), pointer);
 });
 
 test("an existing agent DM is never auto-restored without a stored pointer", () => {

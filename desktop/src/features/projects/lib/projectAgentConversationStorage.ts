@@ -1,4 +1,5 @@
 const CONVERSATION_STORAGE_PREFIX = "buzz.projects.agentConversation";
+const GIT_WORKSPACE_STORAGE_PREFIX = "buzz.projects.gitWorkspace";
 
 /** Builds the identity boundary for Projects conversation pointers and drafts. */
 export function projectsConversationScope(
@@ -34,7 +35,46 @@ export type StoredProjectsAgentConversation = {
   agentPubkey: string;
   channelId: string;
   opener: ProjectsConversationOpener;
+  workspaceId?: string;
 };
+
+const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+
+/** Creates the durable Git boundary for one repository discussion lifecycle. */
+export function createProjectsWorkspaceId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+/** Restores the Git workspace before a conversation opener exists. */
+export function readStoredProjectsWorkspaceId(
+  conversationScope: string | null,
+): string | null {
+  if (!conversationScope) return null;
+  try {
+    const value = globalThis.localStorage?.getItem(
+      scopedKey(GIT_WORKSPACE_STORAGE_PREFIX, conversationScope),
+    );
+    return value && WORKSPACE_ID_PATTERN.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persists the discussion-to-worktree binding independently of chat history. */
+export function writeStoredProjectsWorkspaceId(
+  conversationScope: string | null,
+  workspaceId: string,
+) {
+  if (!conversationScope || !WORKSPACE_ID_PATTERN.test(workspaceId)) return;
+  try {
+    globalThis.localStorage?.setItem(
+      scopedKey(GIT_WORKSPACE_STORAGE_PREFIX, conversationScope),
+      workspaceId,
+    );
+  } catch {
+    // Persistence is best-effort; the in-memory workspace remains usable.
+  }
+}
 
 function scopedKey(prefix: string, workspaceId: string) {
   return `${prefix}.${encodeURIComponent(workspaceId)}`;
@@ -82,6 +122,10 @@ export function readStoredProjectsAgentConversation(
         createdAt: value.opener.createdAt,
         eventId: value.opener.eventId,
       },
+      ...(typeof value.workspaceId === "string" &&
+      WORKSPACE_ID_PATTERN.test(value.workspaceId)
+        ? { workspaceId: value.workspaceId }
+        : {}),
     };
   } catch {
     return null;

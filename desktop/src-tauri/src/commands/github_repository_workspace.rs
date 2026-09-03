@@ -3,8 +3,10 @@ use super::project_repo_paths::{
     find_local_repo_dir, local_repo_candidates,
 };
 use crate::managed_agents::{bounded_command::output_with_timeout, resolve_command};
+use fs2::FileExt;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -70,6 +72,29 @@ pub(super) fn validate_segment(value: &str, label: &str) -> Result<String, Strin
 
 fn clone_url(owner: &str, name: &str) -> String {
     format!("https://github.com/{owner}/{name}.git")
+}
+
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn github_git_command(repo_dir: &Path, args: &[&str]) -> Result<Command, String> {
+    let gh = resolve_command("gh").ok_or_else(|| "GitHub CLI is not installed.".to_string())?;
+    let helper = format!(
+        "credential.helper=!{} auth git-credential",
+        shell_quote(&gh)
+    );
+    let mut owned = vec![
+        "-c".to_string(),
+        "credential.helper=".to_string(),
+        "-c".to_string(),
+        helper,
+        "-c".to_string(),
+        "credential.useHttpPath=true".to_string(),
+    ];
+    owned.extend(args.iter().map(|value| (*value).to_string()));
+    let refs = owned.iter().map(String::as_str).collect::<Vec<_>>();
+    git_command(repo_dir, &refs, None)
 }
 
 pub(super) fn repository_coordinate(owner: &str, name: &str) -> String {
@@ -259,11 +284,61 @@ pub(super) fn inspect_workspace_blocking(
     owner: &str,
     name: &str,
     repos_dir: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Result<Option<GitHubRepositoryWorkspace>, String> {
     let url = clone_url(owner, name);
-    let Some(repo_dir) = find_local_repo_dir(repos_dir, name, Some(&url))? else {
+    let workspace_binding = if let Some(workspace_id) = workspace_id {
+        let workspace_id = validate_segment(workspace_id, "workspace")?;
+        let coordinate = format!("{owner}--{name}");
+        canonical_repos_roots(repos_dir)?
+            .into_iter()
+            .find_map(|root| {
+                let candidate = root
+                    .join(".hive-workspaces")
+                    .join("worktrees")
+                    .join(&coordinate)
+                    .join(&workspace_id)
+                    .canonicalize()
+                    .ok()?;
+                if !candidate.starts_with(&root) {
+                    return None;
+                }
+                let mirror = root
+                    .join(".hive-workspaces")
+                    .join("mirrors")
+                    .join(format!("{coordinate}.git"))
+                    .canonicalize()
+                    .ok()?;
+                mirror.starts_with(&root).then_some((candidate, mirror))
+            })
+    } else {
+        find_local_repo_dir(repos_dir, name, Some(&url))?.map(|repo_dir| (repo_dir, PathBuf::new()))
+    };
+    let Some((repo_dir, expected_common_dir)) = workspace_binding else {
         return Ok(None);
     };
+    let actual_url = git_text(&repo_dir, &["remote", "get-url", "origin"], None)?;
+    if actual_url.trim_end_matches(".git") != url.trim_end_matches(".git") {
+        return Err("The thread workspace origin does not match the selected repository.".into());
+    }
+    if workspace_id.is_some() {
+        let common_dir = git_text(&repo_dir, &["rev-parse", "--git-common-dir"], None)?;
+        let common_dir = PathBuf::from(common_dir);
+        let common_dir = if common_dir.is_absolute() {
+            common_dir
+        } else {
+            repo_dir.join(common_dir)
+        };
+        let common_dir = common_dir
+            .canonicalize()
+            .map_err(|error| format!("resolve thread workspace Git directory: {error}"))?;
+        if common_dir != expected_common_dir {
+            return Err(
+                "The thread workspace is no longer attached to its shared repository mirror."
+                    .into(),
+            );
+        }
+    }
     let base_commit = git_text(&repo_dir, &["rev-parse", "--verify", "HEAD^{commit}"], None)
         .map_err(|_| "The local repository has no commit to use as a proposal base.".to_string())?;
     let base_tree = git_text(&repo_dir, &["rev-parse", "HEAD^{tree}"], None)?;
@@ -356,8 +431,152 @@ fn prepare_workspace_blocking(
     owner: &str,
     name: &str,
     repos_dir: Option<&str>,
+    workspace_id: Option<&str>,
+    base_ref: Option<&str>,
 ) -> Result<GitHubRepositoryWorkspace, String> {
-    if let Some(workspace) = inspect_workspace_blocking(owner, name, repos_dir)? {
+    if let Some(workspace) = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)? {
+        return Ok(workspace);
+    }
+    let Some(workspace_id) = workspace_id else {
+        return prepare_legacy_workspace_blocking(owner, name, repos_dir);
+    };
+    let workspace_id = validate_segment(workspace_id, "workspace")?;
+    let base_ref = validate_segment(base_ref.unwrap_or("main"), "base branch")?;
+    let root = clone_destination_root(repos_dir)?;
+    let managed_root = root.join(".hive-workspaces");
+    let coordinate = format!("{owner}--{name}");
+    let lock_dir = managed_root.join("locks");
+    std::fs::create_dir_all(&lock_dir)
+        .map_err(|error| format!("create workspace lock directory: {error}"))?;
+    let lock_path = lock_dir.join(format!("{coordinate}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("open repository workspace lock: {error}"))?;
+    lock.try_lock_exclusive().map_err(|_| {
+        "This repository is already preparing another local discussion workspace.".to_string()
+    })?;
+    if let Some(workspace) =
+        inspect_workspace_blocking(owner, name, repos_dir, Some(&workspace_id))?
+    {
+        return Ok(workspace);
+    }
+
+    let mirror = managed_root
+        .join("mirrors")
+        .join(format!("{coordinate}.git"));
+    let destination = managed_root
+        .join("worktrees")
+        .join(&coordinate)
+        .join(&workspace_id);
+    if destination.exists() {
+        return Err(format!(
+            "{} already exists without a valid thread workspace binding.",
+            destination.display()
+        ));
+    }
+    if !mirror.exists() {
+        std::fs::create_dir_all(
+            mirror
+                .parent()
+                .ok_or_else(|| "The mirror path has no parent directory.".to_string())?,
+        )
+        .map_err(|error| format!("create repository mirror directory: {error}"))?;
+        let gh = resolve_command("gh").ok_or_else(|| {
+            "GitHub CLI is not installed. Install `gh` and sign in with the publishing user."
+                .to_string()
+        })?;
+        let repository = repository_coordinate(owner, name);
+        let mut command = Command::new(gh);
+        command
+            .args(["repo", "clone", &repository])
+            .arg(&mirror)
+            .args(["--", "--bare", "--filter=blob:none"])
+            .env("GH_PAGER", "cat");
+        clean_process_environment(&mut command);
+        run_bounded(command, CLONE_TIMEOUT, "GitHub repository mirror")?;
+    }
+    let actual_url = git_text(&mirror, &["remote", "get-url", "origin"], None)?;
+    let expected_url = clone_url(owner, name);
+    if actual_url.trim_end_matches(".git") != expected_url.trim_end_matches(".git") {
+        return Err("The shared mirror origin does not match the selected repository.".into());
+    }
+    run_bounded(
+        github_git_command(
+            &mirror,
+            &[
+            "fetch",
+            "--prune",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        )?,
+        CLONE_TIMEOUT,
+        "GitHub repository mirror fetch",
+    )?;
+    let base_revision = format!("refs/remotes/origin/{base_ref}^{{commit}}");
+    let base_commit = git_text(&mirror, &["rev-parse", "--verify", &base_revision], None)
+        .map_err(|_| format!("The remote base branch {base_ref} does not exist."))?;
+    let branch = format!("hive/{workspace_id}");
+    let branch_ref = format!("refs/heads/{branch}");
+    let branch_probe = output_with_timeout(
+        git_command(
+            &mirror,
+            &["show-ref", "--verify", "--quiet", &branch_ref],
+            None,
+        )?,
+        GIT_TIMEOUT,
+    )
+    .ok_or_else(|| "The discussion branch check exceeded its resource limits.".to_string())?;
+    let branch_exists = if branch_probe.status.success() {
+        true
+    } else if branch_probe.status.code() == Some(1) {
+        false
+    } else {
+        return Err(first_error_line(
+            &branch_probe.stderr,
+            "The discussion branch could not be inspected.",
+        ));
+    };
+    if branch_exists {
+        return Err(format!(
+            "Discussion branch {branch} already exists without its expected worktree."
+        ));
+    }
+    std::fs::create_dir_all(
+        destination
+            .parent()
+            .ok_or_else(|| "The worktree path has no parent directory.".to_string())?,
+    )
+    .map_err(|error| format!("create discussion worktree directory: {error}"))?;
+    run_git(
+        &mirror,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            destination
+                .to_str()
+                .ok_or_else(|| "The worktree path is not valid UTF-8.".to_string())?,
+            &base_commit,
+        ],
+        None,
+    )?;
+    inspect_workspace_blocking(owner, name, repos_dir, Some(&workspace_id))?.ok_or_else(|| {
+        "The worktree was created but its repository binding could not be verified.".to_string()
+    })
+}
+
+fn prepare_legacy_workspace_blocking(
+    owner: &str,
+    name: &str,
+    repos_dir: Option<&str>,
+) -> Result<GitHubRepositoryWorkspace, String> {
+    if let Some(workspace) = inspect_workspace_blocking(owner, name, repos_dir, None)? {
         return Ok(workspace);
     }
     let root = clone_destination_root(repos_dir)?;
@@ -386,7 +605,7 @@ fn prepare_workspace_blocking(
         .env("GH_PAGER", "cat");
     clean_process_environment(&mut command);
     run_bounded(command, CLONE_TIMEOUT, "GitHub repository clone")?;
-    inspect_workspace_blocking(owner, name, repos_dir)?.ok_or_else(|| {
+    inspect_workspace_blocking(owner, name, repos_dir, None)?.ok_or_else(|| {
         "The clone completed but its origin could not be verified against the selected repository."
             .to_string()
     })
@@ -447,11 +666,17 @@ pub async fn inspect_github_repository_workspace(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
 ) -> Result<Option<GitHubRepositoryWorkspace>, String> {
     let owner = validate_segment(&owner, "owner")?;
     let name = validate_segment(&name, "repository")?;
     tauri::async_runtime::spawn_blocking(move || {
-        inspect_workspace_blocking(&owner, &name, repos_dir.as_deref())
+        inspect_workspace_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+        )
     })
     .await
     .map_err(|error| format!("workspace inspection task failed: {error}"))?
@@ -462,11 +687,19 @@ pub async fn prepare_github_repository_workspace(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
+    base_ref: Option<String>,
 ) -> Result<GitHubRepositoryWorkspace, String> {
     let owner = validate_segment(&owner, "owner")?;
     let name = validate_segment(&name, "repository")?;
     tauri::async_runtime::spawn_blocking(move || {
-        prepare_workspace_blocking(&owner, &name, repos_dir.as_deref())
+        prepare_workspace_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+            base_ref.as_deref(),
+        )
     })
     .await
     .map_err(|error| format!("workspace preparation task failed: {error}"))?
@@ -478,6 +711,7 @@ pub async fn run_github_repository_test(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
     command: String,
     expected_result_tree: String,
     timeout_seconds: Option<u64>,
@@ -501,7 +735,12 @@ pub async fn run_github_repository_test(
         .unwrap_or(300)
         .clamp(10, MAX_TEST_TIMEOUT_SECONDS);
     tauri::async_runtime::spawn_blocking(move || {
-        let before = inspect_workspace_blocking(&owner, &name, repos_dir.as_deref())?
+        let before = inspect_workspace_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+        )?
             .ok_or_else(|| "Prepare the local repository before running tests.".to_string())?;
         if before.result_tree != expected_result_tree {
             return Err(
@@ -516,7 +755,12 @@ pub async fn run_github_repository_test(
         .ok_or_else(|| {
             format!("Test exceeded {timeout_seconds}s or the 1 MiB output safety limit.")
         })?;
-        let after = inspect_workspace_blocking(&owner, &name, repos_dir.as_deref())?
+        let after = inspect_workspace_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+        )?
             .ok_or_else(|| "The local repository disappeared during the test.".to_string())?;
         let tree_changed = after.result_tree != expected_result_tree;
         Ok(GitHubRepositoryTestResult {
@@ -623,7 +867,12 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "after\n").expect("modify tracked file");
         std::fs::write(repo.join("untracked.txt"), "new\n").expect("write untracked file");
 
-        let workspace = inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str())
+        let workspace = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            None,
+        )
             .expect("inspect workspace")
             .expect("workspace exists");
 
@@ -654,5 +903,124 @@ mod tests {
         )
         .to_string();
         assert!(tree_files.lines().any(|path| path == "untracked.txt"));
+    }
+
+    #[test]
+    fn discussion_ids_resolve_distinct_worktrees_from_one_mirror() {
+        let root = tempfile::tempdir().expect("temporary repositories root");
+        let seed = root.path().join("seed");
+        std::fs::create_dir(&seed).expect("create seed");
+        assert!(test_git(&seed, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        assert!(test_git(
+            &seed,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/BrickO-Brick/hive.git",
+            ],
+        )
+        .status
+        .success());
+        std::fs::write(seed.join("README.md"), "shared base\n").expect("write seed");
+        assert!(test_git(&seed, &["add", "README.md"]).status.success());
+        assert!(test_git(
+            &seed,
+            &[
+                "-c",
+                "user.name=Buzz Test",
+                "-c",
+                "user.email=buzz@example.test",
+                "commit",
+                "-m",
+                "Initial",
+            ],
+        )
+        .status
+        .success());
+
+        let managed = root.path().join(".hive-workspaces");
+        let mirror = managed.join("mirrors/BrickO-Brick--hive.git");
+        std::fs::create_dir_all(mirror.parent().expect("mirror parent"))
+            .expect("create mirror parent");
+        assert!(test_git(
+            root.path(),
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().expect("seed path"),
+                mirror.to_str().expect("mirror path"),
+            ],
+        )
+        .status
+        .success());
+        assert!(test_git(
+            &mirror,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/BrickO-Brick/hive.git",
+            ],
+        )
+        .status
+        .success());
+        let worktrees = managed.join("worktrees/BrickO-Brick--hive");
+        std::fs::create_dir_all(&worktrees).expect("create worktree parent");
+        for discussion in ["discussion-a", "discussion-b"] {
+            assert!(test_git(
+                &mirror,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    &format!("hive/{discussion}"),
+                    worktrees.join(discussion).to_str().expect("worktree path"),
+                    "main",
+                ],
+            )
+            .status
+            .success());
+        }
+
+        let first = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            Some("discussion-a"),
+        )
+        .expect("inspect first")
+        .expect("first workspace");
+        let second = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            Some("discussion-b"),
+        )
+        .expect("inspect second")
+        .expect("second workspace");
+        assert_ne!(first.path, second.path);
+        assert_eq!(first.branch, "hive/discussion-a");
+        assert_eq!(second.branch, "hive/discussion-b");
+        assert_eq!(first.base_commit, second.base_commit);
+
+        assert!(test_git(
+            Path::new(&first.path),
+            &["branch", "-m", "users/buzz-user/discussion-a"],
+        )
+        .status
+        .success());
+        let transitioned = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            Some("discussion-a"),
+        )
+        .expect("inspect transitioned publication branch")
+        .expect("transitioned workspace");
+        assert_eq!(transitioned.branch, "users/buzz-user/discussion-a");
+        assert_eq!(transitioned.path, first.path);
     }
 }

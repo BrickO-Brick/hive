@@ -144,6 +144,7 @@ export async function inspectGitHubRepositoryWorkspace(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
 }): Promise<GitHubRepositoryWorkspace | null> {
   const workspace = await invokeTauri<RawGitHubRepositoryWorkspace | null>(
     "inspect_github_repository_workspace",
@@ -151,6 +152,7 @@ export async function inspectGitHubRepositoryWorkspace(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
     },
   );
   return workspace ? fromRawWorkspace(workspace) : null;
@@ -160,6 +162,8 @@ export async function prepareGitHubRepositoryWorkspace(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
+  baseRef: string;
 }): Promise<GitHubRepositoryWorkspace> {
   const workspace = await invokeTauri<RawGitHubRepositoryWorkspace>(
     "prepare_github_repository_workspace",
@@ -167,6 +171,8 @@ export async function prepareGitHubRepositoryWorkspace(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
+      baseRef: input.baseRef,
     },
   );
   return fromRawWorkspace(workspace);
@@ -176,6 +182,7 @@ export async function runGitHubRepositoryTest(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
   command: string;
   expectedResultTree: string;
   timeoutSeconds?: number;
@@ -186,6 +193,7 @@ export async function runGitHubRepositoryTest(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
       command: input.command,
       expectedResultTree: input.expectedResultTree,
       timeoutSeconds: input.timeoutSeconds ?? 300,
@@ -207,6 +215,7 @@ export async function getGitHubRepositoryPublicationIdentity(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
 }): Promise<GitHubRepositoryPublicationIdentity> {
   const result = await invokeTauri<RawGitHubRepositoryPublicationIdentity>(
     "get_github_repository_publication_identity",
@@ -214,6 +223,7 @@ export async function getGitHubRepositoryPublicationIdentity(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
     },
   );
   return {
@@ -230,6 +240,7 @@ export async function commitGitHubRepositoryChange(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
   expectedBaseCommit: string;
   expectedResultTree: string;
   branchName: string;
@@ -241,6 +252,7 @@ export async function commitGitHubRepositoryChange(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
       expectedBaseCommit: input.expectedBaseCommit,
       expectedResultTree: input.expectedResultTree,
       branchName: input.branchName,
@@ -264,6 +276,7 @@ export async function publishGitHubRepositoryChange(input: {
   owner: string;
   name: string;
   reposDir?: string | null;
+  workspaceId: string;
   expectedCommit: string;
   expectedResultTree: string;
   branchName: string;
@@ -279,6 +292,7 @@ export async function publishGitHubRepositoryChange(input: {
       owner: input.owner,
       name: input.name,
       reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
       expectedCommit: input.expectedCommit,
       expectedResultTree: input.expectedResultTree,
       branchName: input.branchName,

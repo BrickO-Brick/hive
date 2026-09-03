@@ -177,8 +177,9 @@ fn publication_identity_blocking(
     owner: &str,
     name: &str,
     repos_dir: Option<&str>,
+    workspace_id: Option<&str>,
 ) -> Result<GitHubRepositoryPublicationIdentity, String> {
-    let workspace = inspect_workspace_blocking(owner, name, repos_dir)?.ok_or_else(|| {
+    let workspace = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?.ok_or_else(|| {
         "Prepare the local repository before checking publication identity.".to_string()
     })?;
     let repo_dir = Path::new(&workspace.path);
@@ -219,12 +220,13 @@ fn commit_exact_tree_blocking(
     owner: &str,
     name: &str,
     repos_dir: Option<&str>,
+    workspace_id: Option<&str>,
     expected_base_commit: &str,
     expected_result_tree: &str,
     branch_name: &str,
     message: &str,
 ) -> Result<GitHubRepositoryCommitResult, String> {
-    let workspace = inspect_workspace_blocking(owner, name, repos_dir)?
+    let workspace = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?
         .ok_or_else(|| "Prepare the local repository before creating a commit.".to_string())?;
     if workspace.base_commit != expected_base_commit
         || workspace.result_tree != expected_result_tree
@@ -411,6 +413,7 @@ struct PublishExactCommitRequest<'a> {
     owner: &'a str,
     name: &'a str,
     repos_dir: Option<&'a str>,
+    workspace_id: Option<&'a str>,
     expected_commit: &'a str,
     expected_result_tree: &'a str,
     branch_name: &'a str,
@@ -427,6 +430,7 @@ fn publish_exact_commit_blocking(
         owner,
         name,
         repos_dir,
+        workspace_id,
         expected_commit,
         expected_result_tree,
         branch_name,
@@ -440,7 +444,7 @@ fn publish_exact_commit_blocking(
             "The publication branch must be different from the PR base branch.".to_string(),
         );
     }
-    let workspace = inspect_workspace_blocking(owner, name, repos_dir)?
+    let workspace = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?
         .ok_or_else(|| "The committed local repository is no longer available.".to_string())?;
     if workspace.branch != branch_name
         || workspace.base_commit != expected_commit
@@ -584,11 +588,17 @@ pub async fn get_github_repository_publication_identity(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
 ) -> Result<GitHubRepositoryPublicationIdentity, String> {
     let owner = validate_segment(&owner, "owner")?;
     let name = validate_segment(&name, "repository")?;
     tauri::async_runtime::spawn_blocking(move || {
-        publication_identity_blocking(&owner, &name, repos_dir.as_deref())
+        publication_identity_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+        )
     })
     .await
     .map_err(|error| format!("publication identity task failed: {error}"))?
@@ -600,6 +610,7 @@ pub async fn commit_github_repository_change(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
     expected_base_commit: String,
     expected_result_tree: String,
     branch_name: String,
@@ -616,6 +627,7 @@ pub async fn commit_github_repository_change(
             &owner,
             &name,
             repos_dir.as_deref(),
+            workspace_id.as_deref(),
             &expected_base_commit,
             &expected_result_tree,
             &branch_name,
@@ -632,6 +644,7 @@ pub async fn publish_github_repository_change(
     owner: String,
     name: String,
     repos_dir: Option<String>,
+    workspace_id: Option<String>,
     expected_commit: String,
     expected_result_tree: String,
     branch_name: String,
@@ -658,6 +671,7 @@ pub async fn publish_github_repository_change(
             owner: &owner,
             name: &name,
             repos_dir: repos_dir.as_deref(),
+            workspace_id: workspace_id.as_deref(),
             expected_commit: &expected_commit,
             expected_result_tree: &expected_result_tree,
             branch_name: &branch_name,
@@ -726,13 +740,19 @@ mod tests {
     #[test]
     fn exact_tree_commit_preserves_base_branch_and_uses_user_identity() {
         let (root, repo, base) = fixture();
-        let workspace = inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str())
+        let workspace = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            None,
+        )
             .expect("inspect fixture")
             .expect("workspace exists");
         let result = commit_exact_tree_blocking(
             "BrickO-Brick",
             "hive",
             root.path().to_str(),
+            None,
             &base,
             &workspace.result_tree,
             "users/buzz-user/exact-tree",
@@ -766,7 +786,12 @@ mod tests {
     #[test]
     fn exact_tree_commit_rejects_stale_approval_without_creating_branch() {
         let (root, repo, base) = fixture();
-        let workspace = inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str())
+        let workspace = inspect_workspace_blocking(
+            "BrickO-Brick",
+            "hive",
+            root.path().to_str(),
+            None,
+        )
             .unwrap()
             .unwrap();
         std::fs::write(repo.join("tracked.txt"), "changed again\n").expect("revise fixture");
@@ -774,6 +799,7 @@ mod tests {
             "BrickO-Brick",
             "hive",
             root.path().to_str(),
+            None,
             &base,
             &workspace.result_tree,
             "users/buzz-user/stale",
