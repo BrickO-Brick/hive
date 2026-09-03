@@ -245,11 +245,11 @@ services:
       BUZZ_ACP_MAX_TURN_DURATION: ${BUZZ_ACP_MAX_TURN_DURATION:-7200}
       NO_BROWSER: "1"
       CODEX_HOME: /var/lib/bricko/.codex
-      # buzz-acp supplies a session-level CODEX_CONFIG network overlay for the
-      # relay. Repeat the container-specific sandbox authority here so that
-      # overlay cannot make Codex fall back to Linux namespace sandboxing.
-      # Docker's read-only rootfs and /workspace bind remain the write boundary.
-      CODEX_CONFIG: '{"sandbox_mode":"danger-full-access"}'
+      # codex-acp owns the per-turn sandbox policy and otherwise defaults to
+      # workspaceWrite even when config.toml selects danger-full-access. Disable
+      # that nested namespace layer explicitly; Docker's read-only rootfs and
+      # /workspace bind remain the write boundary.
+      INITIAL_AGENT_MODE: agent-full-access
       # Read the immutable policy from the approved repository clone. This
       # avoids relying on the image's root-owned /etc directory traversal.
       BRICKO_CODEX_CONFIG_SOURCE: /workspace/hive/deploy/onebrick/agent/config.toml
