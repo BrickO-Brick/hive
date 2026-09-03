@@ -91,6 +91,16 @@ buzz repos protect list --id my-repo
 buzz repos protect set --id my-repo --ref refs/heads/main --push admin --no-force-push --no-delete
 buzz repos protect remove --id my-repo --ref refs/heads/main
 
+# Local repository workspace (no relay identity or GitHub publication required)
+buzz repos workspace prepare \
+  --repo BrickO-Brick/hive \
+  --clone https://github.com/BrickO-Brick/hive.git \
+  --thread discussion-123 \
+  --base-ref main
+buzz repos workspace status --repo BrickO-Brick/hive --thread discussion-123
+buzz repos workspace verify-head \
+  --repo BrickO-Brick/hive --thread discussion-123 --expected-head <40-char-sha>
+
 # Pipe to jq
 buzz channels list | jq '.[].name'
 ```
@@ -158,6 +168,9 @@ stored rules in `validation_error` so an owner can remove and repair them.
 | | `protect list` | List branch and tag protection rules |
 | | `protect set` | Create or replace a protection rule |
 | | `protect remove` | Remove a protection rule |
+| | `workspace prepare` | Create/reuse an isolated mirror-backed thread worktree (local, no relay) |
+| | `workspace status` | Show the thread's base SHA, branch, HEAD, and clean state (local) |
+| | `workspace verify-head` | Fence an action to an exact clean thread HEAD (local) |
 | `upload` | `file` | Upload a file to the Blossom store |
 | `pack` | `validate` | Validate a persona pack (local, no relay) |
 | | `inspect` | Inspect a persona pack (local, no relay) |

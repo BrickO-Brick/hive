@@ -1209,6 +1209,59 @@ pub enum ReposCmd {
     /// Manage branch and tag protection rules on one of your repositories.
     #[command(subcommand)]
     Protect(ReposProtectCmd),
+    /// Manage isolated local Git workspaces for repository discussion threads.
+    #[command(subcommand)]
+    Workspace(RepoWorkspaceCmd),
+}
+
+/// Local Git workspace operations. These commands do not contact the Buzz relay.
+#[derive(Subcommand)]
+pub enum RepoWorkspaceCmd {
+    /// Create or reuse a mirror-backed worktree dedicated to one discussion thread.
+    Prepare {
+        /// Canonical repository identity (`owner/name`).
+        #[arg(long)]
+        repo: String,
+        /// Git clone URL. Its final owner/name components must match `--repo`.
+        #[arg(long = "clone")]
+        clone_url: String,
+        /// Stable discussion thread identifier.
+        #[arg(long)]
+        thread: String,
+        /// Remote branch used as the immutable starting revision.
+        #[arg(long, default_value = "main")]
+        base_ref: String,
+        /// Workspace storage root. Defaults to HIVE_GIT_WORKSPACE_ROOT or app data.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+    /// Show the recorded and current Git identity for a thread workspace.
+    Status {
+        /// Canonical repository identity (`owner/name`).
+        #[arg(long)]
+        repo: String,
+        /// Stable discussion thread identifier.
+        #[arg(long)]
+        thread: String,
+        /// Workspace storage root. Defaults to HIVE_GIT_WORKSPACE_ROOT or app data.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
+    /// Fail unless the worktree is still at the expected clean Git revision.
+    VerifyHead {
+        /// Canonical repository identity (`owner/name`).
+        #[arg(long)]
+        repo: String,
+        /// Stable discussion thread identifier.
+        #[arg(long)]
+        thread: String,
+        /// Exact 40-character commit SHA expected by the discussion action.
+        #[arg(long)]
+        expected_head: String,
+        /// Workspace storage root. Defaults to HIVE_GIT_WORKSPACE_ROOT or app data.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+    },
 }
 
 /// Commands for inspecting and changing repository protection rules.
@@ -2036,6 +2089,12 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         };
     }
 
+    // Repository workspaces are deliberately local-only. A discussion can be
+    // prepared and tested before the user authenticates or publishes anything.
+    if let Cmd::Repos(ReposCmd::Workspace(ref sub)) = cli.command {
+        return commands::repo_workspace::dispatch(sub);
+    }
+
     // Auth: private key is required for all relay operations.
     // The keypair IS the identity — no tokens, no other auth.
     let private_key_str = cli.private_key.ok_or_else(|| {
@@ -2369,7 +2428,7 @@ mod tests {
         );
         assert_eq!(
             names(&cmd, "repos"),
-            vec!["bind", "create", "get", "list", "protect"]
+            vec!["bind", "create", "get", "list", "protect", "workspace"]
         );
         let repos = cmd
             .get_subcommands()
@@ -2446,7 +2505,7 @@ mod tests {
             ("pr", 5),
             ("projects", 8),
             ("reactions", 3),
-            ("repos", 5),
+            ("repos", 6),
             ("social", 7),
             ("upload", 1),
             ("users", 5),
