@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.22
+
+- Fix macOS release artifact discovery so signed updater archives and DMGs are
+  published from their downloaded artifact directories.
+
 ## v0.5.21
 
 ### Hive desktop and web
