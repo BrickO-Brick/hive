@@ -5,8 +5,11 @@ import {
   Hash,
   LogOut,
   Menu,
+  MessageSquarePlus,
   PanelLeftClose,
+  Plus,
   RefreshCw,
+  Reply,
   Send,
   ShieldCheck,
   Wifi,
@@ -33,6 +36,11 @@ import {
   loadHiveIdentity,
 } from "@/features/mantap-sso/mantap-sso-api";
 import type { OneBrickGitHubRepository } from "@/features/repos/onebrick-github-api";
+import {
+  createRepositoryDiscussion,
+  type RepositoryDiscussion,
+  useRepositoryDiscussions,
+} from "@/features/repos/repository-discussions-api";
 import {
   type NostrSubscriptionState,
   publishEvent,
@@ -77,6 +85,10 @@ function eventTag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
 }
 
+function threadMarker(event: NostrEvent, marker: "root" | "reply") {
+  return event.tags.find((tag) => tag[0] === "e" && tag[3] === marker)?.[1];
+}
+
 function normalizePresence(value: string): Presence {
   if (value === "online" || value === "away" || value === "offline") {
     return value;
@@ -116,6 +128,15 @@ export function HiveChatPage() {
     variant: BrickOCelebration;
   } | null>(null);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const discussions = useRepositoryDiscussions(Boolean(identity));
+  const [activeDiscussionId, setActiveDiscussionId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("discussion"),
+  );
+  const [newDiscussionRepository, setNewDiscussionRepository] =
+    useState<OneBrickGitHubRepository | null>(null);
+  const [newDiscussionTitle, setNewDiscussionTitle] = useState("");
+  const [creatingDiscussion, setCreatingDiscussion] = useState(false);
+  const [replyTo, setReplyTo] = useState<NostrEvent | null>(null);
   const [surface, setSurface] = useState<"chat" | "repositories">(() =>
     new URLSearchParams(window.location.search).get("view") === "repositories"
       ? "repositories"
@@ -145,14 +166,40 @@ export function HiveChatPage() {
 
   const discussRepository = useCallback(
     (repository: OneBrickGitHubRepository) => {
+      setNewDiscussionRepository(repository);
+      setNewDiscussionTitle("");
+    },
+    [],
+  );
+
+  const openDiscussion = useCallback(
+    (discussion: RepositoryDiscussion) => {
+      setActiveDiscussionId(discussion.id);
+      setReplyTo(null);
       selectSurface("chat");
-      setText(
-        `@BrickO let's start a new discussion about ${repository.owner}/${repository.name}. Focus this topic on: `,
+      const url = new URL(window.location.href);
+      url.searchParams.set("discussion", discussion.id);
+      window.history.replaceState(
+        null,
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
       );
-      requestAnimationFrame(() => composerRef.current?.focus());
     },
     [selectSurface],
   );
+
+  const openGeneralConversation = useCallback(() => {
+    setActiveDiscussionId(null);
+    setReplyTo(null);
+    selectSurface("chat");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("discussion");
+    window.history.replaceState(
+      null,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, [selectSurface]);
 
   const mergeMessage = useCallback(
     (event: NostrEvent) => {
@@ -326,6 +373,47 @@ export function HiveChatPage() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [mobileNavigationOpen]);
 
+  const discussionList = discussions.data ?? [];
+  const activeDiscussion =
+    discussionList.find((item) => item.id === activeDiscussionId) ?? null;
+  const discussionRootIds = useMemo(
+    () =>
+      new Set(
+        messages
+          .filter(
+            (message) =>
+              eventTag(message, "discussion") && !threadMarker(message, "root"),
+          )
+          .map((message) => message.id),
+      ),
+    [messages],
+  );
+  const activeRoot = useMemo(() => {
+    if (!activeDiscussionId) return null;
+    return (
+      messages.find(
+        (message) =>
+          eventTag(message, "discussion") === activeDiscussionId &&
+          !threadMarker(message, "root"),
+      ) ?? null
+    );
+  }, [activeDiscussionId, messages]);
+  const visibleMessages = useMemo(() => {
+    if (activeDiscussionId) {
+      const rootId = activeRoot?.id;
+      return messages.filter(
+        (message) =>
+          eventTag(message, "discussion") === activeDiscussionId ||
+          (rootId != null && threadMarker(message, "root") === rootId),
+      );
+    }
+    return messages.filter((message) => {
+      if (eventTag(message, "discussion")) return false;
+      const root = threadMarker(message, "root");
+      return !root || !discussionRootIds.has(root);
+    });
+  }, [activeDiscussionId, activeRoot?.id, discussionRootIds, messages]);
+
   if (!identity || !hasMantapBrowserIdentity()) return null;
 
   const connected = connection === "connected";
@@ -416,15 +504,31 @@ export function HiveChatPage() {
     setBusy(true);
     setError("");
     try {
+      const tags: string[][] = [["h", identity.channelId]];
+      if (activeDiscussion) {
+        tags.push(
+          ["discussion", activeDiscussion.id],
+          ["repo", `${activeDiscussion.owner}/${activeDiscussion.repository}`],
+          ["worktree", activeDiscussion.worktreeId],
+          ["branch", activeDiscussion.branchRef],
+          ["head", activeDiscussion.currentHeadSha],
+        );
+        const rootId = activeRoot?.id;
+        if (rootId) {
+          tags.push(["e", rootId, "", "root"]);
+          tags.push(["e", replyTo?.id ?? rootId, "", "reply"]);
+        }
+      }
       const signed = await signNostrEvent({
         kind: 9,
-        tags: [["h", identity.channelId]],
+        tags,
         content,
       });
       await publishEvent(relayWsUrl(), signed);
       mergeMessage(signed);
       setPendingSince(Date.now());
       setText("");
+      setReplyTo(null);
       composerRef.current?.focus();
     } catch (cause) {
       setError(
@@ -432,6 +536,38 @@ export function HiveChatPage() {
       );
     } finally {
       setBusy(false);
+    }
+  };
+
+  const submitNewDiscussion = async (event: FormEvent) => {
+    event.preventDefault();
+    const repository = newDiscussionRepository;
+    const title = newDiscussionTitle.trim();
+    if (!repository || !title || creatingDiscussion) return;
+    setCreatingDiscussion(true);
+    setError("");
+    try {
+      const discussion = await createRepositoryDiscussion({
+        owner: repository.owner,
+        repository: repository.name,
+        title,
+        defaultBranch: repository.default_branch,
+      });
+      await discussions.refetch();
+      setNewDiscussionRepository(null);
+      openDiscussion(discussion);
+      setText(
+        `@BrickO ${title}\n\nRepository: ${repository.owner}/${repository.name}\nBase: ${discussion.baseRef} at ${discussion.baseSha.slice(0, 12)}`,
+      );
+      requestAnimationFrame(() => composerRef.current?.focus());
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Unable to create the repository discussion.",
+      );
+    } finally {
+      setCreatingDiscussion(false);
     }
   };
 
@@ -508,12 +644,16 @@ export function HiveChatPage() {
         <button
           type="button"
           className={`flex h-9 w-full items-center rounded border ${
-            surface === "chat"
+            surface === "chat" && activeDiscussionId === null
               ? "border-[#BFD4FF] bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
               : "border-transparent text-[#526178] hover:bg-[#F7FAFC]"
           } ${collapsed ? "justify-center px-0" : "gap-2 px-2.5"}`}
-          aria-current={surface === "chat" ? "page" : undefined}
-          onClick={() => selectSurface("chat")}
+          aria-current={
+            surface === "chat" && activeDiscussionId === null
+              ? "page"
+              : undefined
+          }
+          onClick={openGeneralConversation}
           title="bricko-lab"
         >
           <Hash size={15} className="shrink-0" />
@@ -523,6 +663,38 @@ export function HiveChatPage() {
             </span>
           )}
         </button>
+
+        {discussionList.map((discussion) => (
+          <button
+            type="button"
+            key={discussion.id}
+            data-testid={`discussion-${discussion.id}`}
+            className={`mt-1 flex min-h-9 w-full items-center rounded border py-1.5 ${
+              surface === "chat" && activeDiscussionId === discussion.id
+                ? "border-[#BFD4FF] bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
+                : "border-transparent text-[#526178] hover:bg-[#F7FAFC]"
+            } ${collapsed ? "justify-center px-0" : "gap-2 px-2.5"}`}
+            aria-current={
+              surface === "chat" && activeDiscussionId === discussion.id
+                ? "page"
+                : undefined
+            }
+            onClick={() => openDiscussion(discussion)}
+            title={`${discussion.owner}/${discussion.repository}: ${discussion.title}`}
+          >
+            <MessageSquarePlus size={15} className="shrink-0" />
+            {!collapsed && (
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block truncate text-[13px] font-bold">
+                  {discussion.title}
+                </span>
+                <span className="block truncate text-[10px] text-[#607086]">
+                  {discussion.owner}/{discussion.repository}
+                </span>
+              </span>
+            )}
+          </button>
+        ))}
 
         {!collapsed && (
           <div className="mb-2 mt-5 px-1 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[#607086]">
@@ -683,7 +855,9 @@ export function HiveChatPage() {
             <div className="hidden min-w-0 sm:block">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-[15px] font-bold text-[#10233F]">
-                  {surface === "repositories" ? "Repositories" : "Hive"}
+                  {surface === "repositories"
+                    ? "Repositories"
+                    : (activeDiscussion?.title ?? "Hive")}
                 </h1>
                 <span
                   className={`size-2 rounded-full shadow-sm ${toneClasses}`}
@@ -696,6 +870,15 @@ export function HiveChatPage() {
                 {surface === "repositories" ? (
                   <>
                     <GitBranch size={10} /> BrickO-Brick
+                  </>
+                ) : activeDiscussion ? (
+                  <>
+                    <GitBranch size={10} /> {activeDiscussion.owner}/
+                    {activeDiscussion.repository}
+                    <span className="text-[#B6C0CE]">•</span>
+                    <span>
+                      {activeDiscussion.branchRef.replace("refs/heads/", "")}
+                    </span>
                   </>
                 ) : (
                   <>
@@ -790,32 +973,57 @@ export function HiveChatPage() {
 
             <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
               <div className="mx-auto max-w-3xl">
-                {messages.length === 0 && !error && (
-                  <div className="grid min-h-[45vh] place-items-center text-center">
-                    <div className="max-w-md">
-                      <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
-                        <img
-                          alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
-                          className="aspect-square w-full rounded-xl object-cover"
-                          src={brickoOperationsUrl}
-                        />
-                      </div>
-                      <h2 className="mt-4 text-base font-bold text-[#10233F]">
-                        Welcome, Bricksters — let&apos;s build something fun!
-                      </h2>
-                      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
-                        Bring bold ideas, stubborn bugs, and seemingly
-                        impossible projects. BrickO brought virtual
-                        snacks—let&apos;s turn “maybe” into “shipped” together.
-                      </p>
-                      <p className="mx-auto mt-3 max-w-sm rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-2 text-xs font-semibold text-[#573129]">
-                        Interface language: English. Chat in any language.
-                      </p>
+                {activeDiscussion && (
+                  <div className="mb-4 rounded-xl border border-[#BFD4FF] bg-[#EEF5FF] p-3 text-xs text-[#29466F] shadow-sm">
+                    <div className="flex items-center gap-2 font-bold text-[#10233F]">
+                      <GitBranch size={14} /> Isolated repository workspace
                     </div>
+                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                      <span>
+                        {activeDiscussion.owner}/{activeDiscussion.repository}
+                      </span>
+                      <span>Base {activeDiscussion.baseSha.slice(0, 12)}</span>
+                      <span>
+                        HEAD {activeDiscussion.currentHeadSha.slice(0, 12)}
+                      </span>
+                    </div>
+                    {!activeRoot && (
+                      <p className="mt-2 font-semibold text-[#1F55C5]">
+                        Send the prepared first message to start this discussion
+                        thread.
+                      </p>
+                    )}
                   </div>
                 )}
+                {visibleMessages.length === 0 &&
+                  !error &&
+                  !activeDiscussion && (
+                    <div className="grid min-h-[45vh] place-items-center text-center">
+                      <div className="max-w-md">
+                        <div className="mx-auto w-full max-w-[280px] overflow-hidden rounded-2xl border border-[#FFD3C9] bg-white p-2 shadow-[0_18px_50px_rgba(255,111,82,0.14)]">
+                          <img
+                            alt="The Brickster team coding with BrickO, BrickA, BrickI, and BrickR"
+                            className="aspect-square w-full rounded-xl object-cover"
+                            src={brickoOperationsUrl}
+                          />
+                        </div>
+                        <h2 className="mt-4 text-base font-bold text-[#10233F]">
+                          Welcome, Bricksters — let&apos;s build something fun!
+                        </h2>
+                        <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-[#607086]">
+                          Bring bold ideas, stubborn bugs, and seemingly
+                          impossible projects. BrickO brought virtual
+                          snacks—let&apos;s turn “maybe” into “shipped”
+                          together.
+                        </p>
+                        <p className="mx-auto mt-3 max-w-sm rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-2 text-xs font-semibold text-[#573129]">
+                          Interface language: English. Chat in any language.
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
-                {messages.map((message) => {
+                {visibleMessages.map((message) => {
                   const mine = message.pubkey === identity.pubkey;
                   const day = formatMessageDay(message.created_at);
                   const showDay = day !== previousDay;
@@ -868,6 +1076,21 @@ export function HiveChatPage() {
                               <CheckCircle2 size={10} /> Sent
                             </div>
                           )}
+                          {activeDiscussion && (
+                            <button
+                              type="button"
+                              className="mt-1 flex items-center gap-1 px-1 text-[10px] font-bold text-[#526178] hover:text-[#1F55C5]"
+                              onClick={() => {
+                                setReplyTo(message);
+                                requestAnimationFrame(() =>
+                                  composerRef.current?.focus(),
+                                );
+                              }}
+                              aria-label={`Reply to ${mine ? "your message" : "BrickO"}`}
+                            >
+                              <Reply size={10} /> Reply in this thread
+                            </button>
+                          )}
                         </div>
                       </article>
                     </div>
@@ -914,6 +1137,25 @@ export function HiveChatPage() {
                     <span className="truncate">{error}</span>
                   </div>
                 )}
+                {replyTo && (
+                  <div className="mb-2 flex items-center justify-between rounded border border-[#BFD4FF] bg-[#EEF5FF] px-3 py-2 text-xs text-[#29466F]">
+                    <span className="truncate">
+                      Replying to{" "}
+                      {replyTo.pubkey === identity.pubkey
+                        ? "your message"
+                        : "BrickO"}
+                      : {replyTo.content}
+                    </span>
+                    <button
+                      type="button"
+                      className="ml-3 grid size-6 shrink-0 place-items-center rounded hover:bg-white"
+                      onClick={() => setReplyTo(null)}
+                      aria-label="Cancel reply"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-end gap-2 rounded border border-[#D8DEE8] bg-white p-2 shadow-[0_8px_24px_rgba(16,35,63,0.08)] transition focus-within:border-[#FF6F52]/60 focus-within:ring-4 focus-within:ring-[#FF6F52]/10">
                   <textarea
                     ref={composerRef}
@@ -922,7 +1164,11 @@ export function HiveChatPage() {
                     onKeyDown={handleComposerKeyDown}
                     maxLength={65_536}
                     rows={1}
-                    placeholder="Message BrickO…"
+                    placeholder={
+                      activeDiscussion
+                        ? `Message BrickO about ${activeDiscussion.repository}…`
+                        : "Message BrickO…"
+                    }
                     className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"
                   />
                   <button
@@ -953,6 +1199,99 @@ export function HiveChatPage() {
           </>
         )}
       </main>
+      {newDiscussionRepository && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-[#10213F]/40 p-4 backdrop-blur-[1px]"
+          role="presentation"
+        >
+          <form
+            onSubmit={submitNewDiscussion}
+            className="w-full max-w-lg rounded-2xl border border-[#D8DEE8] bg-white p-5 shadow-[0_24px_80px_rgba(16,35,63,0.25)]"
+            aria-labelledby="new-discussion-title"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-[#E35E43]">
+                  New repository discussion
+                </div>
+                <h2
+                  id="new-discussion-title"
+                  className="mt-1 text-lg font-bold text-[#10233F]"
+                >
+                  {newDiscussionRepository.owner}/{newDiscussionRepository.name}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="grid size-8 place-items-center rounded border border-[#D8DEE8] text-[#526178] hover:bg-[#F7FAFC]"
+                onClick={() => setNewDiscussionRepository(null)}
+                aria-label="Close new discussion"
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-[#607086]">
+              Hive will refresh one shared repository mirror, then create a
+              dedicated branch and worktree for this topic. Other discussions
+              never share its mutable files.
+            </p>
+            <label
+              className="mt-4 block text-xs font-bold text-[#42526B]"
+              htmlFor="discussion-title-input"
+            >
+              Discussion title
+            </label>
+            <input
+              id="discussion-title-input"
+              data-testid="discussion-title-input"
+              required
+              maxLength={160}
+              value={newDiscussionTitle}
+              onChange={(event) =>
+                setNewDiscussionTitle(event.currentTarget.value)
+              }
+              placeholder="e.g. Improve the payment reconciliation flow"
+              className="mt-1.5 h-11 w-full rounded-md border border-[#D8DEE8] px-3 text-sm outline-none focus:border-[#FF6F52]/70 focus:ring-4 focus:ring-[#FF6F52]/10"
+            />
+            <div className="mt-3 rounded-lg border border-[#E2E8F0] bg-[#F7FAFC] px-3 py-2 text-xs text-[#526178]">
+              Base branch:{" "}
+              <strong>{newDiscussionRepository.default_branch}</strong>. No
+              GitHub push is performed when this discussion is created.
+            </div>
+            {error && (
+              <div
+                className="mt-3 rounded border border-[#F4BDC2] bg-[#FFF3F4] px-3 py-2 text-xs text-[#C93F4A]"
+                role="alert"
+              >
+                {error}
+              </div>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-[#D8DEE8] px-4 py-2 text-xs font-bold text-[#526178]"
+                onClick={() => setNewDiscussionRepository(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={creatingDiscussion || !newDiscussionTitle.trim()}
+                className="flex items-center gap-2 rounded-md bg-[#FF6F52] px-4 py-2 text-xs font-bold text-white hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#8491A4]"
+              >
+                {creatingDiscussion ? (
+                  <RefreshCw size={14} className="animate-spin" />
+                ) : (
+                  <Plus size={14} />
+                )}
+                {creatingDiscussion
+                  ? "Preparing workspace…"
+                  : "Create discussion"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

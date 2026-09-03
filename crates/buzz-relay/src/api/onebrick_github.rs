@@ -158,10 +158,11 @@ fn parse_catalog(
         .collect()
 }
 
-async fn authenticated_member(
+pub(crate) async fn authenticated_member(
     state: &Arc<AppState>,
     headers: &HeaderMap,
-) -> Result<(), (StatusCode, Json<Value>)> {
+    path: &str,
+) -> Result<(buzz_core::TenantContext, nostr::PublicKey), (StatusCode, Json<Value>)> {
     let raw_host = headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -174,7 +175,7 @@ async fn authenticated_member(
                 "relay: no community is configured for this host",
             )
         })?;
-    let expected_url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, CATALOG_PATH);
+    let expected_url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, path);
     let bridge::VerifiedBridgeAuth {
         pubkey,
         event_id_bytes,
@@ -190,7 +191,7 @@ async fn authenticated_member(
         signed_created_at,
     )
     .await?;
-    Ok(())
+    Ok((tenant, pubkey))
 }
 
 async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>, (StatusCode, Json<Value>)> {
@@ -266,7 +267,7 @@ pub(crate) async fn repositories(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<CatalogResponse>, (StatusCode, Json<Value>)> {
-    authenticated_member(&state, &headers).await?;
+    authenticated_member(&state, &headers, CATALOG_PATH).await?;
 
     let personal_owner =
         std::env::var("BUZZ_ONEBRICK_GITHUB_ORG").unwrap_or_else(|_| "BrickO-Brick".to_string());

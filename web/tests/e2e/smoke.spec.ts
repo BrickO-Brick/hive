@@ -551,6 +551,50 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
+  const repositoryDiscussions: Array<Record<string, unknown>> = [];
+  await page.route("**/api/onebrick/repository-discussions", async (route) => {
+    expect(nip98Pubkey(route.request().headers().authorization)).toBe(
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    );
+    if (route.request().method() === "POST") {
+      const input = route.request().postDataJSON() as {
+        owner: string;
+        repository: string;
+        title: string;
+      };
+      const discussion = {
+        id: "11111111-2222-4333-8444-555555555555",
+        owner: input.owner,
+        repository: input.repository,
+        title: input.title,
+        mirrorId: "aa".repeat(32),
+        worktreeId: "11111111222243338444555555555555",
+        branchRef: "refs/heads/codex/hive-discussion-111111112222",
+        baseRef: "refs/heads/main",
+        baseSha: "ab".repeat(20),
+        currentHeadSha: "ab".repeat(20),
+        proposalRevision: null,
+        proposalDigest: null,
+        testEvidence: [],
+        createdBy:
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        createdAt: "2026-09-03T10:00:00Z",
+      };
+      repositoryDiscussions.push(discussion);
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify(discussion),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ discussions: repositoryDiscussions }),
+    });
+  });
+
   await page.route("**/api/onebrick/github/repositories", async (route) => {
     expect(nip98Pubkey(route.request().headers().authorization)).toBe(
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -623,6 +667,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     type HiveWindow = Window & {
       __hiveEmit?: (event: Record<string, unknown>) => void;
       __hiveSockets?: MockWebSocket[];
+      __hiveLastPublished?: { id: string };
     };
 
     class MockWebSocket extends EventTarget {
@@ -715,6 +760,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         }
         if (frame[0] === "EVENT") {
           const event = frame[1] as { id: string };
+          (window as HiveWindow).__hiveLastPublished = event;
           this.message(["OK", event.id, true, ""]);
         }
       }
@@ -790,14 +836,26 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .getByTestId("github-repository-BrickO-Brick-mantul-be")
     .getByRole("button", { name: "Start discussion" })
     .click();
-  await expect(page.getByPlaceholder("Message BrickO…")).toHaveValue(
-    /BrickO-Brick\/mantul-be/,
-  );
+  await expect(page.getByText("New repository discussion")).toBeVisible();
+  await page
+    .getByTestId("discussion-title-input")
+    .fill("Improve Mantul deployment safety");
+  await page.getByRole("button", { name: "Create discussion" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Improve Mantul deployment safety" }),
+  ).toBeVisible();
+  await expect(page.getByText("Isolated repository workspace")).toBeVisible();
+  await expect(
+    page.getByPlaceholder("Message BrickO about mantul-be…"),
+  ).toHaveValue(/BrickO-Brick\/mantul-be/);
 
-  const composer = page.getByPlaceholder("Message BrickO…");
+  const composer = page.getByPlaceholder("Message BrickO about mantul-be…");
   await composer.fill("Tolong cek status Hive sekarang");
   await composer.press("Enter");
   await expect(page.getByText("Tolong cek status Hive sekarang")).toBeVisible();
+  await page.getByRole("button", { name: "Reply to your message" }).click();
+  await expect(page.getByText(/Replying to your message:/)).toBeVisible();
+  await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
   const statusPet = page.getByTestId("bricko-status-pet");
   await expect(page.getByTestId("bricko-companion")).toHaveCount(0);
@@ -845,7 +903,29 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         pubkey: agentPubkey,
         created_at: Math.floor(Date.now() / 1000),
         kind: 20002,
-        tags: [["h", channelId]],
+        tags: [
+          ["h", channelId],
+          [
+            "e",
+            (
+              window as Window & {
+                __hiveLastPublished?: { id: string };
+              }
+            ).__hiveLastPublished?.id,
+            "",
+            "root",
+          ],
+          [
+            "e",
+            (
+              window as Window & {
+                __hiveLastPublished?: { id: string };
+              }
+            ).__hiveLastPublished?.id,
+            "",
+            "reply",
+          ],
+        ],
         content: "",
         sig: "00".repeat(64),
       });
@@ -872,7 +952,29 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         pubkey: agentPubkey,
         created_at: Math.floor(Date.now() / 1000),
         kind: 9,
-        tags: [["h", channelId]],
+        tags: [
+          ["h", channelId],
+          [
+            "e",
+            (
+              window as Window & {
+                __hiveLastPublished?: { id: string };
+              }
+            ).__hiveLastPublished?.id,
+            "",
+            "root",
+          ],
+          [
+            "e",
+            (
+              window as Window & {
+                __hiveLastPublished?: { id: string };
+              }
+            ).__hiveLastPublished?.id,
+            "",
+            "reply",
+          ],
+        ],
         content: "Semua sistem Hive siap dan koneksi realtime stabil.",
         sig: "00".repeat(64),
       });
