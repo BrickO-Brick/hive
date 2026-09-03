@@ -400,8 +400,7 @@ pub(crate) async fn list(
             .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))?;
         discussions.push(manifest.discussion);
     }
-    discussions
-        .sort_by(|left: &RepositoryDiscussion, right| right.created_at.cmp(&left.created_at));
+    discussions.sort_by_key(|discussion| std::cmp::Reverse(discussion.created_at));
     Ok(Json(DiscussionList { discussions }))
 }
 
