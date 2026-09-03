@@ -961,7 +961,6 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         kind: 9,
         tags: [
           ["h", channelId],
-          ["e", secondRoot, "", "root"],
           ["e", secondRoot, "", "reply"],
         ],
         content: "Reply to the second root remains visible",
@@ -986,7 +985,6 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         kind: 9,
         tags: [
           ["h", channelId],
-          ["e", otherRoot, "", "root"],
           ["e", otherRoot, "", "reply"],
         ],
         content: "Reply from another discussion",

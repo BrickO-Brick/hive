@@ -4,8 +4,13 @@ function eventTag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
 }
 
-function threadRoot(event: NostrEvent): string | undefined {
-  return event.tags.find((tag) => tag[0] === "e" && tag[3] === "root")?.[1];
+function threadAnchor(event: NostrEvent): string | undefined {
+  const root = event.tags.find(
+    (tag) => tag[0] === "e" && tag[3] === "root",
+  )?.[1];
+  return (
+    root ?? event.tags.find((tag) => tag[0] === "e" && tag[3] === "reply")?.[1]
+  );
 }
 
 export function selectDiscussionMessages(
@@ -13,7 +18,7 @@ export function selectDiscussionMessages(
   activeDiscussionId: string | null,
 ): { activeRoot: NostrEvent | null; visibleMessages: NostrEvent[] } {
   const discussionRoots = messages.filter(
-    (message) => eventTag(message, "discussion") && !threadRoot(message),
+    (message) => eventTag(message, "discussion") && !threadAnchor(message),
   );
 
   if (!activeDiscussionId) {
@@ -24,7 +29,7 @@ export function selectDiscussionMessages(
       activeRoot: null,
       visibleMessages: messages.filter((message) => {
         if (eventTag(message, "discussion")) return false;
-        const root = threadRoot(message);
+        const root = threadAnchor(message);
         return !root || !discussionRootIds.has(root);
       }),
     };
@@ -39,7 +44,7 @@ export function selectDiscussionMessages(
     visibleMessages: messages.filter(
       (message) =>
         eventTag(message, "discussion") === activeDiscussionId ||
-        activeRootIds.has(threadRoot(message) ?? ""),
+        activeRootIds.has(threadAnchor(message) ?? ""),
     ),
   };
 }
