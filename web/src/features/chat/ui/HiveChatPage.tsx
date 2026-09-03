@@ -55,6 +55,7 @@ import {
   type BrickOCelebration,
   type BrickOPetMode,
 } from "./BrickOPet";
+import { selectDiscussionMessages } from "./discussionMessages";
 import { HiveMessage } from "./HiveMessage";
 import {
   normalizePubkey,
@@ -85,10 +86,6 @@ function celebrationForEvent(eventId: string): BrickOCelebration {
 
 function eventTag(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
-}
-
-function threadMarker(event: NostrEvent, marker: "root" | "reply") {
-  return event.tags.find((tag) => tag[0] === "e" && tag[3] === marker)?.[1];
 }
 
 function normalizePresence(value: string): Presence {
@@ -373,43 +370,10 @@ export function HiveChatPage() {
   const discussionList = discussions.data ?? [];
   const activeDiscussion =
     discussionList.find((item) => item.id === activeDiscussionId) ?? null;
-  const discussionRootIds = useMemo(
-    () =>
-      new Set(
-        messages
-          .filter(
-            (message) =>
-              eventTag(message, "discussion") && !threadMarker(message, "root"),
-          )
-          .map((message) => message.id),
-      ),
-    [messages],
+  const { activeRoot, visibleMessages } = useMemo(
+    () => selectDiscussionMessages(messages, activeDiscussionId),
+    [activeDiscussionId, messages],
   );
-  const activeRoot = useMemo(() => {
-    if (!activeDiscussionId) return null;
-    return (
-      messages.find(
-        (message) =>
-          eventTag(message, "discussion") === activeDiscussionId &&
-          !threadMarker(message, "root"),
-      ) ?? null
-    );
-  }, [activeDiscussionId, messages]);
-  const visibleMessages = useMemo(() => {
-    if (activeDiscussionId) {
-      const rootId = activeRoot?.id;
-      return messages.filter(
-        (message) =>
-          eventTag(message, "discussion") === activeDiscussionId ||
-          (rootId != null && threadMarker(message, "root") === rootId),
-      );
-    }
-    return messages.filter((message) => {
-      if (eventTag(message, "discussion")) return false;
-      const root = threadMarker(message, "root");
-      return !root || !discussionRootIds.has(root);
-    });
-  }, [activeDiscussionId, activeRoot?.id, discussionRootIds, messages]);
 
   if (!identity || !hasMantapBrowserIdentity()) return null;
 
