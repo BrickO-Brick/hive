@@ -1,10 +1,60 @@
 use std::time::Duration;
 
+use aes_gcm::{
+    aead::{Aead as _, KeyInit as _},
+    Aes256Gcm, Nonce,
+};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use url::Url;
+use zeroize::Zeroizing;
 
 const MANTAP_BASE_URL: &str = "https://mantap.onebrick.io";
+// Mantap's browser-compatible auth proxy uses this compatibility key to wrap
+// credentials before TLS transport. It is also embedded in the Mantap web
+// client; authentication still relies on the user's password, OTP, and TLS.
+const MANTAP_AUTH_COMPATIBILITY_KEY: &[u8; 32] = b"PAxy4298P0PuAk0r6Xa3EZwVaen1IUpS";
+const MANTAP_AUTH_ENVIRONMENT: &str = "prd";
+
+fn mantap_auth_post(
+    client: &reqwest::Client,
+    path: &str,
+    username: &str,
+) -> reqwest::RequestBuilder {
+    client
+        .post(format!("{MANTAP_BASE_URL}{path}"))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header("environment", MANTAP_AUTH_ENVIRONMENT)
+        .header("X-Mantul-Username", username)
+        .header("X-Mantul-Request-ID", uuid::Uuid::new_v4().to_string())
+}
+
+fn encrypt_mantap_payload_with_nonce<T: Serialize>(
+    payload: &T,
+    nonce_bytes: [u8; 12],
+) -> Result<serde_json::Value, String> {
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(payload)
+            .map_err(|error| format!("could not encode Mantap credentials: {error}"))?,
+    );
+    let cipher = Aes256Gcm::new_from_slice(MANTAP_AUTH_COMPATIBILITY_KEY)
+        .map_err(|_| "could not initialize Mantap credential encryption".to_owned())?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .map_err(|_| "could not encrypt Mantap credentials".to_owned())?;
+    let mut wrapped = Vec::with_capacity(nonce_bytes.len() + ciphertext.len());
+    wrapped.extend_from_slice(&nonce_bytes);
+    wrapped.extend_from_slice(&ciphertext);
+    Ok(serde_json::json!({ "data": STANDARD.encode(wrapped) }))
+}
+
+fn encrypt_mantap_payload<T: Serialize>(payload: &T) -> Result<serde_json::Value, String> {
+    let mut nonce = [0_u8; 12];
+    getrandom::getrandom(&mut nonce)
+        .map_err(|_| "could not prepare Mantap credential encryption".to_owned())?;
+    encrypt_mantap_payload_with_nonce(payload, nonce)
+}
 
 fn mantap_error(payload: &serde_json::Value, fallback: &str) -> String {
     payload
@@ -26,10 +76,10 @@ pub(crate) async fn request_mantap_otp(
     if !username.to_ascii_lowercase().ends_with("@onebrick.io") || password.is_empty() {
         return Err("Enter a valid OneBrick email and password.".to_owned());
     }
-    let response = app_state
-        .http_client
-        .post(format!("{MANTAP_BASE_URL}/auth/request-otp"))
-        .json(&serde_json::json!({ "username": username, "password": password }))
+    let payload =
+        encrypt_mantap_payload(&serde_json::json!({ "username": username, "password": password }))?;
+    let response = mantap_auth_post(&app_state.http_client, "/auth/request-otp", username)
+        .json(&payload)
         .timeout(Duration::from_secs(35))
         .send()
         .await
@@ -68,6 +118,7 @@ pub(crate) struct MantapLoginInfo {
 
 #[tauri::command]
 pub(crate) async fn start_mantap_login(
+    app_handle: tauri::AppHandle,
     app_state: tauri::State<'_, crate::app_state::AppState>,
     username: String,
     password: String,
@@ -81,10 +132,11 @@ pub(crate) async fn start_mantap_login(
     {
         return Err("Enter valid Mantap credentials and a 4-digit OTP.".to_owned());
     }
-    let login_response = app_state
-        .http_client
-        .post(format!("{MANTAP_BASE_URL}/auth/login"))
-        .json(&serde_json::json!({ "username": username, "password": password, "otp": otp }))
+    let payload = encrypt_mantap_payload(
+        &serde_json::json!({ "username": username, "password": password, "otp": otp }),
+    )?;
+    let login_response = mantap_auth_post(&app_state.http_client, "/auth/login", username)
+        .json(&payload)
         .timeout(Duration::from_secs(35))
         .send()
         .await
@@ -126,6 +178,18 @@ pub(crate) async fn start_mantap_login(
         .and_then(|fragment| fragment.strip_prefix("ticket="))
         .filter(|ticket| !ticket.is_empty() && ticket.len() <= 8192)
         .ok_or_else(|| "Mantap did not return a valid Hive ticket.".to_owned())?;
+
+    // A reinstall can leave Hive in recovery mode with a fresh ephemeral key.
+    // Mantap has authenticated the user by this point, so make that key durable
+    // before NIP-98 needs it to bind the one-time ticket to this installation.
+    // The command is lost-only and refuses to replace a temporarily locked
+    // keyring identity.
+    if app_state
+        .identity_lost
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        crate::commands::persist_current_identity(app_handle).await?;
+    }
 
     let body = serde_json::to_vec(&serde_json::json!({ "ticket": ticket }))
         .map_err(|error| format!("could not encode Mantap ticket exchange: {error}"))?;
@@ -183,4 +247,68 @@ pub(crate) async fn start_mantap_login(
 #[tauri::command]
 pub(crate) fn cancel_mantap_login() -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mantap_credentials_use_the_encrypted_browser_contract() -> Result<(), String> {
+        let credentials = serde_json::json!({
+            "username": "bricki@onebrick.io",
+            "password": "not-a-real-password",
+        });
+        let wrapped = encrypt_mantap_payload_with_nonce(&credentials, [7_u8; 12])?;
+        assert_eq!(wrapped.as_object().map(serde_json::Map::len), Some(1));
+
+        let encoded = wrapped
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "encrypted envelope did not contain data".to_owned())?;
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("encrypted envelope was not base64: {error}"))?;
+        let (nonce, ciphertext) = bytes
+            .split_at_checked(12)
+            .ok_or_else(|| "encrypted envelope did not contain a nonce".to_owned())?;
+        let cipher = Aes256Gcm::new_from_slice(MANTAP_AUTH_COMPATIBILITY_KEY)
+            .map_err(|_| "could not initialize test decryption".to_owned())?;
+        let decrypted = cipher
+            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|_| "could not decrypt the production envelope".to_owned())?;
+        let decoded: serde_json::Value = serde_json::from_slice(&decrypted)
+            .map_err(|error| format!("decrypted credentials were invalid JSON: {error}"))?;
+        assert_eq!(decoded, credentials);
+        Ok(())
+    }
+
+    #[test]
+    fn mantap_auth_requests_match_the_browser_realm_headers() -> Result<(), String> {
+        let request =
+            mantap_auth_post(&reqwest::Client::new(), "/auth/login", "bricki@onebrick.io")
+                .build()
+                .map_err(|error| error.to_string())?;
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://mantap.onebrick.io/auth/login"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("environment")
+                .and_then(|v| v.to_str().ok()),
+            Some("prd")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("X-Mantul-Username")
+                .and_then(|v| v.to_str().ok()),
+            Some("bricki@onebrick.io")
+        );
+        assert!(request.headers().contains_key("X-Mantul-Request-ID"));
+        Ok(())
+    }
 }

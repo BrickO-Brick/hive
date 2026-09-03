@@ -8,6 +8,7 @@ import {
   requestMantapOtp,
   startMantapLogin,
 } from "@/shared/api/tauriIdentity";
+import { markMachineOnboardingSetupResume } from "@/features/onboarding/machineOnboarding";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -71,6 +72,10 @@ export function MachineOnboardingFlow({
     React.useState(false);
   const reduceMotion = useReducedMotion() ?? false;
 
+  React.useEffect(() => {
+    if (initialPage) setPage(initialPage);
+  }, [initialPage]);
+
   const handleReadyRuntimeIdsChange = React.useCallback(
     (runtimeIds: readonly string[]) => {
       setReadyRuntimeIds(Array.from(new Set(runtimeIds)));
@@ -95,6 +100,7 @@ export function MachineOnboardingFlow({
     setIsPending(true);
     setError(null);
     try {
+      const identityBeforeLogin = await getIdentity();
       const mantap = await startMantapLogin(
         mantapUsername.trim(),
         mantapPassword,
@@ -105,8 +111,9 @@ export function MachineOnboardingFlow({
         throw new Error("Mantap returned a different Hive identity.");
       }
 
-      if (identity.lost) {
-        identity = await persistCurrentIdentity();
+      if (identityBeforeLogin.lost) {
+        if (identity.lost) identity = await persistCurrentIdentity();
+        markMachineOnboardingSetupResume(identity.pubkey);
         continueWithRecoveredIdentity(identity.pubkey);
       } else {
         continueWithIdentity(identity.pubkey);

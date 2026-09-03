@@ -68,6 +68,7 @@ keyring = { version = "3.6.3", default-features = false, features = ["windows-na
 user-idle = { version = "0.6", default-features = false }
 
 [dependencies]
+aes-gcm = "0.10"
 atomic-write-file = "0.3"
 anyhow = "1"
 dirs = "6"

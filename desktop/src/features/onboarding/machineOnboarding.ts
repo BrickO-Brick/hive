@@ -5,6 +5,8 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 
 const MACHINE_ONBOARDING_COMPLETION_STORAGE_KEY =
   "buzz-machine-onboarding-complete.v2";
+const MACHINE_ONBOARDING_RESUME_SETUP_STORAGE_KEY =
+  "hive-machine-onboarding-resume-setup.v1";
 const LEGACY_ONBOARDING_COMPLETION_STORAGE_KEY = "buzz-onboarding-complete.v1";
 
 type MachineOnboardingStage =
@@ -17,6 +19,26 @@ type MachineOnboardingStage =
 
 function completionKey(prefix: string, pubkey: string) {
   return `${prefix}:${pubkey}`;
+}
+
+export function markMachineOnboardingSetupResume(pubkey: string) {
+  if (typeof window === "undefined" || !pubkey) return;
+  window.localStorage.setItem(
+    MACHINE_ONBOARDING_RESUME_SETUP_STORAGE_KEY,
+    pubkey,
+  );
+}
+
+export function consumeMachineOnboardingSetupResume(pubkey: string | null) {
+  if (typeof window === "undefined" || !pubkey) return false;
+  if (
+    window.localStorage.getItem(MACHINE_ONBOARDING_RESUME_SETUP_STORAGE_KEY) !==
+    pubkey
+  ) {
+    return false;
+  }
+  window.localStorage.removeItem(MACHINE_ONBOARDING_RESUME_SETUP_STORAGE_KEY);
+  return true;
 }
 
 export function readMachineOnboardingCompletion(pubkey: string | null) {
