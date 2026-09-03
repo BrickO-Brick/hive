@@ -2,7 +2,6 @@ import { BookMarked, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 
-import hiveAppIcon from "@/assets/hive-icon.png";
 import { Input } from "@/shared/ui/input";
 import { mockRepos } from "../mock-repos";
 import { useRepos } from "../use-repos";
@@ -50,10 +49,10 @@ function CommunityEmptyState() {
     <div className="flex flex-1 items-center justify-center bg-[#F3F3F3] px-4 py-16 text-center dark:bg-[#171717]">
       <div className="flex w-full max-w-xl flex-col items-center px-6 py-10 sm:px-12 sm:py-12">
         <div
-          className="h-16 w-16 overflow-hidden bg-black"
+          className="h-16 w-16 overflow-hidden"
           style={{ borderRadius: "22.37%" }}
         >
-          <img alt="Hive" className="h-full w-full" src={hiveAppIcon} />
+          <img alt="Hive" className="h-full w-full" src="/hive-icon.png" />
         </div>
         <h1 className="mt-6 text-2xl font-semibold tracking-tight text-black dark:text-white">
           This community is empty

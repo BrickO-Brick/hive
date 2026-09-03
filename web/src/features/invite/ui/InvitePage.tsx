@@ -1,4 +1,3 @@
-import hiveAppIcon from "@/assets/hive-icon.png";
 import { claimInviteInBrowser } from "@/features/invite/invite-api";
 import {
   BUZZ_RELEASES_URL,
@@ -195,10 +194,10 @@ export function InvitePage({ code }: { code: string }) {
       <div className="w-full max-w-xl space-y-4">
         <div className="flex w-full flex-col items-center rounded-3xl bg-white px-6 py-10 sm:px-12 sm:py-12">
           <div
-            className="h-12 w-12 overflow-hidden bg-black"
+            className="h-12 w-12 overflow-hidden"
             style={{ borderRadius: "22.37%" }}
           >
-            <img alt="Hive" className="h-full w-full" src={hiveAppIcon} />
+            <img alt="Hive" className="h-full w-full" src="/hive-icon.png" />
           </div>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight text-black">
             You&apos;re invited to
