@@ -25,7 +25,10 @@ import { useCloseWindowShortcut } from "@/app/useCloseWindowShortcut";
 import { KnownAgentPubkeysProvider } from "@/features/agents/useKnownAgentPubkeys";
 import { huddleWindowChannelId } from "@/features/huddle/lib/huddleWindow";
 import { useAppOnboardingState } from "@/features/onboarding/hooks";
-import { useMachineOnboardingState } from "@/features/onboarding/machineOnboarding";
+import {
+  consumeMachineOnboardingSetupResume,
+  useMachineOnboardingState,
+} from "@/features/onboarding/machineOnboarding";
 import {
   type FirstCommunityPage,
   useCommunityOnboarding,
@@ -694,6 +697,15 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
     useState<MachineOnboardingPage>();
   const [postOnboardingNav, setPostOnboardingNav] =
     useState<PostOnboardingNavigation | null>(null);
+
+  useEffect(() => {
+    if (
+      machine.stage === "onboarding" &&
+      consumeMachineOnboardingSetupResume(machine.currentPubkey)
+    ) {
+      setMachineInitialPage("setup");
+    }
+  }, [machine.currentPubkey, machine.stage]);
 
   const reopenMachineConfig = useCallback(() => {
     setMachineInitialPage("config");

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  consumeMachineOnboardingSetupResume,
+  markMachineOnboardingSetupResume,
   migrateMachineOnboardingCompletion,
   readMachineOnboardingCompletion,
 } from "./machineOnboarding.ts";
@@ -45,6 +47,15 @@ const PUBKEY_B =
   "bbbbbb1111112222223333334444445555556666667777778888889999990000bb";
 const LEGACY_KEY = `buzz-onboarding-complete.v1:${PUBKEY_A}`;
 const V2_KEY = `buzz-machine-onboarding-complete.v2:${PUBKEY_A}`;
+
+test("setup resume marker is identity-bound and consumed once", () => {
+  withFakeWindow({}, () => {
+    markMachineOnboardingSetupResume(PUBKEY_A);
+    assert.equal(consumeMachineOnboardingSetupResume(PUBKEY_B), false);
+    assert.equal(consumeMachineOnboardingSetupResume(PUBKEY_A), true);
+    assert.equal(consumeMachineOnboardingSetupResume(PUBKEY_A), false);
+  });
+});
 
 // ── Fix A regression case ────────────────────────────────────────────────────
 

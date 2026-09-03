@@ -136,7 +136,7 @@ On a Mac, check the Apple menu > About This Mac: "Chip: Apple …" means Apple S
 The Windows build is not code-signed, so SmartScreen may show "Windows protected your PC" on first launch. If available, click **More info**, then **Run anyway**.
 
 
-By default the app connects to `ws://localhost:3000`. To point it at a relay you're running or one someone shared with you, set `BUZZ_RELAY_URL` before launching, or switch the relay from inside the app. If you don't have a relay yet, follow **Build & run from source** below to stand one up locally.
+By default the branded Hive app connects to `wss://hive.onebrick.io`. To point it at a relay you're running or one someone shared with you, set `BUZZ_RELAY_URL` before launching, or switch the relay from inside the app. Local development commonly uses `BUZZ_RELAY_URL=ws://localhost:3000`. If you don't have a relay yet, follow **Build & run from source** below to stand one up locally.
 
 ### I want my own hosted relay
 

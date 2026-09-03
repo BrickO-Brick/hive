@@ -9,7 +9,10 @@ use sha2::{Digest, Sha256};
 
 use crate::app_state::AppState;
 
-const DEFAULT_RELAY_WS_URL: &str = "ws://localhost:3000";
+// The branded Hive desktop must work after installation without requiring a
+// shell-provided environment variable. Local development can still override
+// this with BUZZ_RELAY_URL=ws://localhost:3000.
+const DEFAULT_RELAY_WS_URL: &str = "wss://hive.onebrick.io";
 
 // A reached-but-malformed 2xx body is NOT a connectivity failure, so this
 // message must never carry the "relay unreachable:" prefix the frontend
