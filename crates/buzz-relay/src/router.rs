@@ -255,7 +255,11 @@ fn is_admin_static_path(path: &str) -> bool {
 /// Files served from the public bundle directory verbatim. Keep root-level
 /// assets explicit so the bundle directory cannot be browsed accidentally.
 fn is_web_static_path(path: &str) -> bool {
-    path.starts_with("/assets/") || matches!(path, "/favicon.svg" | "/apple-touch-icon.png")
+    path.starts_with("/assets/")
+        || matches!(
+            path,
+            "/favicon.svg" | "/apple-touch-icon.png" | "/hive-icon.svg" | "/hive-icon.png"
+        )
 }
 
 fn is_invite_landing_path(path: &str) -> bool {
@@ -640,6 +644,8 @@ mod tests {
         std::fs::write(dir.join("assets/app.js"), "export {};").expect("bundle asset");
         std::fs::write(dir.join("favicon.svg"), "<svg/>").expect("favicon");
         std::fs::write(dir.join("apple-touch-icon.png"), "png").expect("touch icon");
+        std::fs::write(dir.join("hive-icon.svg"), "<svg/>").expect("Hive vector icon");
+        std::fs::write(dir.join("hive-icon.png"), "png").expect("Hive raster icon");
     }
 
     async fn spa_response(
@@ -731,6 +737,8 @@ mod tests {
             "/mantul-sso",
             "/assets/app.js",
             "/favicon.svg",
+            "/hive-icon.svg",
+            "/hive-icon.png",
         ] {
             let response = spa_response(state.clone(), "public.example", path).await;
             assert_eq!(response.status(), StatusCode::OK, "{path}");
@@ -742,6 +750,9 @@ mod tests {
                 "{path} on the public host must keep its own headers"
             );
         }
+
+        let response = spa_response(state, "public.example", "/unlisted-icon.png").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
