@@ -276,12 +276,14 @@ export function GitHubChangeProposalWorkspace({
   onRecordApproval,
   repository,
   reposDir,
+  workspaceId,
 }: {
   approverPubkey: string | null;
   onContextChange: (context: ChangeProposalAgentContext | null) => void;
   onRecordApproval: (content: string) => Promise<void>;
   repository: SourceRepository;
   reposDir?: string | null;
+  workspaceId: string;
 }) {
   const [open, setOpen] = React.useState(false);
   const [proposal, setProposal] = React.useState<ChangeProposal | null>(null);
@@ -300,8 +302,9 @@ export function GitHubChangeProposalWorkspace({
       repository.owner,
       repository.name,
       reposDir ?? "default",
+      workspaceId,
     ],
-    [repository.name, repository.owner, reposDir],
+    [repository.name, repository.owner, reposDir, workspaceId],
   );
   const workspaceQuery = useQuery({
     queryKey,
@@ -310,6 +313,7 @@ export function GitHubChangeProposalWorkspace({
         owner: repository.owner,
         name: repository.name,
         reposDir,
+        workspaceId,
       }),
     staleTime: 5_000,
     retry: false,
@@ -320,6 +324,8 @@ export function GitHubChangeProposalWorkspace({
         owner: repository.owner,
         name: repository.name,
         reposDir,
+        workspaceId,
+        baseRef: repository.defaultBranch,
       }),
     onSuccess: (workspace) => {
       queryClient.setQueryData(queryKey, workspace);
@@ -336,6 +342,7 @@ export function GitHubChangeProposalWorkspace({
         owner: repository.owner,
         name: repository.name,
         reposDir,
+        workspaceId,
         command: input.command,
         expectedResultTree: input.resultTree,
       }),
@@ -601,6 +608,7 @@ export function GitHubChangeProposalWorkspace({
           proposal={lifecycleProposal}
           publication={publicationResult}
           reposDir={reposDir}
+          workspaceId={workspaceId}
         />
       </React.Suspense>
     ) : null;

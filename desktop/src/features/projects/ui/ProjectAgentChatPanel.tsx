@@ -17,11 +17,14 @@ import {
 } from "@/features/projects/lib/projectAgentConversation";
 import {
   clearStoredProjectsAgentConversation,
+  createProjectsWorkspaceId,
   type ProjectsConversationOpener,
   projectsConversationScope,
   readStoredProjectsAgentConversation,
+  readStoredProjectsWorkspaceId,
   type StoredProjectsAgentConversation,
   writeStoredProjectsAgentConversation,
+  writeStoredProjectsWorkspaceId,
 } from "@/features/projects/lib/projectAgentConversationStorage";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
 import { useProfileQuery, useUsersBatchQuery } from "@/features/profile/hooks";
@@ -103,6 +106,12 @@ export function ProjectAgentChatPanel({
     React.useState<StoredProjectsAgentConversation | null>(() =>
       readStoredProjectsAgentConversation(storageScope),
     );
+  const [workspaceId, setWorkspaceId] = React.useState(
+    () =>
+      storedConversation?.workspaceId ??
+      readStoredProjectsWorkspaceId(storageScope) ??
+      createProjectsWorkspaceId(),
+  );
   const [conversation, setConversation] =
     React.useState<ProjectAgentConversation | null>(null);
   const [changeProposalState, setChangeProposalState] = React.useState<{
@@ -116,6 +125,10 @@ export function ProjectAgentChatPanel({
   const startAgentMutation = useStartManagedAgentMutation();
   const selectedAgent =
     conversation?.agent ?? pickDefaultProjectsAgent(candidates);
+
+  React.useEffect(() => {
+    writeStoredProjectsWorkspaceId(storageScope, workspaceId);
+  }, [storageScope, workspaceId]);
   const candidateProfilesQuery = useUsersBatchQuery(
     selectedAgent ? [selectedAgent.pubkey] : [],
   );
@@ -248,6 +261,7 @@ export function ProjectAgentChatPanel({
             agentPubkey: selectedAgent.pubkey,
             channelId: channel.id,
             opener,
+            workspaceId,
           };
           setConversation(nextConversation);
           setStoredConversation(stored);
@@ -275,6 +289,7 @@ export function ProjectAgentChatPanel({
       signerScope,
       startAgentMutation,
       storageScope,
+      workspaceId,
     ],
   );
 
@@ -316,6 +331,10 @@ export function ProjectAgentChatPanel({
     clearStoredProjectsAgentConversation(storageScope);
     setStoredConversation(null);
     setConversation(null);
+    const nextWorkspaceId = createProjectsWorkspaceId();
+    writeStoredProjectsWorkspaceId(storageScope, nextWorkspaceId);
+    setWorkspaceId(nextWorkspaceId);
+    setChangeProposalState(null);
   }, [storageScope]);
 
   const conversationBody = (
@@ -377,11 +396,12 @@ export function ProjectAgentChatPanel({
           >
             <GitHubChangeProposalWorkspace
               approverPubkey={identityQuery.data?.pubkey ?? null}
-              key={context.repoAddress}
+              key={`${context.repoAddress}:${workspaceId}`}
               onContextChange={handleProposalContextChange}
               onRecordApproval={handleRecordApproval}
               repository={context.sourceRepository}
               reposDir={activeCommunity?.reposDir}
+              workspaceId={workspaceId}
             />
           </React.Suspense>
         ) : null}

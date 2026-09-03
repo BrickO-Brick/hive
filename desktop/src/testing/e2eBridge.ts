@@ -12711,12 +12711,14 @@ export function maybeInstallE2eTauriMocks() {
           },
         ];
       case "inspect_github_repository_workspace":
-      case "prepare_github_repository_workspace":
+      case "prepare_github_repository_workspace": {
+        const input = payload as { workspaceId?: string };
+        const workspaceId = input.workspaceId ?? "legacy";
         return {
           owner: "BrickO-Brick",
           name: "hive",
-          path: "/tmp/buzz/REPOS/BrickO-Brick--hive",
-          branch: "feature/human-publication",
+          path: `/tmp/buzz/REPOS/.hive-workspaces/worktrees/BrickO-Brick--hive/${workspaceId}`,
+          branch: `hive/${workspaceId}`,
           base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           base_tree: "cccccccccccccccccccccccccccccccccccccccc",
           result_tree: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -12734,6 +12736,7 @@ export function maybeInstallE2eTauriMocks() {
             },
           ],
         };
+      }
       case "run_github_repository_test": {
         const input = payload as { expectedResultTree: string };
         return {

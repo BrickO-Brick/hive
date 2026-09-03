@@ -59,6 +59,7 @@ export function GitHubPublicationGate({
   publication,
   proposal,
   reposDir,
+  workspaceId,
 }: {
   defaultBranch: string;
   commit: GitHubRepositoryCommitResult | null;
@@ -68,6 +69,7 @@ export function GitHubPublicationGate({
   publication: GitHubRepositoryPublishResult | null;
   proposal: ChangeProposal;
   reposDir?: string | null;
+  workspaceId: string;
 }) {
   const [branchName, setBranchName] = React.useState("");
   const [branchWasEdited, setBranchWasEdited] = React.useState(false);
@@ -85,12 +87,14 @@ export function GitHubPublicationGate({
       proposal.repository.owner,
       proposal.repository.name,
       reposDir ?? "default",
+      workspaceId,
     ],
     queryFn: () =>
       getGitHubRepositoryPublicationIdentity({
         owner: proposal.repository.owner,
         name: proposal.repository.name,
         reposDir,
+        workspaceId,
       }),
     enabled: proposal.status === "approved",
     retry: false,
@@ -102,6 +106,7 @@ export function GitHubPublicationGate({
         owner: proposal.repository.owner,
         name: proposal.repository.name,
         reposDir,
+        workspaceId,
         expectedBaseCommit: proposal.baseCommit,
         expectedResultTree: proposal.resultTree,
         branchName,
@@ -114,6 +119,7 @@ export function GitHubPublicationGate({
         owner: proposal.repository.owner,
         name: proposal.repository.name,
         reposDir,
+        workspaceId,
         expectedCommit: input.commit,
         expectedResultTree: proposal.resultTree,
         branchName,
