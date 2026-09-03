@@ -50,8 +50,7 @@ fn discussion_ids_resolve_distinct_worktrees_from_one_mirror() {
 
     let managed = root.path().join(".hive-workspaces");
     let mirror = managed.join("mirrors/BrickO-Brick--hive.git");
-    std::fs::create_dir_all(mirror.parent().expect("mirror parent"))
-        .expect("create mirror parent");
+    std::fs::create_dir_all(mirror.parent().expect("mirror parent")).expect("create mirror parent");
     assert!(test_git(
         root.path(),
         &[

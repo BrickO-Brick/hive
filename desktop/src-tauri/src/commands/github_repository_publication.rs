@@ -179,9 +179,10 @@ fn publication_identity_blocking(
     repos_dir: Option<&str>,
     workspace_id: Option<&str>,
 ) -> Result<GitHubRepositoryPublicationIdentity, String> {
-    let workspace = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?.ok_or_else(|| {
-        "Prepare the local repository before checking publication identity.".to_string()
-    })?;
+    let workspace =
+        inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?.ok_or_else(|| {
+            "Prepare the local repository before checking publication identity.".to_string()
+        })?;
     let repo_dir = Path::new(&workspace.path);
     let git_name = read_user_git_config(repo_dir, "user.name");
     let git_email = read_user_git_config(repo_dir, "user.email");
@@ -216,16 +217,30 @@ fn signed_commit_message(message: &str, name: &str, email: &str) -> String {
     }
 }
 
+struct CommitExactTreeRequest<'a> {
+    owner: &'a str,
+    name: &'a str,
+    repos_dir: Option<&'a str>,
+    workspace_id: Option<&'a str>,
+    expected_base_commit: &'a str,
+    expected_result_tree: &'a str,
+    branch_name: &'a str,
+    message: &'a str,
+}
+
 fn commit_exact_tree_blocking(
-    owner: &str,
-    name: &str,
-    repos_dir: Option<&str>,
-    workspace_id: Option<&str>,
-    expected_base_commit: &str,
-    expected_result_tree: &str,
-    branch_name: &str,
-    message: &str,
+    request: CommitExactTreeRequest<'_>,
 ) -> Result<GitHubRepositoryCommitResult, String> {
+    let CommitExactTreeRequest {
+        owner,
+        name,
+        repos_dir,
+        workspace_id,
+        expected_base_commit,
+        expected_result_tree,
+        branch_name,
+        message,
+    } = request;
     let workspace = inspect_workspace_blocking(owner, name, repos_dir, workspace_id)?
         .ok_or_else(|| "Prepare the local repository before creating a commit.".to_string())?;
     if workspace.base_commit != expected_base_commit
@@ -593,12 +608,7 @@ pub async fn get_github_repository_publication_identity(
     let owner = validate_segment(&owner, "owner")?;
     let name = validate_segment(&name, "repository")?;
     tauri::async_runtime::spawn_blocking(move || {
-        publication_identity_blocking(
-            &owner,
-            &name,
-            repos_dir.as_deref(),
-            workspace_id.as_deref(),
-        )
+        publication_identity_blocking(&owner, &name, repos_dir.as_deref(), workspace_id.as_deref())
     })
     .await
     .map_err(|error| format!("publication identity task failed: {error}"))?
@@ -623,16 +633,16 @@ pub async fn commit_github_repository_change(
     let branch_name = validate_branch(&branch_name, "Task branch")?;
     let message = validate_text(&message, "Commit message", MAX_COMMIT_MESSAGE_CHARS)?;
     tauri::async_runtime::spawn_blocking(move || {
-        commit_exact_tree_blocking(
-            &owner,
-            &name,
-            repos_dir.as_deref(),
-            workspace_id.as_deref(),
-            &expected_base_commit,
-            &expected_result_tree,
-            &branch_name,
-            &message,
-        )
+        commit_exact_tree_blocking(CommitExactTreeRequest {
+            owner: &owner,
+            name: &name,
+            repos_dir: repos_dir.as_deref(),
+            workspace_id: workspace_id.as_deref(),
+            expected_base_commit: &expected_base_commit,
+            expected_result_tree: &expected_result_tree,
+            branch_name: &branch_name,
+            message: &message,
+        })
     })
     .await
     .map_err(|error| format!("local commit task failed: {error}"))?
@@ -740,24 +750,20 @@ mod tests {
     #[test]
     fn exact_tree_commit_preserves_base_branch_and_uses_user_identity() {
         let (root, repo, base) = fixture();
-        let workspace = inspect_workspace_blocking(
-            "BrickO-Brick",
-            "hive",
-            root.path().to_str(),
-            None,
-        )
-            .expect("inspect fixture")
-            .expect("workspace exists");
-        let result = commit_exact_tree_blocking(
-            "BrickO-Brick",
-            "hive",
-            root.path().to_str(),
-            None,
-            &base,
-            &workspace.result_tree,
-            "users/buzz-user/exact-tree",
-            "Keep publication user-owned",
-        )
+        let workspace =
+            inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str(), None)
+                .expect("inspect fixture")
+                .expect("workspace exists");
+        let result = commit_exact_tree_blocking(CommitExactTreeRequest {
+            owner: "BrickO-Brick",
+            name: "hive",
+            repos_dir: root.path().to_str(),
+            workspace_id: None,
+            expected_base_commit: &base,
+            expected_result_tree: &workspace.result_tree,
+            branch_name: "users/buzz-user/exact-tree",
+            message: "Keep publication user-owned",
+        })
         .expect("commit approved tree");
 
         assert!(result.checked_out);
@@ -786,25 +792,21 @@ mod tests {
     #[test]
     fn exact_tree_commit_rejects_stale_approval_without_creating_branch() {
         let (root, repo, base) = fixture();
-        let workspace = inspect_workspace_blocking(
-            "BrickO-Brick",
-            "hive",
-            root.path().to_str(),
-            None,
-        )
-            .unwrap()
-            .unwrap();
+        let workspace =
+            inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str(), None)
+                .unwrap()
+                .unwrap();
         std::fs::write(repo.join("tracked.txt"), "changed again\n").expect("revise fixture");
-        let error = commit_exact_tree_blocking(
-            "BrickO-Brick",
-            "hive",
-            root.path().to_str(),
-            None,
-            &base,
-            &workspace.result_tree,
-            "users/buzz-user/stale",
-            "Stale change",
-        )
+        let error = commit_exact_tree_blocking(CommitExactTreeRequest {
+            owner: "BrickO-Brick",
+            name: "hive",
+            repos_dir: root.path().to_str(),
+            workspace_id: None,
+            expected_base_commit: &base,
+            expected_result_tree: &workspace.result_tree,
+            branch_name: "users/buzz-user/stale",
+            message: "Stale change",
+        })
         .expect_err("stale tree must fail");
         assert!(error.contains("changed after approval"));
         assert!(!test_git(

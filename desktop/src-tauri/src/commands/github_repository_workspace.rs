@@ -508,10 +508,10 @@ fn prepare_workspace_blocking(
         github_git_command(
             &mirror,
             &[
-            "fetch",
-            "--prune",
-            "origin",
-            "+refs/heads/*:refs/remotes/origin/*",
+                "fetch",
+                "--prune",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
             ],
         )?,
         CLONE_TIMEOUT,
@@ -671,12 +671,7 @@ pub async fn inspect_github_repository_workspace(
     let owner = validate_segment(&owner, "owner")?;
     let name = validate_segment(&name, "repository")?;
     tauri::async_runtime::spawn_blocking(move || {
-        inspect_workspace_blocking(
-            &owner,
-            &name,
-            repos_dir.as_deref(),
-            workspace_id.as_deref(),
-        )
+        inspect_workspace_blocking(&owner, &name, repos_dir.as_deref(), workspace_id.as_deref())
     })
     .await
     .map_err(|error| format!("workspace inspection task failed: {error}"))?
@@ -741,7 +736,7 @@ pub async fn run_github_repository_test(
             repos_dir.as_deref(),
             workspace_id.as_deref(),
         )?
-            .ok_or_else(|| "Prepare the local repository before running tests.".to_string())?;
+        .ok_or_else(|| "Prepare the local repository before running tests.".to_string())?;
         if before.result_tree != expected_result_tree {
             return Err(
                 "The workspace changed before the test started. Refresh the proposal.".to_string(),
@@ -761,7 +756,7 @@ pub async fn run_github_repository_test(
             repos_dir.as_deref(),
             workspace_id.as_deref(),
         )?
-            .ok_or_else(|| "The local repository disappeared during the test.".to_string())?;
+        .ok_or_else(|| "The local repository disappeared during the test.".to_string())?;
         let tree_changed = after.result_tree != expected_result_tree;
         Ok(GitHubRepositoryTestResult {
             exit_code: output.status.code(),
@@ -867,14 +862,10 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "after\n").expect("modify tracked file");
         std::fs::write(repo.join("untracked.txt"), "new\n").expect("write untracked file");
 
-        let workspace = inspect_workspace_blocking(
-            "BrickO-Brick",
-            "hive",
-            root.path().to_str(),
-            None,
-        )
-            .expect("inspect workspace")
-            .expect("workspace exists");
+        let workspace =
+            inspect_workspace_blocking("BrickO-Brick", "hive", root.path().to_str(), None)
+                .expect("inspect workspace")
+                .expect("workspace exists");
 
         assert!(workspace.dirty);
         assert_eq!(workspace.base_commit, original_head);
@@ -904,7 +895,6 @@ mod tests {
         .to_string();
         assert!(tree_files.lines().any(|path| path == "untracked.txt"));
     }
-
 }
 
 #[cfg(test)]
