@@ -84,6 +84,14 @@ fn valid_name(value: &str, max: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn authorize_discussion_creator(
+    member_role: Option<&str>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    member_role
+        .map(|_| ())
+        .ok_or_else(|| api_error(StatusCode::FORBIDDEN, "membership_required"))
+}
+
 fn token_for_owner(owner: &str) -> Option<String> {
     let personal_owner =
         std::env::var("BUZZ_ONEBRICK_GITHUB_ORG").unwrap_or_else(|_| "BrickO-Brick".into());
@@ -347,11 +355,8 @@ pub(crate) async fn create(
         .db
         .get_relay_member(tenant.community(), &pubkey.to_hex())
         .await
-        .map_err(|error| internal_error(&format!("read Hive member role: {error}")))?
-        .ok_or_else(|| api_error(StatusCode::FORBIDDEN, "membership_required"))?;
-    if member.role != "owner" && member.role != "admin" {
-        return Err(api_error(StatusCode::FORBIDDEN, "write_access_required"));
-    }
+        .map_err(|error| internal_error(&format!("read Hive membership: {error}")))?;
+    authorize_discussion_creator(member.as_ref().map(|member| member.role.as_str()))?;
     let request = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_discussion"))?;
     let discussion = create_workspace(&state, request, pubkey.to_hex()).await?;
@@ -415,5 +420,18 @@ mod tests {
         for invalid in ["../hive", "-owner", "owner/child", "", "."] {
             assert!(!valid_name(invalid, 100));
         }
+    }
+
+    #[test]
+    fn every_hive_member_can_create_a_repository_discussion() {
+        for role in ["member", "admin", "owner"] {
+            assert!(
+                authorize_discussion_creator(Some(role)).is_ok(),
+                "{role} must be allowed to start a discussion"
+            );
+        }
+
+        let (status, _) = authorize_discussion_creator(None).expect_err("non-member must fail");
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 }
