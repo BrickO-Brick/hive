@@ -647,6 +647,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     const userPubkey =
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
     const agentPubkey = "22".repeat(32);
+    const teammatePubkey = "44".repeat(32);
     const channelId = "62ae672f-ab7b-4619-b013-13eec0111943";
     localStorage.setItem("hive.mantap.nostr-secret.v1", `${"00".repeat(31)}01`);
     localStorage.setItem(
@@ -710,7 +711,48 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
           const subscriptionId = String(frame[1]);
           const filter = frame[2] as Filter;
           this.subscriptions.set(subscriptionId, filter);
-          if (filter.kinds?.includes(9)) {
+          if (filter.kinds?.includes(39002)) {
+            this.message([
+              "EVENT",
+              subscriptionId,
+              {
+                id: "91".repeat(32),
+                pubkey: "33".repeat(32),
+                created_at: 1_788_301_200,
+                kind: 39002,
+                tags: [
+                  ["d", channelId],
+                  ["p", userPubkey, "", "owner"],
+                  ["p", teammatePubkey, "", "member"],
+                  ["p", agentPubkey, "", "bot"],
+                ],
+                content: "",
+                sig: "00".repeat(64),
+              },
+            ]);
+          } else if (filter.kinds?.includes(0)) {
+            const profiles = [
+              [userPubkey, "BrickI"],
+              [teammatePubkey, "Sanny Gaddafi"],
+              [agentPubkey, "BrickO"],
+            ];
+            for (const [pubkey, displayName] of profiles) {
+              if (filter.authors && !filter.authors.includes(pubkey)) continue;
+              this.message([
+                "EVENT",
+                subscriptionId,
+                {
+                  id: `${pubkey.slice(0, 2)}${"0".repeat(62)}`,
+                  pubkey,
+                  created_at: 1_788_301_205,
+                  kind: 0,
+                  tags: [],
+                  content: JSON.stringify({ display_name: displayName }),
+                  sig: "00".repeat(64),
+                },
+              ]);
+            }
+          } else if (filter.kinds?.includes(9)) {
             const now = Math.floor(Date.now() / 1000);
             const events = [
               {
@@ -730,6 +772,15 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
                 tags: [["h", channelId]],
                 content:
                   "**Sudah aktif.** Balasan sekarang muncul otomatis tanpa refresh manual.",
+                sig: "00".repeat(64),
+              },
+              {
+                id: "f6".repeat(32),
+                pubkey: teammatePubkey,
+                created_at: now - 44,
+                kind: 9,
+                tags: [["h", channelId]],
+                content: "Saya ikut memantau percakapan ini.",
                 sig: "00".repeat(64),
               },
             ];
@@ -798,6 +849,18 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByText("Realtime connected")).toBeVisible();
   await expect(page.getByText("Online and ready").first()).toBeVisible();
   await expect(page.getByText("Sudah aktif.")).toBeVisible();
+  const agentMessage = page.getByRole("article", {
+    name: "Message from BrickO",
+  });
+  await expect(agentMessage.getByText("Sudah aktif.")).toBeVisible();
+  const teammateMessage = page.getByRole("article", {
+    name: "Message from Sanny Gaddafi",
+  });
+  await expect(
+    teammateMessage.getByText("Saya ikut memantau percakapan ini."),
+  ).toBeVisible();
+  await expect(teammateMessage.getByText("Sanny Gaddafi")).toBeVisible();
+  await expect(teammateMessage.getByText("BrickO")).toHaveCount(0);
 
   await page.getByTestId("open-github-repositories").click();
   await expect(
