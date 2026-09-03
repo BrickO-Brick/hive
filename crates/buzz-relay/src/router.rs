@@ -8,7 +8,7 @@ use axum::{
     extract::{ConnectInfo, FromRequest, State, WebSocketUpgrade},
     http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Redirect},
     routing::{get, post, put},
     Router,
 };
@@ -63,6 +63,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // WebSocket + NIP-11
         .route("/", get(nip11_or_ws_handler))
         .route("/info", get(relay_info_handler))
+        .route("/downloads", get(downloads_redirect))
         .route("/.well-known/nostr.json", get(api::nip05::nostr_nip05))
         // Health endpoints
         .route("/health", get(health_handler))
@@ -216,6 +217,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn(track_metrics))
         .layer(http_trace_layer())
         .layer(build_cors_layer(&state.config.cors_origins))
+}
+
+async fn downloads_redirect() -> Redirect {
+    Redirect::permanent("/download")
 }
 
 fn http_trace_layer() -> TraceLayer<HttpMakeClassifier, fn(&Request<Body>) -> tracing::Span> {
@@ -568,6 +573,18 @@ mod tests {
         assert!(should_serve_spa("/", true));
         assert!(should_serve_spa("/repos/example", true));
         assert!(!should_serve_spa("/arbitrary", true));
+    }
+
+    #[tokio::test]
+    async fn downloads_alias_permanently_redirects_to_download_center() {
+        let response = downloads_redirect().await.into_response();
+        let expected_location = HeaderValue::from_static("/download");
+
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            response.headers().get(header::LOCATION),
+            Some(&expected_location)
+        );
     }
 
     /// Relay state serving both bundles: the admin SPA on `admin.example` and
