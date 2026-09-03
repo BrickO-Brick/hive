@@ -27,7 +27,7 @@ test("machine onboarding: embedded Mantap login and setup", async ({
   await expect(page.getByTestId("mantap-sign-in-form")).toBeVisible();
   await expect(
     page.getByText(
-      "ENGLISH INTERFACE ONLY · Your conversations can use any language.",
+      "Build boldly, code joyfully, and make an impact—great work together becomes an experience worth remembering.",
     ),
   ).toBeVisible();
   await expect(page.getByText(/private key/i)).toHaveCount(0);
