@@ -486,6 +486,44 @@ buzz notes get --name dco-check   # exits non-zero: not found
 buzz notes rm --name does-not-exist   # exits non-zero
 ```
 
+### 6.13 Local Repository Workspaces
+
+These commands require Git but no relay, private key, or GitHub write access.
+Use a disposable root for the exercise.
+
+```bash
+WORKSPACE_ROOT="$(mktemp -d)"
+
+buzz repos workspace prepare \
+  --repo BrickO-Brick/hive \
+  --clone https://github.com/BrickO-Brick/hive.git \
+  --thread cli-test-a --base-ref main --root "$WORKSPACE_ROOT" | jq .
+# Expected: clean=true, base_sha=current_head, branch=hive/cli-test-a.
+
+buzz repos workspace prepare \
+  --repo BrickO-Brick/hive \
+  --clone https://github.com/BrickO-Brick/hive.git \
+  --thread cli-test-b --base-ref main --root "$WORKSPACE_ROOT" | jq .
+# Expected: same mirror_path, different worktree_path and branch.
+
+HEAD_SHA="$(buzz repos workspace status \
+  --repo BrickO-Brick/hive --thread cli-test-a --root "$WORKSPACE_ROOT" \
+  | jq -r .current_head)"
+buzz repos workspace verify-head \
+  --repo BrickO-Brick/hive --thread cli-test-a \
+  --expected-head "$HEAD_SHA" --root "$WORKSPACE_ROOT" | jq .
+# Expected: exit 0 while the exact HEAD is clean.
+
+WORKTREE="$(buzz repos workspace status \
+  --repo BrickO-Brick/hive --thread cli-test-a --root "$WORKSPACE_ROOT" \
+  | jq -r .worktree_path)"
+printf '\nlocal change\n' >> "$WORKTREE/README.md"
+buzz repos workspace verify-head \
+  --repo BrickO-Brick/hive --thread cli-test-a \
+  --expected-head "$HEAD_SHA" --root "$WORKSPACE_ROOT"
+# Expected: exit 5; the action is refused because the worktree is dirty.
+```
+
 ---
 
 ## 7. Error Path Testing

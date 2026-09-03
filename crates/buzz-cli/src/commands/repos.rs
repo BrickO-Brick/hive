@@ -467,6 +467,9 @@ pub async fn dispatch(cmd: crate::ReposCmd, client: &BuzzClient) -> Result<(), C
                 cmd_protect_remove(client, &id, &ref_pattern).await
             }
         },
+        ReposCmd::Workspace(_) => {
+            unreachable!("local repository workspace commands are handled before relay auth")
+        }
     }
 }
 
