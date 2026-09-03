@@ -85,6 +85,10 @@ jobs:
             '.services["bricko-agent"].environment.BUZZ_ACP_AGENT_OWNER == $owner' \
             <<<"$(HIVE_ENV_FILE="$fixture" docker compose --profile agent -p hive-ci --env-file "$fixture" -f deploy/onebrick/compose.yml config --format json)" \
             >/dev/null
+          jq -e \
+            '.services["bricko-agent"].environment.CODEX_CONFIG == "{\"sandbox_mode\":\"danger-full-access\"}"' \
+            <<<"$(HIVE_ENV_FILE="$fixture" docker compose --profile agent -p hive-ci --env-file "$fixture" -f deploy/onebrick/compose.yml config --format json)" \
+            >/dev/null
           grep -Fq 'init: false' <<<"$agent_config"
           ! grep -Fq 'INITIAL_AGENT_MODE' <<<"$agent_config"
           grep -Fq 'sandbox_mode = "danger-full-access"' deploy/onebrick/agent/config.toml

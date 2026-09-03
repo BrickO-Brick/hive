@@ -5081,6 +5081,15 @@ mod agent_draft_prompt_tests {
     }
 
     #[test]
+    fn shared_base_prompt_binds_hive_delivery_to_shell_cli() {
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("shell executable, not a separately named ACP tool"));
+        assert!(prompt.contains("invoke it through your shell execution tool"));
+        assert!(prompt.contains("final assistant output is not relayed to Hive automatically"));
+        assert!(prompt.contains("without a successful send is a silent failure"));
+    }
+
+    #[test]
     fn shared_base_prompt_teaches_repo_context_and_learning_loop() {
         let prompt = include_str!("base_prompt.md");
         assert!(prompt.contains("read its root `AGENTS.md`"));
