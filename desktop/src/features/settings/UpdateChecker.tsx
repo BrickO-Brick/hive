@@ -13,7 +13,7 @@ export function UpdateChecker() {
     <section className="min-w-0" data-testid="settings-updates">
       <SettingsSectionHeader
         title="Software Updates"
-        description="Keep Buzz up to date with the latest features and fixes."
+        description="Keep Hive up to date with the latest features and fixes."
       />
 
       <SettingsOptionGroup title="Update status">
@@ -90,7 +90,7 @@ export function UpdateChecker() {
                 data-settings-subcopy
               >
                 In-app updates aren't supported on this Linux package. Download
-                the new version from GitHub.{" "}
+                the new version from the Hive download center.{" "}
                 <span>Switch to the AppImage build for automatic updates.</span>
               </p>
             </div>

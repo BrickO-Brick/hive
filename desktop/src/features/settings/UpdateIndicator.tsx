@@ -45,8 +45,7 @@ const variants: Record<
   },
   "manual-required": {
     Icon: ExternalLink,
-    label:
-      "Update available — download from GitHub (use AppImage for auto-updates)",
+    label: "Update available — download the latest Hive installer",
     badgeColor: "bg-primary",
   },
   ready: {

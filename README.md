@@ -122,18 +122,21 @@ New to Buzz? Pick the path that matches you.
 
 ### I just want to try the app
 
-Grab a packaged build from the [latest release](https://github.com/block/buzz/releases/latest):
+Download Hive from the public [Hive download center](https://hive.onebrick.io/download):
 
 | Platform | File |
 |---|---|
-| macOS (Apple Silicon) | `Buzz_<version>_aarch64.dmg` |
-| macOS (Intel) | `Buzz_<version>_x64.dmg` |
-| Linux (x86_64) | `Buzz_<version>_amd64.AppImage` or `Buzz_<version>_amd64.deb` |
-| Windows (x64) | `Buzz_<version>_x64-setup_alpha-unsigned.exe` |
+| macOS (Apple Silicon) | `Hive_<version>_aarch64.dmg` |
+| macOS (Intel) | `Hive_<version>_x64.dmg` |
+| Windows (x64) | `Hive_<version>_x64-setup_alpha-unsigned.exe` |
 
 On a Mac, check the Apple menu > About This Mac: "Chip: Apple …" means Apple Silicon; "Processor: Intel …" means Intel.
 
 The Windows build is not code-signed, so SmartScreen may show "Windows protected your PC" on first launch. If available, click **More info**, then **Run anyway**.
+
+Hive checks its signed update channel when it starts and every six hours. When
+an update is ready, an in-app badge lets you install it and relaunch Hive. The
+download center always keeps the newest installers and the release archive.
 
 
 By default the branded Hive app connects to `wss://hive.onebrick.io`. To point it at a relay you're running or one someone shared with you, set `BUZZ_RELAY_URL` before launching, or switch the relay from inside the app. Local development commonly uses `BUZZ_RELAY_URL=ws://localhost:3000`. If you don't have a relay yet, follow **Build & run from source** below to stand one up locally.

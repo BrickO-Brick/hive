@@ -17,6 +17,11 @@ hive.onebrick.io {
 	}
 	redir @hiveBrowserRoot /app 302
 
+	# Stable human-facing entry point for macOS and Windows installers. The
+	# release metadata and signed updater manifest remain immutable on GitHub;
+	# the SPA resolves the newest stable desktop-v* release.
+	redir /downloads /download 308
+
 	request_body {
 		max_size 100MB
 	}

@@ -260,7 +260,7 @@ fn is_invite_landing_path(path: &str) -> bool {
 
 fn should_serve_spa(path: &str, serve_git_web_gui: bool) -> bool {
     is_invite_landing_path(path)
-        || matches!(path, "/app" | "/mantul-sso")
+        || matches!(path, "/app" | "/download" | "/mantul-sso")
         || (serve_git_web_gui && is_git_web_gui_path(path))
 }
 
@@ -562,6 +562,7 @@ mod tests {
     fn invite_is_always_served_but_git_gui_requires_opt_in() {
         assert!(should_serve_spa("/invite/payload.mac", false));
         assert!(should_serve_spa("/invite/payload.mac", true));
+        assert!(should_serve_spa("/download", false));
         assert!(!should_serve_spa("/", false));
         assert!(!should_serve_spa("/repos/example", false));
         assert!(should_serve_spa("/", true));

@@ -97,9 +97,9 @@ export function SidebarUpdateCard({ onDismiss }: SidebarUpdateCardProps) {
   if (status.state === "manual-required") {
     return (
       <SidebarCompactActionCard
-        actionAriaLabel="Download update from GitHub"
-        actionTestId="sidebar-update-download-github"
-        description={`v${status.version} available — download from GitHub. Switch to AppImage for automatic updates.`}
+        actionAriaLabel="Download update from Hive"
+        actionTestId="sidebar-update-download-hive"
+        description={`v${status.version} available — open the Hive download center. Switch to AppImage for automatic updates.`}
         dismissLabel="Dismiss update notification"
         icon={<ExternalLink aria-hidden="true" className="h-5 w-5" />}
         iconKey="manual"

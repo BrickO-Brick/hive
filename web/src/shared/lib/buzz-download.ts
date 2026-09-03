@@ -1,7 +1,8 @@
-export const BUZZ_RELEASES_URL = "https://github.com/block/buzz/releases";
+export const BUZZ_RELEASES_URL =
+  "https://github.com/BrickO-Brick/hive/releases";
 const BUZZ_RELEASES_API_URL =
-  "https://api.github.com/repos/block/buzz/releases?per_page=10";
-const CACHE_KEY = "buzz.latestDownload.v1";
+  "https://api.github.com/repos/BrickO-Brick/hive/releases?per_page=10";
+const CACHE_KEY = "hive.latestDownload.v2";
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
 export type BuzzDownloadPlatform = {
@@ -9,10 +10,24 @@ export type BuzzDownloadPlatform = {
   architecture: "arm64" | "x64" | "unknown";
 };
 
-type GitHubRelease = {
+export type GitHubRelease = {
   draft: boolean;
   prerelease: boolean;
+  tag_name?: string;
+  name?: string;
+  body?: string;
+  html_url?: string;
+  published_at?: string;
   assets: Array<{ name: string; browser_download_url: string }>;
+};
+
+export type HiveDesktopRelease = {
+  version: string;
+  name: string;
+  notes: string;
+  publishedAt: string | null;
+  releaseUrl: string;
+  downloads: Partial<Record<"macArm64" | "macX64" | "windowsX64", string>>;
 };
 
 type UserAgentData = {
@@ -122,6 +137,46 @@ function assetPattern(platform: BuzzDownloadPlatform): RegExp | undefined {
     default:
       return undefined;
   }
+}
+
+function releaseAssetUrl(release: GitHubRelease, pattern: RegExp) {
+  return release.assets.find(({ name }) => pattern.test(name))
+    ?.browser_download_url;
+}
+
+export function selectLatestHiveDesktopRelease(
+  releases: GitHubRelease[],
+): HiveDesktopRelease | null {
+  const release = releases.find(
+    ({ draft, prerelease, tag_name: tagName }) =>
+      !draft && !prerelease && /^desktop-v\d+\.\d+\.\d+$/.test(tagName ?? ""),
+  );
+  if (!release?.tag_name) return null;
+
+  return {
+    version: release.tag_name.replace(/^desktop-v/, ""),
+    name:
+      release.name?.trim() ||
+      `Hive ${release.tag_name.replace(/^desktop-v/, "")}`,
+    notes: release.body?.trim() || "A more polished Hive desktop experience.",
+    publishedAt: release.published_at ?? null,
+    releaseUrl: release.html_url ?? BUZZ_RELEASES_URL,
+    downloads: {
+      macArm64: releaseAssetUrl(release, /_aarch64\.dmg$/i),
+      macX64: releaseAssetUrl(release, /_x64\.dmg$/i),
+      windowsX64: releaseAssetUrl(release, /_x64-setup[^/]*\.exe$/i),
+    },
+  };
+}
+
+export async function fetchLatestHiveDesktopRelease(): Promise<HiveDesktopRelease | null> {
+  const response = await fetch(BUZZ_RELEASES_API_URL, {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) return null;
+  return selectLatestHiveDesktopRelease(
+    (await response.json()) as GitHubRelease[],
+  );
 }
 
 export function selectBuzzDownloadUrl(
