@@ -102,7 +102,7 @@ function CatalogErrorState({
       </h2>
       <p className="mt-2 text-sm leading-6 text-[#607086]">
         {configurationMissing
-          ? "Hive requires server-side, read-only credentials for private BrickO-Brick and brick-io repositories. Credentials are never sent to the browser."
+          ? "Hive requires server-side, read-only credentials for private BrickO-Brick, brick-io, and BrickI-Brick repositories. Credentials are never sent to the browser."
           : "Hive could not read repository metadata. No GitHub write action was performed."}
       </p>
       <button
@@ -140,6 +140,7 @@ export function OneBrickRepositoryCatalog({
         if (category !== "All" && category !== repositoryCategory) return false;
         return (
           !deferredQuery ||
+          repository.owner.toLowerCase().includes(deferredQuery) ||
           repository.name.toLowerCase().includes(deferredQuery) ||
           repository.description.toLowerCase().includes(deferredQuery) ||
           repositoryCategory.toLowerCase().includes(deferredQuery)
@@ -225,8 +226,8 @@ export function OneBrickRepositoryCatalog({
           {filtered.map(({ repository, category: repositoryCategory }) => (
             <article
               className="flex min-h-52 flex-col rounded-xl border border-[#D8DEE8] bg-white p-4 shadow-sm"
-              data-testid={`github-repository-${repository.name}`}
-              key={repository.name}
+              data-testid={`github-repository-${repository.owner}-${repository.name}`}
+              key={`${repository.owner}/${repository.name}`}
             >
               <div className="flex items-start gap-3">
                 <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#EEF5FF] text-[#2F6FED]">
