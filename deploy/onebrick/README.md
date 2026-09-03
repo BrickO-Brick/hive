@@ -25,13 +25,16 @@ Before deployment, set these values in the owner-only Hive environment file:
 BUZZ_ONEBRICK_GITHUB_ORG=BrickO-Brick
 BUZZ_ONEBRICK_GITHUB_ACCOUNT_TYPE=user
 BUZZ_ONEBRICK_GITHUB_TOKEN=<fine-grained read-only token>
-BUZZ_BRICK_IO_GITHUB_TOKEN=<brick-io fine-grained metadata read-only token>
-BUZZ_BRICKI_GITHUB_TOKEN=<BrickI-Brick fine-grained metadata read-only token>
+BUZZ_BRICK_IO_GITHUB_TOKEN=<brick-io fine-grained read-only token>
+BUZZ_BRICKI_GITHUB_TOKEN=<BrickI-Brick fine-grained read-only token>
 ```
 
 Use separate fine-grained tokens for the personal `BrickO-Brick` and
 `BrickI-Brick` owners and the `brick-io` organization. For each token, select
-**All repositories** and grant only repository **Metadata: read-only** access.
-Do not grant contents, administration, pull-request, or write permissions. The
-catalog endpoint fails closed with `503 Service Unavailable` when any token is
-missing or still contains the template placeholder.
+**All repositories** and grant repository **Metadata: read-only** and
+**Contents: read-only** access. Contents access lets Hive maintain one shared
+bare mirror and an isolated local worktree for every repository discussion;
+creating a discussion never pushes to GitHub. Do not grant administration,
+pull-request, or write permissions. The catalog endpoint fails closed with
+`503 Service Unavailable` when any token is missing or still contains the
+template placeholder.

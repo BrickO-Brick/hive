@@ -129,6 +129,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             api::onebrick_github::CATALOG_PATH,
             get(api::onebrick_github::repositories),
         )
+        .route(
+            api::onebrick_discussions::DISCUSSIONS_PATH,
+            get(api::onebrick_discussions::list).post(api::onebrick_discussions::create),
+        )
         // Moderation queue reads (NIP-98 auth + mod-authz gate, L6)
         .route("/moderation/reports", get(api::bridge::moderation_reports))
         .route("/moderation/audit", get(api::bridge::moderation_audit))
