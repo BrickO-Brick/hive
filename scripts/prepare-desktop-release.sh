@@ -9,6 +9,14 @@ mode="${2:-publish}"
 }
 
 remote="${RELEASE_REMOTE:-origin}"
+repository="${RELEASE_REPOSITORY:-}"
+if [[ -z "$repository" ]]; then
+  repository="$(gh repo view "$(git remote get-url "$remote")" --json nameWithOwner --jq .nameWithOwner)"
+fi
+[[ "$repository" =~ ^[^/]+/[^/]+$ ]] || {
+  echo "could not resolve GitHub repository from remote '$remote'" >&2
+  exit 1
+}
 git fetch "$remote" refs/heads/main:refs/remotes/origin/main --no-tags
 git fetch "$remote" '+refs/tags/v*:refs/tags/v*' '+refs/tags/desktop-v*:refs/tags/desktop-v*'
 base_sha="$(git rev-parse refs/remotes/origin/main)"
@@ -22,7 +30,7 @@ fi
 
 git checkout -B "$branch" "$base_sha"
 just bump-desktop-version "$version"
-scripts/desktop_release.py generate "$version" --base "$base_sha" --repo block/buzz
+scripts/desktop_release.py generate "$version" --base "$base_sha" --repo "$repository"
 
 git add \
   .release/desktop-candidate.json \
@@ -43,7 +51,7 @@ chore(release): release Buzz Desktop version $version
 Co-authored-by: $agent_name <$agent_email>
 EOF
 git commit -s -F "$msg"
-scripts/desktop_release.py validate --candidate HEAD --version "$version" --repo block/buzz
+scripts/desktop_release.py validate --candidate HEAD --version "$version" --repo "$repository"
 
 candidate_sha="$(git rev-parse HEAD)"
 previous_tag="$(python3 -c 'import json; print(json.load(open(".release/desktop-candidate.json"))["previous_tag"] or "initial")')"
@@ -74,9 +82,9 @@ This PR may be **squash merged** after the Desktop Release Candidate check and a
 
 The checked-in changelog accounts for every non-merge commit in the release range. The Desktop tag points to the reviewed candidate commit, not the later squash commit. Publication remains bound to that immutable candidate tag.
 EOF
-if existing="$(gh pr list --repo block/buzz --head "$branch" --state open --json number --jq '.[0].number')" && [[ -n "$existing" ]]; then
-  gh pr edit --repo block/buzz "$existing" --title "chore(release): release Buzz Desktop version $version" --body-file "$body"
+if existing="$(gh pr list --repo "$repository" --head "$branch" --state open --json number --jq '.[0].number')" && [[ -n "$existing" ]]; then
+  gh pr edit --repo "$repository" "$existing" --title "chore(release): release Buzz Desktop version $version" --body-file "$body"
 else
-  gh pr create --repo block/buzz --base main --head "$branch" \
+  gh pr create --repo "$repository" --base main --head "$branch" \
     --title "chore(release): release Buzz Desktop version $version" --body-file "$body"
 fi
