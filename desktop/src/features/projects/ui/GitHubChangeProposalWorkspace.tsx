@@ -51,6 +51,7 @@ import {
 } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
+import { ProposalFileEditor } from "./ProposalFileEditor";
 
 type SourceRepository = NonNullable<
   ProjectDetailAgentContext["sourceRepository"]
@@ -293,6 +294,7 @@ export function GitHubChangeProposalWorkspace({
     React.useState<GitHubRepositoryCommitResult | null>(null);
   const [publicationResult, setPublicationResult] =
     React.useState<GitHubRepositoryPublishResult | null>(null);
+  const [fileEditorDirty, setFileEditorDirty] = React.useState(false);
   const [isRecordingApproval, setIsRecordingApproval] = React.useState(false);
   const scenarioSequence = React.useRef(2);
   const queryClient = useQueryClient();
@@ -438,6 +440,14 @@ export function GitHubChangeProposalWorkspace({
     const result = await refetchWorkspace();
     if (result.data) toast.success("Proposal refreshed from the local tree.");
   }, [refetchWorkspace]);
+
+  const recordFileSave = React.useCallback(
+    (nextWorkspace: GitHubRepositoryWorkspace) => {
+      setFileEditorDirty(false);
+      queryClient.setQueryData(queryKey, nextWorkspace);
+    },
+    [queryClient, queryKey],
+  );
 
   const updateScenario = React.useCallback(
     (
@@ -634,7 +644,16 @@ export function GitHubChangeProposalWorkspace({
                   : `Ready at ${shortObjectId(workspace.baseCommit)} · no local changes yet`}
           </p>
         </div>
-        <Dialog onOpenChange={setOpen} open={open}>
+        <Dialog
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen && fileEditorDirty) {
+              toast.warning("Save or discard the current file before closing.");
+              return;
+            }
+            setOpen(nextOpen);
+          }}
+          open={open}
+        >
           <DialogTrigger asChild>
             <Button
               className="h-7 px-2 text-xs"
@@ -811,6 +830,23 @@ export function GitHubChangeProposalWorkspace({
                             </p>
                           </div>
                         </div>
+                        <ProposalFileEditor
+                          disabled={proposal.status === "approved"}
+                          files={workspace.files}
+                          name={repository.name}
+                          onDirtyChange={setFileEditorDirty}
+                          onSaved={recordFileSave}
+                          owner={repository.owner}
+                          reposDir={reposDir}
+                          resultTree={workspace.resultTree}
+                          workspaceId={workspaceId}
+                        />
+                        <p className="text-2xs text-muted-foreground">
+                          Save writes one text file atomically. The resulting
+                          Git tree invalidates prior test evidence and approval.
+                          Binary, symlinked, and oversized files stay
+                          external-IDE only.
+                        </p>
                         <div
                           className="space-y-2"
                           data-testid="github-proposal-diff"
@@ -906,6 +942,7 @@ export function GitHubChangeProposalWorkspace({
                           data-testid="github-proposal-approve"
                           disabled={
                             !allScenariosPassed ||
+                            fileEditorDirty ||
                             !approverPubkey ||
                             isRecordingApproval ||
                             proposal.status === "approved"

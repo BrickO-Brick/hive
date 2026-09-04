@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+#[path = "github_repository_workspace_files.rs"]
+mod workspace_files;
+pub use workspace_files::GitHubRepositoryWorkspaceFile;
+use workspace_files::{read_workspace_file_blocking, write_workspace_file_blocking};
+
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_TEST_TIMEOUT_SECONDS: u64 = 600;
@@ -407,6 +412,15 @@ pub(super) fn inspect_workspace_blocking(
     }))
 }
 
+fn validate_object_id(value: &str, label: &str) -> Result<(), String> {
+    if matches!(value.len(), 40 | 64)
+        && value.chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Ok(());
+    }
+    Err(format!("{label} must be a Git object id."))
+}
+
 fn clone_destination_root(repos_dir: Option<&str>) -> Result<PathBuf, String> {
     match canonical_repos_roots(repos_dir) {
         Ok(roots) => roots
@@ -702,6 +716,60 @@ pub async fn prepare_github_repository_workspace(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
+pub async fn read_github_repository_workspace_file(
+    owner: String,
+    name: String,
+    repos_dir: Option<String>,
+    workspace_id: Option<String>,
+    path: String,
+    expected_result_tree: String,
+) -> Result<GitHubRepositoryWorkspaceFile, String> {
+    let owner = validate_segment(&owner, "owner")?;
+    let name = validate_segment(&name, "repository")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        read_workspace_file_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+            &path,
+            &expected_result_tree,
+        )
+    })
+    .await
+    .map_err(|error| format!("workspace file read task failed: {error}"))?
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn write_github_repository_workspace_file(
+    owner: String,
+    name: String,
+    repos_dir: Option<String>,
+    workspace_id: Option<String>,
+    path: String,
+    content: String,
+    expected_result_tree: String,
+) -> Result<GitHubRepositoryWorkspace, String> {
+    let owner = validate_segment(&owner, "owner")?;
+    let name = validate_segment(&name, "repository")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        write_workspace_file_blocking(
+            &owner,
+            &name,
+            repos_dir.as_deref(),
+            workspace_id.as_deref(),
+            &path,
+            &content,
+            &expected_result_tree,
+        )
+    })
+    .await
+    .map_err(|error| format!("workspace file write task failed: {error}"))?
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_github_repository_test(
     owner: String,
     name: String,
@@ -719,13 +787,7 @@ pub async fn run_github_repository_test(
             "Test command must contain between 1 and 2,000 safe text characters.".to_string(),
         );
     }
-    if !matches!(expected_result_tree.len(), 40 | 64)
-        || !expected_result_tree
-            .chars()
-            .all(|character| character.is_ascii_hexdigit())
-    {
-        return Err("Expected result tree must be a Git object id.".to_string());
-    }
+    validate_object_id(&expected_result_tree, "Expected result tree")?;
     let timeout_seconds = timeout_seconds
         .unwrap_or(300)
         .clamp(10, MAX_TEST_TIMEOUT_SECONDS);

@@ -582,6 +582,8 @@ pub fn run() {
             list_github_owner_repositories,
             inspect_github_repository_workspace,
             prepare_github_repository_workspace,
+            read_github_repository_workspace_file,
+            write_github_repository_workspace_file,
             run_github_repository_test,
             get_github_repository_publication_identity,
             commit_github_repository_change,
