@@ -18,6 +18,14 @@ export type ParticipantProfile = {
   nip05: string | null;
 };
 
+export type HiveParticipant = {
+  displayName: string;
+  isAgent: boolean;
+  isCurrentUser: boolean;
+  pubkey: string;
+  role: string;
+};
+
 export function normalizePubkey(pubkey: string): string {
   return pubkey.trim().toLowerCase();
 }
@@ -129,8 +137,8 @@ export function useHiveParticipantDirectory(
     const pubkeys = new Set(
       messages.map(({ pubkey }) => normalizePubkey(pubkey)),
     );
-    for (const [pubkey, role] of Object.entries(roles)) {
-      if (role === "bot") pubkeys.add(pubkey);
+    for (const pubkey of Object.keys(roles)) {
+      pubkeys.add(pubkey);
     }
     if (identity) pubkeys.add(normalizePubkey(identity.pubkey));
     return [...pubkeys].filter(Boolean).sort().join(",");
@@ -181,5 +189,41 @@ export function useHiveParticipantDirectory(
     return bots.length === 1 ? (bots[0] ?? null) : null;
   }, [profiles, roles]);
 
-  return { agentPubkey, profiles };
+  const participants = useMemo<HiveParticipant[]>(() => {
+    const ownPubkey = identity ? normalizePubkey(identity.pubkey) : "";
+    const pubkeys = new Set(Object.keys(roles));
+    if (ownPubkey) pubkeys.add(ownPubkey);
+    for (const message of messages)
+      pubkeys.add(normalizePubkey(message.pubkey));
+    return [...pubkeys]
+      .filter(Boolean)
+      .map((pubkey) => {
+        const isCurrentUser = pubkey === ownPubkey;
+        const isAgent = pubkey === agentPubkey;
+        const fallback = isCurrentUser
+          ? "You"
+          : isAgent
+            ? "BrickO"
+            : `Teammate · ${truncatePubkey(pubkey)}`;
+        return {
+          displayName:
+            profiles[pubkey]?.displayName ??
+            profiles[pubkey]?.nip05 ??
+            fallback,
+          isAgent,
+          isCurrentUser,
+          pubkey,
+          role: isAgent ? "Agent" : (roles[pubkey] ?? "member"),
+        };
+      })
+      .sort((left, right) => {
+        if (left.isAgent !== right.isAgent) return left.isAgent ? -1 : 1;
+        if (left.isCurrentUser !== right.isCurrentUser) {
+          return left.isCurrentUser ? 1 : -1;
+        }
+        return left.displayName.localeCompare(right.displayName);
+      });
+  }, [agentPubkey, identity, messages, profiles, roles]);
+
+  return { agentPubkey, participants, profiles };
 }

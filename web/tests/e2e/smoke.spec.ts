@@ -610,6 +610,7 @@ test("invite download falls back for mobile and non-desktop devices", async ({
 test("Hive shows BrickO realtime activity from relay signals", async ({
   page,
 }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
@@ -928,6 +929,45 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(teammateMessage.getByText("Sanny Gaddafi")).toBeVisible();
   await expect(teammateMessage.getByText("BrickO")).toHaveCount(0);
 
+  const initialComposer = page.getByRole("textbox", { name: "Message BrickO" });
+  await initialComposer.fill("@");
+  const mentionPicker = page.getByRole("listbox", { name: "Mention someone" });
+  await expect(mentionPicker).toBeVisible();
+  await expect(
+    mentionPicker.getByRole("option", { name: /BrickO.*Agent.*Online/ }),
+  ).toBeVisible();
+  await expect(
+    mentionPicker.getByRole("option", {
+      name: /Sanny Gaddafi.*member.*Online/,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-02-mention-picker.png"),
+    fullPage: true,
+  });
+  await initialComposer.press("Enter");
+  await expect(initialComposer).toHaveValue("@BrickO ");
+  await initialComposer.fill("");
+
+  await page.getByRole("button", { name: "New chat" }).click();
+  await expect(page.getByText("Start a group conversation")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-03-new-chat.png"),
+    fullPage: true,
+  });
+  await page.getByTestId("conversation-title-input").fill("Engineering");
+  await page.getByRole("button", { name: "Create chat" }).click();
+  await expect(page).toHaveURL(/conversation=/);
+  await expect(
+    page.getByRole("heading", { name: "Start Engineering" }),
+  ).toBeVisible();
+  await expect(page.getByTestId(/conversation-/)).toContainText("Engineering");
+  await page.screenshot({
+    path: testInfo.outputPath("guide-04-group-chat.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "bricko-lab" }).click();
+
   await page.getByTestId("open-github-repositories").click();
   await expect(
     page.getByRole("heading", {
@@ -943,6 +983,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
   ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-05-repositories.png"),
+    fullPage: true,
+  });
   const repositorySearch = page.getByRole("textbox", {
     name: "Search repositories",
   });
@@ -966,6 +1010,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .getByRole("button", { name: "Start discussion" })
     .click();
   await expect(page.getByText("New repository discussion")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-06-new-repo-discussion.png"),
+    fullPage: true,
+  });
   await page
     .getByTestId("discussion-title-input")
     .fill("Improve Mantul deployment safety");
@@ -977,6 +1025,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByPlaceholder("Message BrickO about mantul-be…"),
   ).toHaveValue(/BrickO-Brick\/mantul-be/);
+  await page.screenshot({
+    path: testInfo.outputPath("guide-07-repo-discussion.png"),
+    fullPage: true,
+  });
 
   await page.evaluate(() => {
     const emit = (
@@ -1081,6 +1133,13 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .getByRole("button", { name: "Reply to your message" })
     .click();
   await expect(page.getByText(/Replying to You:/)).toBeVisible();
+  await page.getByRole("button", { name: "Open threads" }).click();
+  await expect(page.getByRole("heading", { name: "Threads" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-08-reply-thread.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Close threads" }).click();
   await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
   const statusPet = page.getByTestId("bricko-status-pet");
@@ -1253,7 +1312,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   const desktopNavigation = page.getByTestId("desktop-navigation");
-  await expect(desktopNavigation).toHaveCSS("width", "260px");
+  await expect(desktopNavigation).toHaveCSS("width", "352px");
   await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toBeVisible();
@@ -1263,16 +1322,18 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.getByTestId("sidebar-toggle").click();
-  await expect(desktopNavigation).toHaveCSS("width", "72px");
+  await expect(desktopNavigation).toHaveCSS("width", "68px");
   await expect(
     desktopNavigation.getByTestId(
       "discussion-11111111-2222-4333-8444-555555555555",
     ),
-  ).toContainText("mantul-…");
-  await expect(desktopNavigation.getByText("repos")).toBeVisible();
+  ).toHaveCount(0);
   await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
-  ).toHaveCount(0);
+  ).toBeVisible();
+  await expect(
+    desktopNavigation.getByRole("button", { name: "Repositories" }),
+  ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("02-desktop-navigation-collapsed.png"),
     fullPage: true,
@@ -1284,14 +1345,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     "hive.navigation.collapsed.v1",
   );
   await page.reload();
-  await expect(desktopNavigation).toHaveCSS("width", "72px");
+  await expect(desktopNavigation).toHaveCSS("width", "68px");
   await page.screenshot({
     path: testInfo.outputPath("03-tablet-navigation-collapsed.png"),
     fullPage: true,
   });
 
   await page.getByTestId("sidebar-toggle").click();
-  await expect(desktopNavigation).toHaveCSS("width", "260px");
+  await expect(desktopNavigation).toHaveCSS("width", "352px");
   await page.screenshot({
     path: testInfo.outputPath("04-tablet-navigation-expanded.png"),
     fullPage: true,
