@@ -57,3 +57,51 @@ No actionable P0, P1, or P2 findings remain.
 - P3: replace test initials with profile images when participant profile picture URLs are available.
 
 final result: passed
+
+---
+
+# Hive Simple IDE - Design QA
+
+- Source edit visual: `/Users/bricko/Work/Hive/docs/assets/hive-team-guide/10-simple-ide.png`
+- Source review visual: `/Users/bricko/Work/Hive/docs/assets/hive-team-guide/11-review-changes.png`
+- Implementation edit screenshot: `/Users/bricko/Work/Hive/web/test-results/smoke-Hive-shows-BrickO-realtime-activity-from-relay-signals-smoke/guide-10-simple-ide-live.png`
+- Implementation review screenshot: `/Users/bricko/Work/Hive/web/test-results/smoke-Hive-shows-BrickO-realtime-activity-from-relay-signals-smoke/guide-11-review-changes-live.png`
+- Viewport: 1536 x 1024 CSS px at device scale factor 1 for both visual targets and implementation captures.
+- State: signed-in web workspace, repository discussion selected, one tracked TypeScript file edited and saved, review diff opened.
+
+## Comparison evidence
+
+The implementation retains the approved hierarchy: existing Hive rail and repository navigation, discussion title and branch context, visible BrickO readiness banner, three-column edit workspace, change status badges, diff review, safety explanation, and explicit local commit action. It uses the existing Hive/BrickO assets and product tokens rather than introducing a parallel visual system.
+
+The live implementation intentionally omits visual-only controls that have no safe product contract yet (split diff, test-pass claims, push, merge, and deploy). The real workflow makes the available boundary explicit: tracked text files only, save to the isolated worktree, inspect a bounded unified diff, and create a local commit. This is a product-safety improvement over presenting inactive or misleading controls from the concept.
+
+## Comparison history
+
+1. Initial live capture showed an empty change panel and disabled actions because it was captured before editing.
+   - Fix: the final edit-state screenshot is captured after a real edit and save, so the modified badge, changed-file panel, saved state, and enabled review action are visible.
+2. Initial implementation omitted the concept's BrickO guidance strip while Simple IDE was open.
+   - Fix: the final implementation includes the BrickO readiness banner with concise workflow guidance above the editor.
+3. Initial capture used a 1440 x 1024 viewport while the source visuals were 1536 x 1024.
+   - Fix: the final comparison uses 1536 x 1024 for both source and implementation.
+
+## Findings
+
+No actionable P0, P1, or P2 visual findings remain. The implementation is responsive, preserves visible keyboard focus, labels all interactive controls, and keeps long paths and branch names bounded.
+
+## Primary interactions tested
+
+- Open Simple IDE from a real repository discussion.
+- Load the tracked-file tree and open a text file.
+- Edit and save with an expected-content digest.
+- Refresh workspace status and expose the modified-file badge.
+- Open the bounded unified diff and verify additions/deletions.
+- Create a local commit using an expected-HEAD concurrency fence.
+- Return to the discussion without pushing, merging, or deploying.
+
+## Follow-up polish
+
+- P3: add syntax highlighting after selecting a maintained editor dependency and measuring bundle impact.
+- P3: add a safe new-file flow with an explicit repository policy and untracked-file diff coverage.
+- P3: attach test evidence when a repository-scoped execution policy exists.
+
+final result: passed

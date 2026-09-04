@@ -610,13 +610,135 @@ test("invite download falls back for mobile and non-desktop devices", async ({
 test("Hive shows BrickO realtime activity from relay signals", async ({
   page,
 }, testInfo) => {
-  await page.setViewportSize({ width: 1440, height: 1024 });
+  await page.setViewportSize({ width: 1536, height: 1024 });
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(message.text());
   });
 
   const repositoryDiscussions: Array<Record<string, unknown>> = [];
+  const timeoutValue = "${" + "options.timeoutMs}";
+  let workspaceContent = [
+    "export interface TimeoutOptions {",
+    "  timeoutMs: number;",
+    "  errorMessage?: string;",
+    "}",
+    "",
+    "export function withTimeout(options: TimeoutOptions) {",
+    `  return \`Operation timed out after ${timeoutValue}ms\`;`,
+    "}",
+    "",
+  ].join("\n");
+  let workspaceDigest = createHash("sha256")
+    .update(workspaceContent)
+    .digest("hex");
+  let workspaceDirty = false;
+  await page.route(
+    "**/api/onebrick/repository-discussions/*/workspace**",
+    async (route) => {
+      const request = route.request();
+      expect(nip98Pubkey(request.headers().authorization)).toBe(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      );
+      const url = request.url();
+      if (url.endsWith("/file/read")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            path: "src/timeout.ts",
+            content: workspaceContent,
+            digest: workspaceDigest,
+          }),
+        });
+        return;
+      }
+      if (url.endsWith("/file/write")) {
+        const input = request.postDataJSON() as {
+          content: string;
+          expectedDigest: string;
+          path: string;
+        };
+        expect(input.expectedDigest).toBe(workspaceDigest);
+        workspaceContent = input.content;
+        workspaceDigest = createHash("sha256")
+          .update(workspaceContent)
+          .digest("hex");
+        workspaceDirty = true;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            path: input.path,
+            content: workspaceContent,
+            digest: workspaceDigest,
+          }),
+        });
+        return;
+      }
+      if (url.endsWith("/diff")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            currentHeadSha: "ab".repeat(20),
+            diff: workspaceDirty
+              ? [
+                  "diff --git a/src/timeout.ts b/src/timeout.ts",
+                  "--- a/src/timeout.ts",
+                  "+++ b/src/timeout.ts",
+                  "@@ -5,3 +5,3 @@",
+                  " export function withTimeout(options: TimeoutOptions) {",
+                  `-  return \`Operation timed out after ${timeoutValue}ms\`;`,
+                  `+  return \`Timed out safely after ${timeoutValue}ms\`;`,
+                  " }",
+                ].join("\n")
+              : "",
+            additions: workspaceDirty ? 1 : 0,
+            deletions: workspaceDirty ? 1 : 0,
+            changedFiles: workspaceDirty ? 1 : 0,
+          }),
+        });
+        return;
+      }
+      if (url.endsWith("/commit")) {
+        const input = request.postDataJSON() as {
+          expectedHeadSha: string;
+          message: string;
+        };
+        expect(input.expectedHeadSha).toBe("ab".repeat(20));
+        expect(input.message).toContain("deployment safety");
+        workspaceDirty = false;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ...repositoryDiscussions[0],
+            currentHeadSha: "cd".repeat(20),
+            proposalRevision: "cd".repeat(20),
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          discussionId: "11111111-2222-4333-8444-555555555555",
+          currentHeadSha: workspaceDirty ? "ab".repeat(20) : "ab".repeat(20),
+          dirty: workspaceDirty,
+          files: [
+            {
+              path: "src/timeout.ts",
+              status: workspaceDirty ? "M" : null,
+            },
+            { path: "src/retry.ts", status: null },
+            { path: "README.md", status: null },
+          ],
+        }),
+      });
+    },
+  );
   await page.route("**/api/onebrick/repository-discussions", async (route) => {
     expect(nip98Pubkey(route.request().headers().authorization)).toBe(
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -1029,6 +1151,39 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("guide-07-repo-discussion.png"),
     fullPage: true,
   });
+
+  await page.getByRole("button", { name: "Open Simple IDE" }).click();
+  await expect(page.getByTestId("simple-ide")).toBeVisible();
+  const editor = page.getByRole("textbox", { name: "Editing src/timeout.ts" });
+  await expect(editor).toBeVisible();
+  await editor.fill(
+    workspaceContent.replace(
+      "Operation timed out after",
+      "Timed out safely after",
+    ),
+  );
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(
+    page.getByText("Draft saved in the isolated workspace."),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-10-simple-ide-live.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Review changes" }).click();
+  await expect(page.getByText("Review proposed changes")).toBeVisible();
+  await expect(page.getByTestId("simple-ide-diff")).toContainText(
+    "Timed out safely after",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("guide-11-review-changes-live.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Create commit" }).click();
+  await expect(
+    page.getByText(/Commit cdcdcdcdcdcd created locally/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Back to discussion" }).click();
 
   await page.evaluate(() => {
     const emit = (

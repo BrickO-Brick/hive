@@ -1,13 +1,18 @@
-import { Check, Copy, GitBranch } from "lucide-react";
+import { Check, Code2, Copy, GitBranch } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { RepositoryDiscussion } from "@/features/repos/repository-discussions-api";
 
 type Props = {
   discussion: RepositoryDiscussion;
   hasRoot: boolean;
+  onOpenEditor: () => void;
 };
 
-export function HiveWorkspaceSummary({ discussion, hasRoot }: Props) {
+export function HiveWorkspaceSummary({
+  discussion,
+  hasRoot,
+  onOpenEditor,
+}: Props) {
   const [copied, setCopied] = useState("");
 
   useEffect(() => {
@@ -33,8 +38,17 @@ export function HiveWorkspaceSummary({ discussion, hasRoot }: Props) {
 
   return (
     <div className="mb-4 rounded-xl border border-[#BFD4FF] bg-[#EEF5FF] p-3 text-xs text-[#29466F] shadow-sm">
-      <div className="flex items-center gap-2 font-bold text-[#10233F]">
-        <GitBranch size={14} /> Isolated repository workspace
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 font-bold text-[#10233F]">
+          <GitBranch size={14} /> Isolated repository workspace
+        </div>
+        <button
+          type="button"
+          onClick={onOpenEditor}
+          className="flex shrink-0 items-center gap-1.5 rounded-md bg-[#2F6FED] px-2.5 py-1.5 text-[10px] font-bold text-white shadow-sm hover:bg-[#245CC8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2F6FED]"
+        >
+          <Code2 size={12} /> Open Simple IDE
+        </button>
       </div>
       <div className="mt-1.5 font-semibold">
         {discussion.owner}/{discussion.repository}
