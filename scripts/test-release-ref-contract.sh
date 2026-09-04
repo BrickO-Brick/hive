@@ -150,6 +150,9 @@ grep -Fq 'git show "$candidate_parents:scripts/desktop_release.py"' "$verify_mer
 grep -Fq 'git show "$candidate_parents:scripts/required-check-succeeded.jq"' "$verify_merge"
 grep -Fq 'DESKTOP_RELEASE_ROOT="$PWD" python3 "$verifier_dir/desktop_release.py"' "$verify_merge"
 grep -Fq -- '-f "$verifier_dir/required-check-succeeded.jq"' "$verify_merge"
+grep -Fq '[[ "$GITHUB_REPOSITORY" == "BrickO-Brick/hive" ]]' "$verify_merge"
+grep -Fq 'length == 0' "$verify_merge"
+grep -Fq 'Signed-off-by: $author_identity' "$verify_merge"
 
 release_workflow="$repo_root/.github/workflows/release.yml"
 [[ "$(grep -c 'contents: write' "$release_workflow")" -eq 1 ]] || {

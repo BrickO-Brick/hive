@@ -25,7 +25,6 @@ required_checks=(
   "Desktop E2E Relay:15368"
   "Relay E2E:15368"
   "Desktop Build (macOS):15368"
-  "DCO Check:1455659"
   "Desktop Release Candidate:15368"
 )
 
@@ -82,5 +81,27 @@ for entry in "${required_checks[@]}"; do
     exit 1
   }
 done
+
+# The canonical repository uses the DCO GitHub App. Hive does not install that
+# third-party App, so accept its candidate only when no DCO check exists at all
+# and the commit's exact author identity signed the commit message. A present
+# but unsuccessful or untrusted DCO check must still fail closed.
+if jq -e --arg name "DCO Check" --argjson integration_id 1455659 \
+  --arg merged_at "$MERGED_AT" \
+  -f "$verifier_dir/required-check-succeeded.jq" <<<"$checks" >/dev/null; then
+  :
+elif [[ "$GITHUB_REPOSITORY" == "BrickO-Brick/hive" ]] &&
+  jq -e '[.[] | .check_runs[]? | select(.name == "DCO Check")] | length == 0' \
+    <<<"$checks" >/dev/null; then
+  author_identity="$(git show -s --format='%an <%ae>' "$PR_HEAD_SHA")"
+  git show -s --format=%B "$PR_HEAD_SHA" |
+    grep -Fqx "Signed-off-by: $author_identity" || {
+      echo "Hive desktop candidate is missing the exact author sign-off" >&2
+      exit 1
+    }
+else
+  echo "trusted required check was not successful at merge: DCO Check" >&2
+  exit 1
+fi
 
 echo "verified immutable desktop candidate $PR_HEAD_SHA authorized by merged PR $PR_NUMBER"
