@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.24
+
+### Desktop and shared changes
+
+- test: stabilize empty edit confirmation flow ([#39](https://github.com/BrickO-Brick/hive/pull/39)) ([`5726ae765f8f0e40e13ccb4c433ebe08b3721738`](https://github.com/BrickO-Brick/hive/commit/5726ae765f8f0e40e13ccb4c433ebe08b3721738))
+- chore(release): release Buzz Desktop version 0.5.23 ([#36](https://github.com/BrickO-Brick/hive/pull/36)) ([`e067391402c74dfe5778d1113fb498d7b53ef5d3`](https://github.com/BrickO-Brick/hive/commit/e067391402c74dfe5778d1113fb498d7b53ef5d3))
+- Add an in-app proposal file editor ([#32](https://github.com/BrickO-Brick/hive/pull/32)) ([`7692efefa5a6149360c02fbd07b56deb82b8df74`](https://github.com/BrickO-Brick/hive/commit/7692efefa5a6149360c02fbd07b56deb82b8df74))
+
+### Other repository changes
+
+- fix(release): verify Hive candidate sign-off locally ([#37](https://github.com/BrickO-Brick/hive/pull/37)) ([`0713da5f24aff820c3bcd4c2921d6362e4f07f84`](https://github.com/BrickO-Brick/hive/commit/0713da5f24aff820c3bcd4c2921d6362e4f07f84))
+- fix Hive discussion experience and SSO return ([`cf612d72bfaf3b3aa3da91f39c63e21350b32d00`](https://github.com/BrickO-Brick/hive/commit/cf612d72bfaf3b3aa3da91f39c63e21350b32d00))
+- fix(release): target the checked-out repository ([#34](https://github.com/BrickO-Brick/hive/pull/34)) ([`b48a947ed6ea1b42d643df24b66896b7cd774201`](https://github.com/BrickO-Brick/hive/commit/b48a947ed6ea1b42d643df24b66896b7cd774201))
+- fix(release): migrate Hive desktop release ledger ([#33](https://github.com/BrickO-Brick/hive/pull/33)) ([`a559c258017d06e2fd3d2e7e494580ab69b9f785`](https://github.com/BrickO-Brick/hive/commit/a559c258017d06e2fd3d2e7e494580ab69b9f785))
+- fix(web): serve Hive logo assets ([#31](https://github.com/BrickO-Brick/hive/pull/31)) ([`83ab78300c5317f078724626a2e812eff2a79418`](https://github.com/BrickO-Brick/hive/commit/83ab78300c5317f078724626a2e812eff2a79418))
+- fix(web): include direct replies in discussions ([#30](https://github.com/BrickO-Brick/hive/pull/30)) ([`8f78269b0a4e1357ce2d4d2a9eec18029e0c935d`](https://github.com/BrickO-Brick/hive/commit/8f78269b0a4e1357ce2d4d2a9eec18029e0c935d))
+- fix(web): show every repository discussion reply ([#29](https://github.com/BrickO-Brick/hive/pull/29)) ([`3e4ac3faae82994242e80164cdfe2462d5410753`](https://github.com/BrickO-Brick/hive/commit/3e4ac3faae82994242e80164cdfe2462d5410753))
+- fix(brand): unify Hive logos with app icon ([#28](https://github.com/BrickO-Brick/hive/pull/28)) ([`3f0c38277de5c8ffd6ca2d469b530e37358ec3d8`](https://github.com/BrickO-Brick/hive/commit/3f0c38277de5c8ffd6ca2d469b530e37358ec3d8))
+- fix(hive): select full-access Codex agent mode ([#27](https://github.com/BrickO-Brick/hive/pull/27)) ([`c52dad048294984165ea3cf1d6f87ec63c49e02f`](https://github.com/BrickO-Brick/hive/commit/c52dad048294984165ea3cf1d6f87ec63c49e02f))
+- fix(hive): make BrickO replies reliable ([#26](https://github.com/BrickO-Brick/hive/pull/26)) ([`6ed83ae183abe36d6c4889494266b148dfd1382c`](https://github.com/BrickO-Brick/hive/commit/6ed83ae183abe36d6c4889494266b148dfd1382c))
+- fix(hive): redirect downloads alias in relay ([`2a6adc6567e63eea0cf95f4c1ec363de47f826be`](https://github.com/BrickO-Brick/hive/commit/2a6adc6567e63eea0cf95f4c1ec363de47f826be))
+- fix(ci): parameterize push gateway registry ([#24](https://github.com/BrickO-Brick/hive/pull/24)) ([`f58019f0cc0c0fde2900385732d06b144d45d7c4`](https://github.com/BrickO-Brick/hive/commit/f58019f0cc0c0fde2900385732d06b144d45d7c4))
+
+[Compare desktop-v0.5.22...desktop-v0.5.24](https://github.com/BrickO-Brick/hive/compare/desktop-v0.5.22...desktop-v0.5.24)
+
 ## v0.5.23
 
 ### Desktop and shared changes
