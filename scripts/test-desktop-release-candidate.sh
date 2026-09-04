@@ -205,6 +205,64 @@ chmod +x "$mock_bin/gh"
 jq -e --arg merge "$production_tag" '.previous_tag == "desktop-v1.0.0" and .previous_merge_sha == $merge' "$migration/.release/desktop-candidate.json" >/dev/null
 rm -rf "$migration"
 
+# Early Hive releases were version-bump feature PRs tagged at their squash
+# commits while still carrying older upstream candidate metadata.  Accept that
+# history only when the tag's manifests, changelog, and unique merged PR all
+# bind to the same release commit, then use that commit as the next boundary.
+legacy=$(mktemp -d)
+git clone -q "$tmp" "$legacy"
+git -C "$legacy" config user.name test
+git -C "$legacy" config user.email test@example.com
+git -C "$legacy" checkout -q "$prior_base"
+GIT_EDITOR=true git -C "$legacy" cherry-pick "$prior_candidate" >/dev/null
+python3 - "$legacy" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+for relative in ("desktop/package.json", "desktop/src-tauri/tauri.conf.json"):
+    path = root / relative
+    data = json.loads(path.read_text())
+    data["version"] = "1.0.1"
+    path.write_text(json.dumps(data, indent=2) + "\n")
+cargo = root / "desktop/src-tauri/Cargo.toml"
+cargo.write_text(re.sub(r'(?m)^version = "[^"]+"', 'version = "1.0.1"', cargo.read_text(), count=1))
+changelog = root / "CHANGELOG.md"
+changelog.write_text(changelog.read_text().replace("# Changelog\n", "# Changelog\n\n## v1.0.1\n\n- Legacy Hive release.\n", 1))
+PY
+git -C "$legacy" add desktop CHANGELOG.md
+git -C "$legacy" commit -qm 'chore: publish legacy Hive desktop release'
+legacy_release=$(git -C "$legacy" rev-parse HEAD)
+git -C "$legacy" -c tag.gpgSign=false tag desktop-v1.0.1 "$legacy_release"
+echo after-legacy >> "$legacy/desktop/feature"
+git -C "$legacy" add desktop/feature
+git -C "$legacy" commit -qm 'fix: change after legacy release'
+legacy_base=$(git -C "$legacy" rev-parse HEAD)
+cat > "$mock_bin/gh" <<GH
+#!/usr/bin/env bash
+[[ "\$1" == api && "\$2" == "repos/block/buzz/commits/$legacy_release/pulls" ]] || exit 90
+printf '%s\n' '[{"merged_at":"2026-01-02T00:00:00Z","merge_commit_sha":"$legacy_release","head":{"sha":"feedface"}}]'
+GH
+chmod +x "$mock_bin/gh"
+(cd "$legacy" && PATH="$mock_bin:$PATH" scripts/desktop_release.py generate 1.0.2 --base "$legacy_base" --repo block/buzz)
+jq -e --arg tag desktop-v1.0.1 --arg base "$legacy_release" --arg merge "$legacy_release" \
+  '.previous_tag == $tag and .previous_base_sha == $base and .previous_merge_sha == $merge' \
+  "$legacy/.release/desktop-candidate.json" >/dev/null
+
+# A mismatched legacy manifest must fail closed even when GitHub would claim a
+# matching merged PR.
+sed -i.bak 's/"version": "1.0.1"/"version": "9.9.9"/' "$legacy/desktop/package.json"
+git -C "$legacy" add desktop/package.json
+git -C "$legacy" commit -qm 'break: mismatch legacy manifest'
+bad_legacy=$(git -C "$legacy" rev-parse HEAD)
+git -C "$legacy" -c tag.gpgSign=false tag desktop-v1.0.3 "$bad_legacy"
+if (cd "$legacy" && PATH="$mock_bin:$PATH" scripts/desktop_release.py generate 1.0.4 --base "$bad_legacy" --repo block/buzz) >/dev/null 2>&1; then
+  echo "generator accepted mismatched legacy release manifests" >&2; exit 1
+fi
+rm -rf "$legacy"
+
 # An initial release still accounts for the root commit without calling GitHub.
 initial=$(mktemp -d)
 cp "$repo_root/scripts/desktop_release.py" "$initial/desktop_release.py"

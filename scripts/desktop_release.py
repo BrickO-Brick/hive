@@ -84,6 +84,60 @@ def stable_tags() -> list[tuple[tuple[int, int, int], str, str]]:
     return tags
 
 
+def legacy_squash_release(
+    *, repo: str, tag: str, version: str, release_sha: str
+) -> dict[str, str]:
+    """Validate a pre-ledger Hive release tagged at its squash commit.
+
+    Early Hive desktop releases updated the version directly in a feature PR,
+    then placed the public tag at that PR's squash commit.  Those commits still
+    contain the inherited upstream candidate metadata, so the normal immutable
+    candidate ledger cannot describe them.  Accept that history only when the
+    tag's own manifests, changelog, and unique merged PR all bind to the same
+    version and commit.  The release commit itself becomes the next ledger
+    boundary; no existing tag is moved or reinterpreted as a side-history
+    candidate.
+    """
+    manifest_values: list[str] = []
+    try:
+        manifest_values.extend([
+            json.loads(git("show", f"{tag}:desktop/package.json"))["version"],
+            json.loads(git("show", f"{tag}:desktop/src-tauri/tauri.conf.json"))["version"],
+        ])
+        cargo_text = git("show", f"{tag}:desktop/src-tauri/Cargo.toml")
+        cargo_version = re.search(r'(?m)^version = "([^"]+)"', cargo_text)
+        manifest_values.append(cargo_version.group(1) if cargo_version else "")
+        changelog = git("show", f"{tag}:CHANGELOG.md")
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
+        raise SystemExit(
+            f"prior release {tag} has mismatched metadata and invalid legacy release evidence"
+        ) from error
+    if manifest_values != [version, version, version]:
+        raise SystemExit(
+            f"prior release {tag} metadata does not match its tag or version manifests"
+        )
+    if not re.search(rf"(?m)^## v{re.escape(version)}$", changelog):
+        raise SystemExit(
+            f"prior release {tag} metadata does not match its tag or changelog"
+        )
+    pulls = gh_json(f"repos/{repo}/commits/{release_sha}/pulls")
+    matches = [
+        pr
+        for pr in pulls
+        if pr.get("merged_at") and pr.get("merge_commit_sha") == release_sha
+    ]
+    if len(matches) != 1:
+        raise SystemExit(
+            f"prior release {tag} does not identify exactly one merged legacy release PR"
+        )
+    return {
+        "tag": tag,
+        "candidate_sha": release_sha,
+        "base_sha": release_sha,
+        "merge_sha": release_sha,
+    }
+
+
 def previous_release(
     version: str, repo: str, *, allow_target_sha: str | None = None
 ) -> dict[str, str] | None:
@@ -127,7 +181,12 @@ def previous_release(
         "tag": tag,
     }
     if any(metadata.get(key) != value for key, value in expected.items()):
-        raise SystemExit(f"prior release {tag} metadata does not match its tag")
+        return legacy_squash_release(
+            repo=repo,
+            tag=tag,
+            version=expected["version"],
+            release_sha=candidate_sha,
+        )
     base_sha = metadata.get("base_sha")
     if not isinstance(base_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
         raise SystemExit(f"prior release {tag} has invalid base_sha")
