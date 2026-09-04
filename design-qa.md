@@ -1,48 +1,59 @@
-# Hive Navigation Design QA
+# Hive Web Navigation Redesign - Design QA
 
-## Scope
+- Source visual truth: `/Users/bricko/.codex/generated_images/01a06be4-2455-7481-b463-47ea1a9772b6/exec-caaabc39-0c1e-4e45-8ad3-2e94b6ce8f57.png`
+- Implementation screenshot: `/Users/bricko/Work/Hive/docs/assets/hive-team-guide/01-navigation.png`
+- Focused mention screenshot: `/Users/bricko/Work/Hive/docs/assets/hive-team-guide/02-mention-picker.png`
+- Focused thread screenshot: `/Users/bricko/Work/Hive/docs/assets/hive-team-guide/08-reply-thread.png`
+- Viewport: 1440 x 1024 CSS px at device scale factor 1.
+- Source pixels: 1487 x 1058. Implementation pixels: 1440 x 1024. The source was assessed proportionally against the matching 1.406 desktop aspect ratio; no density-only findings were filed.
+- State: signed-in web workspace, repository discussion selected, populated timeline; focused captures cover mention picker and thread drawer.
 
-- Target: match the Mantap navigation shell in Hive, including the Brick logo, expanded/collapsed navigation, responsive behavior, and visibility of secondary elements.
-- Reference: `/Users/bricko/Work/mantul/sidebar-final-20260705/all-sites/mantap-northstar-top-left.png` plus the Mantap navigation implementation in `/Users/bricko/Work/mantul/mantul-fe`.
-- Implementation: `web/src/features/chat/ui/HiveChatPage.tsx` and `web/src/assets/brick-logo.svg`.
+## Full-view comparison evidence
 
-## Viewports and states
+The implementation preserves the selected concept's narrow application rail, visible Hive mark, secondary navigation panel, global search, repository hierarchy, active discussion styling, participant stack, Threads control, spacious message timeline, and fixed composer. The live product retains its existing workspace summary and agent activity banner because they communicate real repository isolation and processing state.
 
-| Viewport | Density | State | Evidence |
-| --- | --- | --- | --- |
-| 1280×720 | 1× | desktop expanded | `01-desktop-navigation-expanded.png` |
-| 1280×720 | 1× | desktop collapsed | `02-desktop-navigation-collapsed.png` |
-| 820×1024 | 1× | tablet collapsed default | `03-tablet-navigation-collapsed.png` |
-| 820×1024 | 1× | tablet expanded | `04-tablet-navigation-expanded.png` |
-| 390×844 | 1× | mobile drawer closed | `05-mobile-navigation-closed.png` |
-| 390×844 | 1× | mobile drawer open | `06-mobile-navigation-open.png` |
+## Focused comparison evidence
 
-The implementation screenshots are under `web/test-results/smoke-Hive-shows-BrickO-realtime-activity-from-relay-signals-smoke/`. The combined responsive state sheet is `.codex/visualizations/2026/09/02/hive-navigation/responsive-navigation-states.png`.
+Focused comparison was required because the mention picker and thread drawer are too small to judge from the full view. The mention capture verifies BrickO appears first with a real agent asset, Agent label, online state, keyboard selection, and additional current channel members. The thread capture verifies the header affordance opens a persistent reply panel and that its actions return focus to the composer reply flow.
 
-## Comparison evidence
+## Required fidelity surfaces
 
-- Full-state comparison: all six responsive states were reviewed together in `responsive-navigation-states.png`.
-- Focused comparison: the Mantap reference and the Hive desktop-expanded navigation crop were reviewed side by side in `.codex/visualizations/2026/09/02/hive-navigation/mantap-vs-hive-navigation.png`.
-- Interaction coverage: desktop and tablet expansion/collapse, persisted preference, mobile open/close drawer, backdrop, and Escape dismissal.
+- Fonts and typography: Inter remains the product font. Navigation labels, metadata, headings, and composer text use compact weights and line heights consistent with the source. Long discussion and branch labels truncate or wrap inside their allocated regions.
+- Spacing and layout rhythm: the 68 px rail and 284 px navigation panel preserve the source hierarchy while leaving more room for repository context. Borders, 8-12 px radii, compact rows, and restrained shadows are consistent across navigation, dialogs, picker, and thread drawer.
+- Colors and visual tokens: warm white, navy, coral, selection blue, pale gray-blue surfaces, semantic green, and existing error/amber tones match the selected direction and current Hive system.
+- Image quality and asset fidelity: the supplied `hive-icon.png` and existing BrickO sprite assets are used directly. No logo, avatar, or non-standard visual asset was replaced by CSS art, text glyphs, or a placeholder.
+- Copy and content: Chats are explicitly independent from repositories; repositories contain discussions; messages expose Reply in this thread; New chat is always visible; mention guidance names keyboard controls.
 
-## Fidelity review
+## Comparison history
 
-- Fonts and typography: Hive keeps its existing system typography while matching Mantap's uppercase section labels, compact hierarchy, weights, and navigation density. No clipped or cramped navigation copy was observed.
-- Spacing and layout: expanded and collapsed widths match Mantap's 200px and 52px shell. Header heights match the 72px and 60px states. The logo, toggle, active item, agent card, and footer retain stable alignment across all tested widths.
-- Viewport resilience: desktop, tablet, and mobile screenshots show no overlap, clipping, horizontal overflow, or unusable controls. Tablet defaults to the compact rail; mobile uses a 280px drawer and dimmed backdrop.
-- Colors and tokens: the active navigation state uses Mantap's blue foreground, pale-blue fill, blue border, and left accent. Borders, muted text, online green, and white surfaces remain consistent with the source.
-- Image quality and assets: Hive uses the exact Mantap Brick logo SVG copied from the source repository. It stays sharp at desktop, tablet, and mobile sizes; no placeholder or custom-drawn brand asset is used.
-- Copy and content: navigation wording is specific to Hive (`Percakapan`, `Agent activity`, `BrickO`) while keeping Mantap's information hierarchy. Expanded-only status detail is intentionally hidden in compact mode.
-- Icons: Lucide icons use a consistent stroke family, optical size, and alignment. Expanded/collapsed controls have explicit labels and state-appropriate icons.
-- States and interactions: expanded/collapsed navigation and mobile drawer controls are functional and covered by smoke tests. The mobile backdrop and Escape key provide additional dismissal paths.
-- Accessibility: controls are semantic buttons with accessible labels, focus rings, and practical tap targets. Decorative icons are hidden from assistive technology; the Brick logo has meaningful alt text.
+1. Initial comparison found a P2 viewport mismatch (1280 x 720 implementation versus the desktop concept) and a P2 hierarchy gap because participant presence and a dedicated Threads affordance were absent from the header.
+   - Fixes: E2E capture was normalized to 1440 x 1024; participant stack, Threads count/control, and responsive thread drawer were added.
+   - Post-fix evidence: `01-navigation.png` and `08-reply-thread.png`.
+2. The first thread-drawer capture found a P2 header compression issue at 1440 px because identity email consumed the remaining conversation title width.
+   - Fix: full identity email is now reserved for 2XL widths; avatar and core actions remain available at 1440 px.
+   - Post-fix evidence: final `08-reply-thread.png` generated by the passing E2E run.
 
-## Findings and iteration history
+## Findings
 
-Pass 1 found no P0, P1, or P2 visual or interaction defects in the local build. The reference screenshot is dimmed by Mantap's PIN overlay, so exact source tokens and dimensions were also verified from the Mantap implementation rather than inferred from the overlay.
+No actionable P0, P1, or P2 findings remain.
 
-Pass 2 checked the first production rollout and found that the relay's static-file allowlist did not serve a root-level `/logo.svg`. The logo was moved into the Vite asset graph so it is emitted as a hashed `/assets/*` file, which the production relay serves. The complete build and six-state smoke screenshot pass then succeeded again.
+## Open questions
 
-## Final result
+- Unread counts and richer per-chat notification preferences are intentionally deferred; the current relay events do not expose a durable read-state model for those controls.
 
-passed
+## Primary interactions tested
+
+- Open and close desktop, tablet, and mobile navigation.
+- Search and browse repositories.
+- Create a repository discussion and restore its URL-bound context.
+- Create a repository-independent group chat.
+- Open `@` mention autocomplete, find BrickO and a teammate, and insert the keyboard-selected mention.
+- Start a reply, open and close the Threads drawer, and restore a failed request.
+- Verify no unexpected browser console errors in the E2E scenario.
+
+## Follow-up polish
+
+- P3: add unread/read-state counters when a server-backed read marker contract exists.
+- P3: replace test initials with profile images when participant profile picture URLs are available.
+
+final result: passed
