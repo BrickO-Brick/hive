@@ -142,6 +142,25 @@ test("GitHub source changes require exact-tree tests and user approval", async (
     dialog.getByTestId("github-proposal-test-scenario").getByText("passed"),
   ).toBeVisible();
   await expect(approve).toBeEnabled();
+
+  const fileContent = dialog.getByTestId("github-proposal-file-content");
+  await expect(fileContent).toContainText(
+    "remotePublicationAuthorized = false",
+  );
+  await fileContent.fill(
+    "export const actor = 'user';\nexport const remotePublicationAuthorized = false;\nexport const reviewedByUser = true;\n",
+  );
+  await expect(approve).toBeDisabled();
+  await dialog.getByTestId("github-proposal-save-file").click();
+  await expect(dialog.getByTestId("github-proposal-diff")).toContainText(
+    "reviewedByUser",
+  );
+  await expect(approve).toBeDisabled();
+  await dialog.getByTestId("github-proposal-run-test").click();
+  await expect(
+    dialog.getByTestId("github-proposal-test-scenario").getByText("passed"),
+  ).toBeVisible();
+  await expect(approve).toBeEnabled();
   await approve.click();
   await expect(approve).toContainText("Approved");
   const publicationGate = dialog.getByTestId("github-publication-gate");

@@ -33,6 +33,12 @@ type RawGitHubRepositoryTestResult = {
   tree_changed: boolean;
 };
 
+type RawGitHubRepositoryWorkspaceFile = {
+  path: string;
+  content: string;
+  result_tree: string;
+};
+
 type RawGitHubRepositoryPublicationIdentity = {
   git_name: string | null;
   git_email: string | null;
@@ -88,6 +94,12 @@ export type GitHubRepositoryTestResult = {
   testedTree: string;
   finishedTree: string;
   treeChanged: boolean;
+};
+
+export type GitHubRepositoryWorkspaceFile = {
+  path: string;
+  content: string;
+  resultTree: string;
 };
 
 export type GitHubRepositoryPublicationIdentity = {
@@ -173,6 +185,56 @@ export async function prepareGitHubRepositoryWorkspace(input: {
       reposDir: input.reposDir ?? null,
       workspaceId: input.workspaceId,
       baseRef: input.baseRef,
+    },
+  );
+  return fromRawWorkspace(workspace);
+}
+
+export async function readGitHubRepositoryWorkspaceFile(input: {
+  owner: string;
+  name: string;
+  reposDir?: string | null;
+  workspaceId: string;
+  path: string;
+  expectedResultTree: string;
+}): Promise<GitHubRepositoryWorkspaceFile> {
+  const result = await invokeTauri<RawGitHubRepositoryWorkspaceFile>(
+    "read_github_repository_workspace_file",
+    {
+      owner: input.owner,
+      name: input.name,
+      reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
+      path: input.path,
+      expectedResultTree: input.expectedResultTree,
+    },
+  );
+  return {
+    path: result.path,
+    content: result.content,
+    resultTree: result.result_tree,
+  };
+}
+
+export async function writeGitHubRepositoryWorkspaceFile(input: {
+  owner: string;
+  name: string;
+  reposDir?: string | null;
+  workspaceId: string;
+  path: string;
+  content: string;
+  expectedResultTree: string;
+}): Promise<GitHubRepositoryWorkspace> {
+  const workspace = await invokeTauri<RawGitHubRepositoryWorkspace>(
+    "write_github_repository_workspace_file",
+    {
+      owner: input.owner,
+      name: input.name,
+      reposDir: input.reposDir ?? null,
+      workspaceId: input.workspaceId,
+      path: input.path,
+      content: input.content,
+      expectedResultTree: input.expectedResultTree,
     },
   );
   return fromRawWorkspace(workspace);

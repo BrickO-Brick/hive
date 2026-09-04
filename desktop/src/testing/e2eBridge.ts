@@ -4075,6 +4075,9 @@ const mockFeedOverrides: RawHomeFeedResponse["feed"] = {
 };
 
 let installed = false;
+let mockProposalFileContent =
+  "export const actor = 'user';\nexport const remotePublicationAuthorized = false;\n";
+let mockProposalResultTree = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 let nextSocketId = 1;
 
 function syncMockRelayAgentsFromManagedAgents() {
@@ -11091,6 +11094,9 @@ export function maybeInstallE2eTauriMocks() {
   deferredLinkPreviewMetadataQueue = [];
   deferredLinkPreviewUploadQueue = [];
   deferredThreadRepliesQueue = [];
+  mockProposalFileContent =
+    "export const actor = 'user';\nexport const remotePublicationAuthorized = false;\n";
+  mockProposalResultTree = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   cancelledMediaUploadIds = new Set<string>();
   window.__BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__ = 0;
   window.__BUZZ_E2E_RELEASE_LINK_PREVIEW_METADATA__ = () => {
@@ -12721,7 +12727,7 @@ export function maybeInstallE2eTauriMocks() {
           branch: `hive/${workspaceId}`,
           base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           base_tree: "cccccccccccccccccccccccccccccccccccccccc",
-          result_tree: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          result_tree: mockProposalResultTree,
           dirty: true,
           additions: 12,
           deletions: 3,
@@ -12732,6 +12738,45 @@ export function maybeInstallE2eTauriMocks() {
               deletions: 3,
               patch:
                 "@@ -1,4 +1,5 @@\n-export const actor = 'agent';\n+export const actor = 'user';\n+export const remotePublicationAuthorized = false;",
+              truncated: false,
+            },
+          ],
+        };
+      }
+      case "read_github_repository_workspace_file": {
+        const input = payload as {
+          path: string;
+          expectedResultTree: string;
+        };
+        return {
+          path: input.path,
+          content: mockProposalFileContent,
+          result_tree: input.expectedResultTree,
+        };
+      }
+      case "write_github_repository_workspace_file": {
+        const input = payload as { content: string; workspaceId?: string };
+        const workspaceId = input.workspaceId ?? "legacy";
+        mockProposalFileContent = input.content;
+        mockProposalResultTree = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        return {
+          owner: "BrickO-Brick",
+          name: "hive",
+          path: `/tmp/buzz/REPOS/.hive-workspaces/worktrees/BrickO-Brick--hive/${workspaceId}`,
+          branch: `hive/${workspaceId}`,
+          base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          base_tree: "cccccccccccccccccccccccccccccccccccccccc",
+          result_tree: mockProposalResultTree,
+          dirty: true,
+          additions: 13,
+          deletions: 3,
+          files: [
+            {
+              path: "desktop/src/features/projects/publisher.ts",
+              additions: 13,
+              deletions: 3,
+              patch:
+                "@@ -1,4 +1,6 @@\n-export const actor = 'agent';\n+export const actor = 'user';\n+export const remotePublicationAuthorized = false;\n+export const reviewedByUser = true;",
               truncated: false,
             },
           ],
