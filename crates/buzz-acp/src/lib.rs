@@ -4426,6 +4426,37 @@ fn is_auth_error(error: &acp::AcpError) -> bool {
     message.contains("Re-authenticate") || message.contains("API Error: 401")
 }
 
+/// Convert terminal agent outcomes into actionable, provider-neutral copy.
+/// Raw RPC codes and provider messages stay in logs, never in the channel.
+fn terminal_failure_notice(
+    outcome: &PromptOutcome,
+    max_turn_duration_secs: u64,
+    retries_exhausted: bool,
+) -> String {
+    let retry_context = if retries_exhausted {
+        " after the retry limit"
+    } else {
+        ""
+    };
+    let reason = match outcome {
+        PromptOutcome::Timeout(TimeoutKind::Hard { .. }) => {
+            format!(" before the {max_turn_duration_secs}s time limit")
+        }
+        PromptOutcome::Timeout(TimeoutKind::Idle) => {
+            " because the response stopped making progress".to_string()
+        }
+        PromptOutcome::AgentExited => " because the agent became unavailable".to_string(),
+        PromptOutcome::ProjectContextIndeterminate(_) => {
+            " because the repository workspace could not be verified".to_string()
+        }
+        PromptOutcome::Error(_) => " because of a temporary internal failure".to_string(),
+        _ => "".to_string(),
+    };
+    format!(
+        "⚠️ BrickO could not complete this request{retry_context}{reason}. Your original request remains visible above. Use ‘Restore failed request’ to review it before sending again."
+    )
+}
+
 /// Spawn a task that posts a user-visible failure notice to the relay.
 ///
 /// Shared by the hard-cap immediate dead-letter path and the retries-exhausted
@@ -4541,10 +4572,8 @@ fn handle_prompt_result(
                     "dead-lettering batch after hard-cap timeout (no recent activity) — discarding {} events",
                     batch.events.len(),
                 );
-                let content = format!(
-                    "⚠️ I couldn't process the last request (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
-                    config.max_turn_duration_secs
-                );
+                let content =
+                    terminal_failure_notice(&result.outcome, config.max_turn_duration_secs, false);
                 spawn_failure_notice(rest_client, &batch, content);
                 hard_timeout_fate_suffix = Some(" — dead-lettered (no recent activity)");
             } else if matches!(
@@ -4559,9 +4588,10 @@ fn handle_prompt_result(
                     "hard-cap timeout with recent activity — requeueing for retry"
                 );
                 if let Some(dead) = queue.requeue(batch) {
-                    let content = format!(
-                        "⚠️ I couldn't process the last request after multiple retries (the turn exceeded the maximum duration ({}s)). Please re-send if it's still needed.",
-                        config.max_turn_duration_secs
+                    let content = terminal_failure_notice(
+                        &result.outcome,
+                        config.max_turn_duration_secs,
+                        true,
                     );
                     spawn_failure_notice(rest_client, &dead, content);
                     hard_timeout_fate_suffix = Some(" — dead-lettered (retry budget exhausted)");
@@ -4578,25 +4608,12 @@ fn handle_prompt_result(
                     events = batch.events.len(),
                     "dead-lettering batch immediately — non-retryable auth error"
                 );
-                let content = "⚠️ I couldn't process the last request: authentication failed. \
-                    Please re-authenticate the CLI (e.g. run `claude /login` or `codex login`) \
-                    and then re-send."
+                let content = "⚠️ BrickO cannot start this request because its workspace session needs attention. An operator must reconnect BrickO before the request can run. Your original message remains safely stored in this channel."
                     .to_string();
                 spawn_failure_notice(rest_client, &batch, content);
             } else if let Some(dead) = queue.requeue(batch) {
-                let reason = match &result.outcome {
-                    PromptOutcome::Timeout(TimeoutKind::Idle) => "the turn timed out".to_string(),
-                    PromptOutcome::Timeout(TimeoutKind::Hard { .. }) => {
-                        "the turn exceeded the maximum duration".to_string()
-                    }
-                    PromptOutcome::AgentExited => "the agent process exited".to_string(),
-                    PromptOutcome::Error(e) => format!("{e}"),
-                    PromptOutcome::ProjectContextIndeterminate(reason) => reason.clone(),
-                    _ => "repeated failures".to_string(),
-                };
-                let content = format!(
-                    "⚠️ I couldn't process the last request after multiple retries ({reason}). Please re-send if it's still needed."
-                );
+                let content =
+                    terminal_failure_notice(&result.outcome, config.max_turn_duration_secs, true);
                 spawn_failure_notice(rest_client, &dead, content);
             }
         } else {
@@ -10590,6 +10607,21 @@ mod error_outcome_emission_tests {
             !is_auth_error(&timeout),
             "WriteTimeout must not be classified as auth error"
         );
+    }
+
+    #[test]
+    fn terminal_failure_notice_hides_provider_details_and_preserves_recovery() {
+        let outcome = PromptOutcome::Error(acp::AcpError::AgentError {
+            code: -32603,
+            message: "Internal error: secret provider diagnostic".to_string(),
+        });
+
+        let notice = terminal_failure_notice(&outcome, 900, true);
+
+        assert!(notice.contains("temporary internal failure"));
+        assert!(notice.contains("Restore failed request"));
+        assert!(!notice.contains("-32603"));
+        assert!(!notice.contains("secret provider diagnostic"));
     }
 
     // ── auth error dead-letter behavior ────────────────────────────────────

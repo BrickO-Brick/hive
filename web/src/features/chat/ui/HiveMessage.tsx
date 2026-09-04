@@ -1,4 +1,4 @@
-import { CheckCircle2, Reply } from "lucide-react";
+import { CheckCircle2, RotateCcw, Reply } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { NostrEvent } from "@/shared/lib/nostr-client";
@@ -12,6 +12,7 @@ type Props = {
   message: NostrEvent;
   mine: boolean;
   onReply?: () => void;
+  onRestoreRequest?: () => void;
   showDay: boolean;
 };
 
@@ -29,6 +30,7 @@ export function HiveMessage({
   message,
   mine,
   onReply,
+  onRestoreRequest,
   showDay,
 }: Props) {
   return (
@@ -44,25 +46,27 @@ export function HiveMessage({
       )}
       <article
         aria-label={`Message from ${authorLabel}`}
-        className={`mb-5 flex items-end gap-2.5 ${mine ? "justify-end" : "justify-start"}`}
+        className="mb-4 flex items-end gap-2.5"
       >
-        {!mine &&
-          (fromBrickO ? (
-            <BrickOPet mode="still" size="sm" />
-          ) : (
-            <div
-              aria-hidden="true"
-              className="grid size-8 shrink-0 place-items-center rounded-full bg-[#DDE7F5] text-[10px] font-extrabold text-[#27476F]"
-            >
-              {participantInitials(authorLabel)}
-            </div>
-          ))}
-        <div
-          className={`max-w-[86%] sm:max-w-[78%] ${mine ? "items-end" : "items-start"}`}
-        >
+        {fromBrickO ? (
+          <BrickOPet mode="still" size="sm" />
+        ) : mine ? (
           <div
-            className={`mb-1.5 flex items-center gap-2 px-1 ${mine ? "justify-end" : "justify-start"}`}
+            aria-hidden="true"
+            className="grid size-8 shrink-0 place-items-center rounded-full bg-[#FFE0D7] text-[10px] font-extrabold text-[#9D321F]"
           >
+            YOU
+          </div>
+        ) : (
+          <div
+            aria-hidden="true"
+            className="grid size-8 shrink-0 place-items-center rounded-full bg-[#DDE7F5] text-[10px] font-extrabold text-[#27476F]"
+          >
+            {participantInitials(authorLabel)}
+          </div>
+        )}
+        <div className="min-w-0 max-w-[52rem] flex-1">
+          <div className="mb-1.5 flex items-center gap-2 px-1">
             <span className="text-[11px] font-bold text-[#42526B]">
               {authorLabel}
             </span>
@@ -71,7 +75,7 @@ export function HiveMessage({
             </time>
           </div>
           <div
-            className={`rounded px-4 py-3 text-sm leading-6 shadow-sm ${
+            className={`w-fit max-w-full rounded px-4 py-3 text-sm leading-6 shadow-sm ${
               mine
                 ? "border border-[#F2B09F] bg-[#FFF0EB] text-[#44201A] shadow-[#FF6F52]/10"
                 : "border border-[#D8DEE8] bg-white text-[#172033]"
@@ -86,20 +90,31 @@ export function HiveMessage({
             </div>
           </div>
           {mine && (
-            <div className="mt-1 flex items-center justify-end gap-1 px-1 text-[10px] text-[#607086]">
+            <div className="mt-1 flex items-center gap-1 px-1 text-[10px] text-[#607086]">
               <CheckCircle2 size={10} /> Sent
             </div>
           )}
-          {onReply && (
-            <button
-              type="button"
-              className="mt-1 flex items-center gap-1 px-1 text-[10px] font-bold text-[#526178] hover:text-[#1F55C5]"
-              onClick={onReply}
-              aria-label={`Reply to ${mine ? "your message" : authorLabel}`}
-            >
-              <Reply size={10} /> Reply in this thread
-            </button>
-          )}
+          <div className="mt-1 flex flex-wrap items-center gap-3 px-1">
+            {onReply && (
+              <button
+                type="button"
+                className="flex min-h-7 items-center gap-1 text-[10px] font-bold text-[#526178] hover:text-[#1F55C5]"
+                onClick={onReply}
+                aria-label={`Reply to ${mine ? "your message" : authorLabel}`}
+              >
+                <Reply size={10} /> Reply in this thread
+              </button>
+            )}
+            {onRestoreRequest && (
+              <button
+                type="button"
+                className="flex min-h-7 items-center gap-1 rounded bg-[#EEF5FF] px-2 text-[10px] font-bold text-[#1F55C5] hover:bg-[#DDEAFF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#2F6FED]"
+                onClick={onRestoreRequest}
+              >
+                <RotateCcw size={11} /> Restore failed request
+              </button>
+            )}
+          </div>
         </div>
       </article>
     </div>

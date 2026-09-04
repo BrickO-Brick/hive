@@ -15,6 +15,36 @@ export type HiveIdentity = {
 };
 
 const SESSION_KEY = "hive.mantap.identity.v1";
+const MANTAP_ORIGIN = "https://mantap.onebrick.io";
+const DEFAULT_HIVE_RETURN_PATH = "/app";
+
+/**
+ * Keep post-authentication navigation on this Hive origin and inside the app.
+ */
+export function safeHiveReturnPath(value: string | null | undefined): string {
+  if (!value) return DEFAULT_HIVE_RETURN_PATH;
+  try {
+    const candidate = new URL(value, window.location.origin);
+    if (
+      candidate.origin !== window.location.origin ||
+      candidate.pathname !== DEFAULT_HIVE_RETURN_PATH
+    ) {
+      return DEFAULT_HIVE_RETURN_PATH;
+    }
+    return `${candidate.pathname}${candidate.search}${candidate.hash}`;
+  } catch {
+    return DEFAULT_HIVE_RETURN_PATH;
+  }
+}
+
+/** Build the Mantap login URL that returns through Hive's ticket exchange. */
+export function mantapLoginUrl(returnPath?: string): string {
+  const callback = new URL("/mantul-sso", window.location.origin);
+  callback.searchParams.set("returnTo", safeHiveReturnPath(returnPath));
+  const login = new URL(MANTAP_ORIGIN);
+  login.searchParams.set("returnTo", callback.toString());
+  return login.toString();
+}
 
 export class MantapSsoExchangeError extends Error {
   constructor(
