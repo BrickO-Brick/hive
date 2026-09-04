@@ -34,11 +34,13 @@ async function submitEmptyEdit(
   // wait for it to populate before we clear it.
   const input = page.getByTestId("message-input");
   await expect(input).not.toBeEmpty({ timeout: 5_000 });
-  await input.click();
-  await page.keyboard.press("ControlOrMeta+A");
-  await page.keyboard.press("Backspace");
+  // Bind every keystroke to the editor locator. Clearing the Tiptap document
+  // can rerender the composer; page.keyboard would then send Enter to whatever
+  // owns focus at that instant and intermittently skip the confirmation path.
+  await input.press("ControlOrMeta+A");
+  await input.press("Backspace");
   await expect(input).toBeEmpty();
-  await page.keyboard.press("Enter");
+  await input.press("Enter");
 }
 
 test.beforeEach(async ({ page }) => {
