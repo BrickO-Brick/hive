@@ -191,7 +191,7 @@ def build() -> None:
             cover_icon,
             Spacer(1, 5 * mm),
             Paragraph("Hive Web", ParagraphStyle("Cover", parent=TITLE, fontSize=34, leading=40, alignment=TA_CENTER)),
-            Paragraph("Panduan praktis untuk chat tim, diskusi repositori, mention, thread, dan konsep Simple IDE", ParagraphStyle("CoverSub", parent=SUBTITLE, fontSize=14, leading=20, alignment=TA_CENTER)),
+            Paragraph("Panduan praktis untuk chat tim, diskusi repositori, mention, thread, dan Simple IDE", ParagraphStyle("CoverSub", parent=SUBTITLE, fontSize=14, leading=20, alignment=TA_CENTER)),
             Spacer(1, 12 * mm),
         ]
     )
@@ -226,7 +226,7 @@ def build() -> None:
             Spacer(1, 9 * mm),
             callout("Prinsip cepat: mulai dari Chats untuk koordinasi umum. Pilih Repositories jika pekerjaan memerlukan konteks kode, branch, dan workspace terisolasi."),
             Spacer(1, 5 * mm),
-            Paragraph("Versi panduan: 4 September 2026 - fokus Hive Web. Halaman berlabel UX TARGET adalah konsep fitur dan belum aktif di produksi.", SMALL),
+            Paragraph("Versi panduan: 5 September 2026 - fokus Hive Web. Simple IDE membuat commit lokal saja; push, merge, dan deploy tetap berada di alur engineering terpisah.", SMALL),
         ]
     )
 
@@ -306,9 +306,9 @@ def build() -> None:
     story.extend(
         [
             PageBreak(),
-            Paragraph("Konsep fitur: coding dari diskusi", TITLE),
+            Paragraph("Coding dari diskusi", TITLE),
             Paragraph(
-                "Arah UX untuk membawa pekerjaan kode dari percakapan sampai draft yang siap direview, tanpa menyembunyikan batas antara diskusi, perubahan file, commit, dan push.",
+                "Alur Hive Web membawa pekerjaan kode dari percakapan sampai commit lokal yang siap direview, tanpa menyembunyikan batas antara diskusi, perubahan file, commit, dan push.",
                 SUBTITLE,
             ),
             Spacer(1, 8 * mm),
@@ -316,14 +316,14 @@ def build() -> None:
     )
     capability = Table(
         [
-            [Paragraph("SUDAH TERSEDIA", CALLOUT), Paragraph("UX TARGET - BELUM AKTIF", CALLOUT)],
+            [Paragraph("DISKUSI + BRICKO", CALLOUT), Paragraph("SIMPLE IDE WEB", CALLOUT)],
             [
                 Paragraph(
-                    "Diskusi terikat repositori dan workspace terisolasi; anggota dapat memberi instruksi kepada BrickO; agent dan CLI memiliki jalur patch, diff, commit, serta status yang dapat dibawa kembali ke percakapan.",
+                    "Diskusi terikat repositori dan workspace terisolasi. Anggota dapat memberi konteks dan meminta bantuan BrickO di percakapan sebelum engineer membuka file yang sama untuk perubahan ringan.",
                     BODY,
                 ),
                 Paragraph(
-                    "Simple IDE langsung di Hive Web untuk edit ringan; draft tersimpan tanpa push; review diff dan hasil test; commit eksplisit; status perubahan kembali ke diskusi yang sama.",
+                    "Simple IDE langsung di Hive Web untuk file teks terlacak: simpan draft, review unified diff, lalu buat commit lokal secara eksplisit. Tidak ada push, merge, atau deploy otomatis.",
                     BODY,
                 ),
             ],
@@ -351,13 +351,13 @@ def build() -> None:
                 Paragraph("1. DISCUSS", CALLOUT),
                 Paragraph("2. EDIT DRAFT", CALLOUT),
                 Paragraph("3. REVIEW", CALLOUT),
-                Paragraph("4. COMMIT / PUSH", CALLOUT),
+                Paragraph("4. LOCAL COMMIT", CALLOUT),
             ],
             [
                 Paragraph("Jelaskan hasil dan batasan di diskusi repositori.", BODY),
                 Paragraph("Engineer mengubah file kecil atau meminta BrickO membantu.", BODY),
-                Paragraph("Periksa diff, test, dan secret scan sebelum membuat commit.", BODY),
-                Paragraph("Commit dan push tetap aksi terpisah, eksplisit, dan mengikuti policy.", BODY),
+                Paragraph("Periksa diff dan pastikan tidak ada secret sebelum membuat commit.", BODY),
+                Paragraph("Buat commit lokal. Push tetap aksi terpisah melalui policy repositori.", BODY),
             ],
         ],
         colWidths=[62 * mm] * 4,
@@ -392,23 +392,23 @@ def build() -> None:
         (
             9,
             "Minta update kode dari diskusi",
-            "Engineer menjelaskan hasil yang diinginkan dan mention BrickO. Setelah agent menyiapkan perubahan di workspace terisolasi, Hive merangkum file yang berubah, hasil test, serta memastikan belum ada push otomatis.",
+            "Engineer menjelaskan hasil yang diinginkan dan mention BrickO untuk menyamakan konteks. Saat siap mengubah kode, klik Open Simple IDE pada kartu workspace diskusi. Hive tidak melakukan push otomatis.",
             CAPTURE_DIR / "09-code-update-request.png",
-            "UX target: tombol Open Simple IDE muncul hanya setelah draft dan bukti dasar tersedia. View diff tetap menjadi jalur tercepat untuk reviewer.",
+            "Open Simple IDE tersedia dari diskusi repositori. Untuk perubahan besar atau debugging kompleks, lanjutkan di IDE penuh.",
         ),
         (
             10,
             "Edit langsung dengan Simple IDE",
-            "Engineer dapat membuka file, melakukan edit ringan, melihat daftar perubahan, lalu menyimpan draft. Ask BrickO meneruskan pekerjaan agent dari keadaan draft terbaru tanpa membuat commit atau push.",
+            "Pilih file teks terlacak, lakukan edit ringan, lalu klik Save draft. Daftar Changes menunjukkan file yang sudah berubah di worktree terisolasi; belum ada commit atau push.",
             CAPTURE_DIR / "10-simple-ide.png",
-            "Draft only berarti perubahan masih lokal pada workspace diskusi. Discard, Save draft, dan Ask BrickO harus selalu jelas serta dapat diakses dengan keyboard.",
+            "Hive memperingatkan sebelum edit yang belum disimpan dibuang. Jika file berubah dari sesi lain, muat ulang sebelum menyimpan kembali.",
         ),
         (
             11,
             "Review sebelum membuat commit",
-            "Hive menampilkan diff, jumlah perubahan, hasil test, dan secret check dalam satu layar. Engineer dapat meminta revisi atau membuat commit yang dapat direview; push tetap aksi terpisah dan mengikuti policy repositori.",
+            "Klik Review changes untuk melihat unified diff serta jumlah file, baris tambah, dan baris hapus. Isi commit message, lalu klik Create commit untuk membuat commit lokal pada branch diskusi.",
             CAPTURE_DIR / "11-review-changes.png",
-            "Tidak ada push atau merge otomatis. Setelah commit atau push dilakukan melalui jalur yang diizinkan, status dan buktinya kembali ke diskusi repositori.",
+            "Tidak ada push, merge, atau deploy otomatis dari Simple IDE. Validasi test dan secret scan tetap dilakukan melalui alur engineering yang berlaku.",
         ),
     ]
     for number, title, body, image_path, tip in proposal_pages:

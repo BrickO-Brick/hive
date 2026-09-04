@@ -21,6 +21,32 @@ export type RepositoryDiscussion = {
   createdAt: string;
 };
 
+export type WorkspaceFileSummary = {
+  path: string;
+  status: string | null;
+};
+
+export type DiscussionWorkspace = {
+  discussionId: string;
+  currentHeadSha: string;
+  dirty: boolean;
+  files: WorkspaceFileSummary[];
+};
+
+export type DiscussionWorkspaceFile = {
+  path: string;
+  content: string;
+  digest: string;
+};
+
+export type DiscussionWorkspaceDiff = {
+  currentHeadSha: string;
+  diff: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+};
+
 const endpoint = () =>
   `${relayHttpBaseUrl().replace(/\/+$/, "")}/api/onebrick/repository-discussions`;
 
@@ -33,6 +59,33 @@ async function parseResponse<T>(response: Response): Promise<T> {
   }
   return payload;
 }
+
+async function signedGet<T>(url: string): Promise<T> {
+  const authorization = await makeNip98AuthHeader(url, "GET");
+  const response = await fetch(url, {
+    headers: { Authorization: authorization },
+    signal: AbortSignal.timeout(20_000),
+  });
+  return parseResponse<T>(response);
+}
+
+async function signedPost<T>(url: string, payload: unknown): Promise<T> {
+  const body = JSON.stringify(payload);
+  const authorization = await makeNip98AuthHeader(url, "POST", { body });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "application/json",
+    },
+    body,
+    signal: AbortSignal.timeout(130_000),
+  });
+  return parseResponse<T>(response);
+}
+
+const workspaceEndpoint = (discussionId: string, suffix = "") =>
+  `${endpoint()}/${encodeURIComponent(discussionId)}/workspace${suffix}`;
 
 export async function fetchRepositoryDiscussions(): Promise<
   RepositoryDiscussion[]
@@ -84,4 +137,37 @@ export function useRepositoryDiscussions(enabled = true) {
     retry: false,
     staleTime: 15_000,
   });
+}
+
+export function fetchDiscussionWorkspace(
+  discussionId: string,
+): Promise<DiscussionWorkspace> {
+  return signedGet(workspaceEndpoint(discussionId));
+}
+
+export function readDiscussionWorkspaceFile(
+  discussionId: string,
+  path: string,
+): Promise<DiscussionWorkspaceFile> {
+  return signedPost(workspaceEndpoint(discussionId, "/file/read"), { path });
+}
+
+export function writeDiscussionWorkspaceFile(
+  discussionId: string,
+  input: { path: string; content: string; expectedDigest: string },
+): Promise<DiscussionWorkspaceFile> {
+  return signedPost(workspaceEndpoint(discussionId, "/file/write"), input);
+}
+
+export function fetchDiscussionWorkspaceDiff(
+  discussionId: string,
+): Promise<DiscussionWorkspaceDiff> {
+  return signedGet(workspaceEndpoint(discussionId, "/diff"));
+}
+
+export function commitDiscussionWorkspace(
+  discussionId: string,
+  input: { message: string; expectedHeadSha: string },
+): Promise<RepositoryDiscussion> {
+  return signedPost(workspaceEndpoint(discussionId, "/commit"), input);
 }

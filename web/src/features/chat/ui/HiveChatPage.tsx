@@ -61,6 +61,7 @@ import {
 } from "./HiveCreateDialogs";
 import { HiveNavigation } from "./HiveNavigation";
 import { HiveMessage } from "./HiveMessage";
+import { HiveSimpleIde } from "./HiveSimpleIde";
 import { HiveWorkspaceSummary } from "./HiveWorkspaceSummary";
 import { hiveUserFacingError } from "./hiveErrors";
 import { HiveHeaderCollaboration, HiveThreadPanel } from "./HiveThreadPanel";
@@ -81,7 +82,6 @@ import {
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
 const SIDEBAR_STATE_STORAGE_KEY = "hive.navigation.collapsed.v1";
-
 const OneBrickRepositoryCatalog = lazy(() =>
   import("@/features/repos/ui/OneBrickRepositoryCatalog").then((module) => ({
     default: module.OneBrickRepositoryCatalog,
@@ -110,6 +110,7 @@ export function HiveChatPage() {
   } | null>(null);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [threadPanelOpen, setThreadPanelOpen] = useState(false);
+  const [simpleIdeOpen, setSimpleIdeOpen] = useState(false);
   const discussions = useRepositoryDiscussions(Boolean(identity));
   const [activeDiscussionId, setActiveDiscussionId] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get("discussion"),
@@ -138,9 +139,9 @@ export function HiveChatPage() {
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-
   const selectSurface = useCallback((next: "chat" | "repositories") => {
     setSurface(next);
+    if (next === "repositories") setSimpleIdeOpen(false);
     setMobileNavigationOpen(false);
     const url = new URL(window.location.href);
     if (next === "repositories") url.searchParams.set("view", "repositories");
@@ -151,7 +152,6 @@ export function HiveChatPage() {
       `${url.pathname}${url.search}${url.hash}`,
     );
   }, []);
-
   const discussRepository = useCallback(
     (repository: OneBrickGitHubRepository) => {
       setNewDiscussionRepository(repository);
@@ -159,9 +159,9 @@ export function HiveChatPage() {
     },
     [],
   );
-
   const openDiscussion = useCallback(
     (discussion: RepositoryDiscussion) => {
+      setSimpleIdeOpen(false);
       setActiveDiscussionId(discussion.id);
       setActiveConversationId(null);
       setReplyTo(null);
@@ -177,8 +177,8 @@ export function HiveChatPage() {
     },
     [selectSurface],
   );
-
   const openGeneralConversation = useCallback(() => {
+    setSimpleIdeOpen(false);
     setActiveDiscussionId(null);
     setActiveConversationId(null);
     setReplyTo(null);
@@ -192,9 +192,9 @@ export function HiveChatPage() {
       `${url.pathname}${url.search}${url.hash}`,
     );
   }, [selectSurface]);
-
   const openConversation = useCallback(
     (conversation: HiveConversation) => {
+      setSimpleIdeOpen(false);
       setActiveDiscussionId(null);
       setActiveConversationId(conversation.id);
       setReplyTo(null);
@@ -210,7 +210,6 @@ export function HiveChatPage() {
     },
     [selectSurface],
   );
-
   const mergeMessage = useCallback(
     (event: NostrEvent) => {
       setMessages((current) => {
@@ -237,7 +236,6 @@ export function HiveChatPage() {
     },
     [agentPubkey],
   );
-
   const refresh = useCallback(async () => {
     if (!identity) return;
     setError("");
@@ -252,7 +250,6 @@ export function HiveChatPage() {
       setError(hiveUserFacingError(cause, "load"));
     }
   }, [identity]);
-
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -366,14 +363,12 @@ export function HiveChatPage() {
       );
     }
   }, [identity]);
-
   useEffect(() => {
     window.localStorage.setItem(
       SIDEBAR_STATE_STORAGE_KEY,
       String(sidebarCollapsed),
     );
   }, [sidebarCollapsed]);
-
   useEffect(() => {
     if (!mobileNavigationOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
@@ -382,7 +377,6 @@ export function HiveChatPage() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [mobileNavigationOpen]);
-
   const discussionList = discussions.data ?? [];
   const conversationList = useMemo(
     () => conversationsFromMessages(messages),
@@ -409,7 +403,6 @@ export function HiveChatPage() {
         profiles,
       ).authorLabel
     : "";
-
   if (!identity || !hasMantapBrowserIdentity()) return null;
 
   const connected = connection === "connected";
@@ -810,6 +803,12 @@ export function HiveChatPage() {
               <OneBrickRepositoryCatalog onDiscuss={discussRepository} />
             </Suspense>
           </section>
+        ) : activeDiscussion && simpleIdeOpen ? (
+          <HiveSimpleIde
+            discussion={activeDiscussion}
+            onClose={() => setSimpleIdeOpen(false)}
+            onCommitted={() => void discussions.refetch()}
+          />
         ) : (
           <>
             <div
@@ -857,6 +856,7 @@ export function HiveChatPage() {
                   <HiveWorkspaceSummary
                     discussion={activeDiscussion}
                     hasRoot={Boolean(activeRoot)}
+                    onOpenEditor={() => setSimpleIdeOpen(true)}
                   />
                 )}
                 {visibleMessages.length === 0 &&

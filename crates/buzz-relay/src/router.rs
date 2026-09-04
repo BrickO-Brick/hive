@@ -134,6 +134,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             api::onebrick_discussions::DISCUSSIONS_PATH,
             get(api::onebrick_discussions::list).post(api::onebrick_discussions::create),
         )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace",
+            get(api::onebrick_discussions::workspace),
+        )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/file/read",
+            post(api::onebrick_discussions::read_file),
+        )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/file/write",
+            post(api::onebrick_discussions::write_file),
+        )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/diff",
+            get(api::onebrick_discussions::diff),
+        )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/commit",
+            post(api::onebrick_discussions::commit),
+        )
         // Moderation queue reads (NIP-98 auth + mod-authz gate, L6)
         .route("/moderation/reports", get(api::bridge::moderation_reports))
         .route("/moderation/audit", get(api::bridge::moderation_audit))
