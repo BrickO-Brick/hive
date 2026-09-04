@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import brickoOperationsUrl from "@/assets/bricko-operations.jpg";
 import {
   exchangeMantapTicketWithRecovery,
+  mantapLoginUrl,
   MantapSsoExchangeError,
+  safeHiveReturnPath,
 } from "../mantap-sso-api";
 
 type SsoState = "validating" | "recovering" | "failed";
@@ -26,6 +28,7 @@ export function MantapSsoPage() {
   useEffect(() => {
     const search = new URLSearchParams(window.location.search);
     const desktopCallback = search.get("desktop_callback");
+    const returnPath = safeHiveReturnPath(search.get("returnTo"));
     const ticket = new URLSearchParams(window.location.hash.slice(1)).get(
       "ticket",
     );
@@ -42,7 +45,7 @@ export function MantapSsoPage() {
     })();
     if (!ticket) {
       if (!validDesktopCallback) {
-        window.location.replace("https://mantap.onebrick.io");
+        window.location.replace(mantapLoginUrl(returnPath));
         return;
       }
       const loginUrl = new URL("https://mantap.onebrick.io");
@@ -65,7 +68,7 @@ export function MantapSsoPage() {
       if (current) setState("recovering");
     })
       .then(() => {
-        if (current) window.location.replace("/app");
+        if (current) window.location.replace(returnPath);
       })
       .catch((error: unknown) => {
         if (!current) return;

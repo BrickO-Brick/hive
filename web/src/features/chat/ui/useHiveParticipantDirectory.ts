@@ -47,7 +47,7 @@ export function participantPresentation(
       ? "BrickO"
       : (profiles[normalized]?.displayName ??
         profiles[normalized]?.nip05 ??
-        `Member ${truncatePubkey(pubkey)}`);
+        `Teammate · ${truncatePubkey(pubkey)}`);
   return { authorLabel, fromBrickO, mine };
 }
 

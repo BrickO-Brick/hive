@@ -42,9 +42,16 @@ test("Hive redirects a signed-out browser to Mantap", async ({ page }) => {
     });
   });
 
-  await page.goto("/app");
+  const discussion = "69e04c53-040e-4ba3-b1f2-6abb6cae5243";
+  await page.goto(`/app?discussion=${discussion}`);
 
-  await expect(page).toHaveURL("https://mantap.onebrick.io/");
+  await expect(page).toHaveURL(/https:\/\/mantap\.onebrick\.io\//);
+  const loginUrl = new URL(page.url());
+  const callback = new URL(loginUrl.searchParams.get("returnTo") ?? "");
+  expect(callback.pathname).toBe("/mantul-sso");
+  expect(callback.searchParams.get("returnTo")).toBe(
+    `/app?discussion=${discussion}`,
+  );
 });
 
 test("Hive redirects a missing SSO ticket to Mantap", async ({ page }) => {
@@ -58,7 +65,62 @@ test("Hive redirects a missing SSO ticket to Mantap", async ({ page }) => {
 
   await page.goto("/mantul-sso");
 
-  await expect(page).toHaveURL("https://mantap.onebrick.io/");
+  await expect(page).toHaveURL(/https:\/\/mantap\.onebrick\.io\//);
+  const loginUrl = new URL(page.url());
+  const callback = new URL(loginUrl.searchParams.get("returnTo") ?? "");
+  expect(callback.pathname).toBe("/mantul-sso");
+  expect(callback.searchParams.get("returnTo")).toBe("/app");
+});
+
+test("Hive restores the requested discussion after Mantap SSO", async ({
+  page,
+}) => {
+  await page.route("**/api/onebrick/sso/exchange", async (route) => {
+    const pubkey = nip98Pubkey(route.request().headers().authorization);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        email: "bricko@onebrick.io",
+        subject: "mantap-user:bricko",
+        pubkey,
+        channel_id: "62ae672f-ab7b-4619-b013-13eec0111943",
+        role: "member",
+      }),
+    });
+  });
+  const discussion = "69e04c53-040e-4ba3-b1f2-6abb6cae5243";
+  const ticket = mantapTicket("mantap-user:bricko", "bricko@onebrick.io");
+
+  await page.goto(
+    `/mantul-sso?returnTo=${encodeURIComponent(`/app?discussion=${discussion}`)}#ticket=${ticket}`,
+  );
+
+  await expect(page).toHaveURL(`/app?discussion=${discussion}`);
+});
+
+test("Hive rejects an external post-SSO return target", async ({ page }) => {
+  await page.route("**/api/onebrick/sso/exchange", async (route) => {
+    const pubkey = nip98Pubkey(route.request().headers().authorization);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        email: "bricko@onebrick.io",
+        subject: "mantap-user:bricko",
+        pubkey,
+        channel_id: "62ae672f-ab7b-4619-b013-13eec0111943",
+        role: "member",
+      }),
+    });
+  });
+  const ticket = mantapTicket("mantap-user:bricko", "bricko@onebrick.io");
+
+  await page.goto(
+    `/mantul-sso?returnTo=${encodeURIComponent("https://example.com/phish")}#ticket=${ticket}`,
+  );
+
+  await expect(page).toHaveURL(/\/app$/);
 });
 
 test("Hive returns a Mantap ticket to the native desktop callback", async ({
@@ -848,7 +910,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.goto("/app");
-  await expect(page.getByText("Realtime connected")).toBeVisible();
+  await expect(
+    page.getByTestId("desktop-navigation").getByText("Chat connected"),
+  ).toBeVisible();
   await expect(page.getByText("Online and ready").first()).toBeVisible();
   await expect(page.getByText("Sudah aktif.")).toBeVisible();
   const agentMessage = page.getByRole("article", {
@@ -1005,6 +1069,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByText("Reply from another discussion")).toHaveCount(0);
 
   const composer = page.getByPlaceholder("Message BrickO about mantul-be…");
+  await expect(
+    page.getByRole("textbox", { name: "Message BrickO about mantul-be" }),
+  ).toBeVisible();
   await composer.fill("Tolong cek status Hive sekarang");
   await composer.press("Enter");
   await expect(page.getByText("Tolong cek status Hive sekarang")).toBeVisible();
@@ -1013,7 +1080,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .filter({ hasText: "Tolong cek status Hive sekarang" })
     .getByRole("button", { name: "Reply to your message" })
     .click();
-  await expect(page.getByText(/Replying to your message:/)).toBeVisible();
+  await expect(page.getByText(/Replying to You:/)).toBeVisible();
   await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
   const statusPet = page.getByTestId("bricko-status-pet");
@@ -1138,13 +1205,55 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toContain("bricko-pet-celebrate-code");
   await page.waitForTimeout(1_150);
 
+  await page.evaluate(
+    ({ agentPubkey, channelId }) => {
+      (
+        window as Window & {
+          __hiveEmit?: (event: Record<string, unknown>) => void;
+        }
+      ).__hiveEmit?.({
+        id: "e6".repeat(32),
+        pubkey: agentPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["e", "d1".repeat(32), "", "root"],
+          [
+            "e",
+            (
+              window as Window & {
+                __hiveLastPublished?: { id: string };
+              }
+            ).__hiveLastPublished?.id,
+            "",
+            "reply",
+          ],
+        ],
+        content:
+          "⚠️ BrickO could not complete this request because of a temporary internal failure. Your original request remains visible above. Use ‘Restore failed request’ to review it before sending again.",
+        sig: "00".repeat(64),
+      });
+    },
+    {
+      agentPubkey: "22".repeat(32),
+      channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+    },
+  );
+  const restore = page.getByRole("button", { name: "Restore failed request" });
+  await expect(restore).toBeVisible();
+  await restore.click();
+  await expect(composer).toHaveValue("Tolong cek status Hive sekarang");
+  await expect(page.getByText(/Replying to You:/)).toBeVisible();
+  await page.getByRole("button", { name: "Cancel reply" }).click();
+
   await page.screenshot({
     path: testInfo.outputPath("hive-polished.png"),
     fullPage: true,
   });
 
   const desktopNavigation = page.getByTestId("desktop-navigation");
-  await expect(desktopNavigation).toHaveCSS("width", "200px");
+  await expect(desktopNavigation).toHaveCSS("width", "260px");
   await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toBeVisible();
@@ -1154,7 +1263,13 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.getByTestId("sidebar-toggle").click();
-  await expect(desktopNavigation).toHaveCSS("width", "52px");
+  await expect(desktopNavigation).toHaveCSS("width", "72px");
+  await expect(
+    desktopNavigation.getByTestId(
+      "discussion-11111111-2222-4333-8444-555555555555",
+    ),
+  ).toContainText("mantul-…");
+  await expect(desktopNavigation.getByText("repos")).toBeVisible();
   await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toHaveCount(0);
@@ -1169,14 +1284,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     "hive.navigation.collapsed.v1",
   );
   await page.reload();
-  await expect(desktopNavigation).toHaveCSS("width", "52px");
+  await expect(desktopNavigation).toHaveCSS("width", "72px");
   await page.screenshot({
     path: testInfo.outputPath("03-tablet-navigation-collapsed.png"),
     fullPage: true,
   });
 
   await page.getByTestId("sidebar-toggle").click();
-  await expect(desktopNavigation).toHaveCSS("width", "200px");
+  await expect(desktopNavigation).toHaveCSS("width", "260px");
   await page.screenshot({
     path: testInfo.outputPath("04-tablet-navigation-expanded.png"),
     fullPage: true,
