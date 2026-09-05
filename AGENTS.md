@@ -49,6 +49,13 @@ See [RELEASING.md](RELEASING.md) for the desktop release flow and
 [CONTRIBUTING.md § Ecosystem](CONTRIBUTING.md#ecosystem) for contributor
 access information.
 
+### OneBrick deployment policy
+
+Production deploys use `scripts/deploy-aws-ssh.sh`, which invokes the shared
+EC2 deploy lock with the approved SSH key and does not require AWS SSO login.
+Never use GitHub Actions to publish images or deploy production; the repository
+workflow is validation-only.
+
 ---
 
 ## Repo Structure

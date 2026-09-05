@@ -2,6 +2,37 @@
 
 Run from `/srv/hive/source` with `HIVE_ENV_FILE=/srv/hive/secrets/hive.env`.
 
+## Permanent deployment transport
+
+Production deploys use the approved EC2 SSH key through the shared deploy lock.
+This is the canonical path and does not require `aws sso login`; the lock still
+verifies the fixed production instance and acquires the cross-project Docker
+mutation lock. GitHub Actions is not a deployment or image-publishing path.
+
+From the operator workstation:
+
+```bash
+scripts/deploy-aws-ssh.sh -- bash -lc 'cd /srv/hive/source && <command>'
+```
+
+The key and lock locations can be overridden on another approved workstation:
+
+```bash
+MANTAP_SSH_KEY='/absolute/path/to/approved-key.pem' \
+HIVE_DEPLOY_LOCK='/absolute/path/to/shared-ec2-deploy-lock' \
+scripts/deploy-aws-ssh.sh -- bash -lc 'cd /srv/hive/source && <command>'
+```
+
+For a source-built release, build and push immutable images on EC2, then
+upgrade using the resulting digest. The EC2 Docker credential for GHCR must be
+preconfigured by an operator; never put a token in this repository or command
+history:
+
+```bash
+scripts/deploy-aws-ssh.sh -- bash -lc 'cd /srv/hive/source && HIVE_ENV_FILE=/srv/hive/secrets/hive.env HIVE_PUSH_IMAGES=true scripts/build-images.sh'
+scripts/deploy-aws-ssh.sh -- bash -lc "cd /srv/hive/source && AGE_RECIPIENT='<governed age recipient>' scripts/upgrade.sh 'ghcr.io/bricko-brick/hive@sha256:<digest>'"
+```
+
 Every production Docker mutation on the shared EC2 must be run through the
 governed OneBrick shared deploy lock from an authorized operator workstation:
 
