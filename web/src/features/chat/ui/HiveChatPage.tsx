@@ -760,6 +760,7 @@ export function HiveChatPage() {
             discussion={activeDiscussion}
             onClose={() => setSimpleIdeOpen(false)}
             onCommitted={() => void discussions.refetch()}
+            onRequestAdjustment={setText}
           />
         ) : (
           <>
@@ -793,7 +794,6 @@ export function HiveChatPage() {
                 </button>
               </div>
             )}
-
             <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
               <div className="mx-auto max-w-4xl">
                 {discussionRouteUnresolved && (

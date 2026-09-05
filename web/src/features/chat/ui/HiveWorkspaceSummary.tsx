@@ -150,13 +150,17 @@ export function HiveWorkspaceSummary({
             disabled={cleanupPending}
             className="flex items-center gap-1.5 rounded-md bg-[#2F6FED] px-2.5 py-1.5 text-[10px] font-bold text-white shadow-sm hover:bg-[#245CC8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2F6FED] disabled:opacity-50"
           >
-            <Code2 size={12} /> Open Simple IDE
+            <Code2 size={12} /> Review code
           </button>
         </div>
       </div>
       <div className="mt-1.5 font-semibold">
         {discussion.owner}/{discussion.repository}
       </div>
+      <p className="mt-1 text-[10px] leading-4 text-[#526178]">
+        Code suggestions from this discussion stay isolated until you approve
+        and apply them.
+      </p>
       <p className="mt-1 flex items-center gap-1.5 text-[10px] text-[#526178]">
         <Clock3 aria-hidden="true" size={11} /> Base snapshot created{" "}
         {snapshotDate}. Start a new discussion when work must begin from the

@@ -3,11 +3,14 @@ import {
   Check,
   ChevronRight,
   Code2,
+  Copy,
   FileCode2,
   FileText,
   Folder,
   GitCommitHorizontal,
   LoaderCircle,
+  MessageCircleReply,
+  Pencil,
   RefreshCw,
   Save,
   Search,
@@ -31,6 +34,7 @@ type Props = {
   discussion: RepositoryDiscussion;
   onClose: () => void;
   onCommitted: (discussion: RepositoryDiscussion) => void;
+  onRequestAdjustment: (prompt: string) => void;
 };
 
 type ViewMode = "edit" | "review";
@@ -84,7 +88,7 @@ function errorMessage(error: unknown) {
     binary_file: "This file is binary and cannot be edited here.",
     file_changed: "Someone changed this file. Reload it before saving again.",
     file_not_editable: "This file cannot be edited safely.",
-    file_too_large: "This file is too large for Simple IDE.",
+    file_too_large: "This file is too large for the code review workspace.",
     workspace_has_no_changes: "There are no saved changes to commit.",
     workspace_head_changed: "The branch changed. Refresh before committing.",
   };
@@ -147,13 +151,22 @@ function DiffView({ diff }: { diff: DiscussionWorkspaceDiff }) {
   );
 }
 
-export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
+export function HiveSimpleIde({
+  discussion,
+  onClose,
+  onCommitted,
+  onRequestAdjustment,
+}: Props) {
   const [workspace, setWorkspace] = useState<DiscussionWorkspace | null>(null);
   const [selectedPath, setSelectedPath] = useState("");
   const [file, setFile] = useState<DiscussionWorkspaceFile | null>(null);
   const [content, setContent] = useState("");
-  const [mode, setMode] = useState<ViewMode>("edit");
+  const [mode, setMode] = useState<ViewMode>("review");
   const [diff, setDiff] = useState<DiscussionWorkspaceDiff | null>(null);
+  const [approvedRevision, setApprovedRevision] = useState(
+    discussion.proposalRevision,
+  );
+  const [copiedCommand, setCopiedCommand] = useState(false);
   const [commitMessage, setCommitMessage] = useState(
     `Update ${discussion.title.toLowerCase()}`,
   );
@@ -229,16 +242,36 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
           ""
         );
       });
+      return next;
     } catch (nextError) {
       setError(errorMessage(nextError));
+      return null;
     } finally {
       setLoading(false);
     }
   }, [discussion.id]);
 
   useEffect(() => {
-    void loadWorkspace();
-  }, [loadWorkspace]);
+    let current = true;
+    void loadWorkspace().then(async (nextWorkspace) => {
+      if (!nextWorkspace || !current) return;
+      try {
+        const nextDiff = await fetchDiscussionWorkspaceDiff(discussion.id);
+        if (current) setDiff(nextDiff);
+      } catch (nextError) {
+        if (current) setError(errorMessage(nextError));
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [discussion.id, loadWorkspace]);
+
+  useEffect(() => {
+    if (!copiedCommand) return;
+    const timeout = window.setTimeout(() => setCopiedCommand(false), 1_500);
+    return () => window.clearTimeout(timeout);
+  }, [copiedCommand]);
 
   useEffect(() => {
     const query = fileQuery.trim();
@@ -385,10 +418,16 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
         );
       }
       setNotice(
-        `Commit ${updated.currentHeadSha.slice(0, 12)} created locally.`,
+        `Suggestion approved as local commit ${updated.currentHeadSha.slice(0, 12)}.`,
       );
-      setDiff(null);
-      setMode("edit");
+      setApprovedRevision(updated.currentHeadSha);
+      setDiff({
+        currentHeadSha: updated.currentHeadSha,
+        diff: "",
+        additions: 0,
+        deletions: 0,
+        changedFiles: 0,
+      });
       await loadWorkspace();
     } catch (nextError) {
       setError(errorMessage(nextError));
@@ -449,7 +488,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
             </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-bold text-[#10233F]">
-                Simple IDE
+                Code review
               </div>
               <div className="truncate text-[10px] text-[#607086]">
                 {discussion.owner}/{discussion.repository} ·{" "}
@@ -702,28 +741,43 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 <div className="flex min-h-12 items-center justify-between border-b border-[#D8DEE8] px-4">
                   <div>
                     <div className="text-sm font-bold text-[#10233F]">
-                      Review proposed changes
+                      Code suggestion
                     </div>
                     <div className="mt-0.5 text-[10px] text-[#607086]">
-                      {diff?.changedFiles ?? 0} files ·{" "}
-                      <span className="text-[#138A57]">
-                        +{diff?.additions ?? 0}
-                      </span>{" "}
-                      ·{" "}
-                      <span className="text-[#C93F4A]">
-                        −{diff?.deletions ?? 0}
-                      </span>
+                      {diff?.diff.trim()
+                        ? `${diff.changedFiles} files · +${diff.additions} · −${diff.deletions}`
+                        : approvedRevision
+                          ? `Approved commit ${approvedRevision.slice(0, 12)}`
+                          : "Waiting for a proposed code change"}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setMode("edit")}
-                    className="rounded-md border border-[#D8DEE8] px-3 py-1.5 text-xs font-bold text-[#42526B] hover:bg-[#F7FAFC]"
+                    className="flex items-center gap-1.5 rounded-md border border-[#D8DEE8] px-3 py-1.5 text-xs font-bold text-[#42526B] hover:bg-[#F7FAFC]"
                   >
-                    Back to edit
+                    <Pencil size={12} /> Browse & adjust
                   </button>
                 </div>
-                {diff && <DiffView diff={diff} />}
+                {diff?.diff.trim() ? (
+                  <DiffView diff={diff} />
+                ) : (
+                  <div className="grid min-h-80 flex-1 place-items-center px-6 text-center">
+                    <div className="max-w-sm">
+                      <Check className="mx-auto text-[#18A66A]" size={30} />
+                      <div className="mt-3 text-sm font-bold text-[#10233F]">
+                        {approvedRevision
+                          ? "Suggestion approved"
+                          : "No code suggestion yet"}
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-[#607086]">
+                        {approvedRevision
+                          ? "The approved revision stays isolated until your team applies it to a target branch."
+                          : "Ask BrickO to prepare a change from this discussion. The diff will appear here for review."}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
               <aside className="w-full shrink-0 border-t border-[#D8DEE8] bg-white p-4 @5xl/hive-main:w-72 @5xl/hive-main:border-l @5xl/hive-main:border-t-0">
                 <div className="flex items-start gap-2.5">
@@ -732,11 +786,18 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                   </div>
                   <div>
                     <div className="text-sm font-bold text-[#10233F]">
-                      Ready to commit
+                      {diff?.diff.trim()
+                        ? "Ready for your decision"
+                        : approvedRevision
+                          ? "Apply when ready"
+                          : "Continue in the discussion"}
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-[#607086]">
-                      Review the diff, name the change, then create a local
-                      commit.
+                      {diff?.diff.trim()
+                        ? "Approve the complete suggestion, request an adjustment, or edit it manually."
+                        : approvedRevision
+                          ? "Copy the command to apply this exact approved commit elsewhere."
+                          : "Describe the change you want and let BrickO prepare the proposal."}
                     </p>
                   </div>
                 </div>
@@ -745,34 +806,88 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                     <ShieldCheck size={13} /> You stay in control
                   </div>
                   <p className="mt-1">
-                    This action does not push, merge, or deploy the branch.
+                    Approval creates only an isolated local commit. Nothing is
+                    pushed, merged, or deployed.
                   </p>
                 </div>
-                <label
-                  className="mt-5 block text-[11px] font-bold text-[#42526B]"
-                  htmlFor="simple-ide-commit-message"
-                >
-                  Commit message
-                </label>
-                <input
-                  id="simple-ide-commit-message"
-                  value={commitMessage}
-                  maxLength={160}
-                  onChange={(event) => setCommitMessage(event.target.value)}
-                  className="mt-1.5 w-full rounded-md border border-[#D8DEE8] px-3 py-2 text-xs text-[#10233F] outline-none focus:border-[#2F6FED] focus:ring-2 focus:ring-[#2F6FED]/10"
-                />
+                {diff?.diff.trim() ? (
+                  <>
+                    <label
+                      className="mt-5 block text-[11px] font-bold text-[#42526B]"
+                      htmlFor="simple-ide-commit-message"
+                    >
+                      Approval commit message
+                    </label>
+                    <input
+                      id="simple-ide-commit-message"
+                      value={commitMessage}
+                      maxLength={160}
+                      onChange={(event) => setCommitMessage(event.target.value)}
+                      className="mt-1.5 w-full rounded-md border border-[#D8DEE8] px-3 py-2 text-xs text-[#10233F] outline-none focus:border-[#2F6FED] focus:ring-2 focus:ring-[#2F6FED]/10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void createCommit()}
+                      disabled={busy || !commitMessage.trim()}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-[#FF6547] px-3 py-2.5 text-xs font-bold text-white shadow-[0_8px_18px_rgba(255,101,71,0.22)] hover:bg-[#E8563B] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busy ? (
+                        <LoaderCircle className="animate-spin" size={14} />
+                      ) : (
+                        <GitCommitHorizontal size={14} />
+                      )}
+                      Approve suggestion
+                    </button>
+                  </>
+                ) : approvedRevision ? (
+                  <>
+                    <code className="mt-4 block break-all rounded-md bg-[#10233F] px-3 py-2.5 text-[11px] leading-5 text-white">
+                      git cherry-pick {approvedRevision}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            `git cherry-pick ${approvedRevision}`,
+                          );
+                          setCopiedCommand(true);
+                        } catch {
+                          setNotice(
+                            "Copy was blocked by the browser. Select the command above instead.",
+                          );
+                        }
+                      }}
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-[#BFD4FF] bg-[#EEF5FF] px-3 py-2.5 text-xs font-bold text-[#1F55C5] hover:bg-[#E2ECFF]"
+                    >
+                      {copiedCommand ? <Check size={14} /> : <Copy size={14} />}
+                      {copiedCommand
+                        ? "Command copied"
+                        : "Copy cherry-pick command"}
+                    </button>
+                  </>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => void createCommit()}
-                  disabled={busy || !commitMessage.trim() || !diff?.diff.trim()}
-                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-[#FF6547] px-3 py-2.5 text-xs font-bold text-white shadow-[0_8px_18px_rgba(255,101,71,0.22)] hover:bg-[#E8563B] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => {
+                    onRequestAdjustment(
+                      approvedRevision
+                        ? `@BrickO please adjust the code suggestion from ${approvedRevision.slice(0, 12)}: `
+                        : "@BrickO please prepare a code suggestion for this discussion: ",
+                    );
+                    onClose();
+                    window.requestAnimationFrame(() =>
+                      document.getElementById("hive-message-composer")?.focus(),
+                    );
+                  }}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-[#D8DEE8] px-3 py-2.5 text-xs font-bold text-[#42526B] hover:bg-[#F7FAFC]"
                 >
-                  {busy ? (
-                    <LoaderCircle className="animate-spin" size={14} />
-                  ) : (
-                    <GitCommitHorizontal size={14} />
-                  )}
-                  Create commit
+                  <MessageCircleReply size={14} />
+                  {diff?.diff.trim()
+                    ? "Request adjustment"
+                    : approvedRevision
+                      ? "Request another adjustment"
+                      : "Ask BrickO for a suggestion"}
                 </button>
               </aside>
             </div>
@@ -787,7 +902,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
             {error ? (
               <span className="font-semibold text-[#B9383E]">{error}</span>
             ) : (
-              notice || "Draft only — nothing is pushed automatically."
+              notice || "Review space only — nothing is pushed automatically."
             )}
           </div>
           {mode === "edit" && (
@@ -798,7 +913,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 disabled={busy || !changed}
                 className="flex items-center gap-1.5 rounded-md border border-[#D8DEE8] px-3 py-2 text-xs font-bold text-[#42526B] hover:bg-[#F7FAFC] disabled:opacity-45"
               >
-                <Save size={13} /> Save draft
+                <Save size={13} /> Save adjustment
               </button>
               <button
                 type="button"
@@ -806,7 +921,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 disabled={busy || (!changed && !workspace?.dirty)}
                 className="rounded-md bg-[#FF6547] px-4 py-2 text-xs font-bold text-white hover:bg-[#E8563B] disabled:opacity-45"
               >
-                Review changes
+                Review suggestion
               </button>
             </div>
           )}

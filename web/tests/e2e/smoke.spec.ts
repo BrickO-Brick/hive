@@ -1583,8 +1583,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     0,
   );
 
-  await page.getByRole("button", { name: "Open Simple IDE" }).click();
+  await page.getByRole("button", { name: "Review code" }).click();
   await expect(page.getByTestId("simple-ide")).toBeVisible();
+  await page.getByRole("button", { name: "Browse & adjust" }).click();
   await expect(page.getByText("TypeScript", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
@@ -1609,7 +1610,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(editor).toContainText("Timed out safely after");
   page.once("dialog", (dialog) => void dialog.accept());
   await page.reload();
-  await page.getByRole("button", { name: "Open Simple IDE" }).click();
+  await page.getByRole("button", { name: "Review code" }).click();
+  await page.getByRole("button", { name: "Browse & adjust" }).click();
   editor = page.getByRole("textbox", { name: "Editing src/timeout.ts" });
   await expect(
     page.getByText("Recovered an unsaved browser draft."),
@@ -1623,8 +1625,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("guide-10-simple-ide-live.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Review changes" }).click();
-  await expect(page.getByText("Review proposed changes")).toBeVisible();
+  await page.getByRole("button", { name: "Review suggestion" }).click();
+  await expect(page.getByText("Code suggestion")).toBeVisible();
   await expect(page.getByTestId("simple-ide-diff")).toContainText(
     "Timed out safely after",
   );
@@ -1632,18 +1634,32 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("guide-11-review-changes-live.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Create commit" }).click();
+  await page.getByRole("button", { name: "Approve suggestion" }).click();
   await expect(
-    page.getByText(/Commit cdcdcdcdcdcd created locally/),
+    page.getByText(/Suggestion approved as local commit cdcdcdcdcdcd/),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Back to discussion" }).click();
   await page.setViewportSize({ width: 1155, height: 720 });
+  await expect(
+    page.getByRole("button", { name: "Copy cherry-pick command" }),
+  ).toBeVisible();
+  await expect(page.getByText(/git cherry-pick cdcdcdcdcdcd/)).toBeVisible();
+  const reviewBounds = await page.getByTestId("simple-ide").boundingBox();
+  expect(reviewBounds).not.toBeNull();
+  expect(
+    (reviewBounds?.x ?? 0) + (reviewBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(1155);
+  await page
+    .getByRole("button", { name: "Request another adjustment" })
+    .click();
+  await expect(page.locator("#hive-message-composer")).toHaveValue(
+    /@BrickO please adjust the code suggestion from cdcdcdcdcdcd:/,
+  );
   const workspaceCard = page
     .getByText("Isolated repository workspace")
     .locator("..")
     .locator("..");
   await expect(
-    workspaceCard.getByRole("button", { name: "Open Simple IDE" }),
+    workspaceCard.getByRole("button", { name: "Review code" }),
   ).toBeVisible();
   const workspaceBounds = await workspaceCard.boundingBox();
   expect(workspaceBounds).not.toBeNull();
