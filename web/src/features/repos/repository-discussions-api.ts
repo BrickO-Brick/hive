@@ -19,6 +19,12 @@ export type RepositoryDiscussion = {
   testEvidence: string[];
   createdBy: string;
   createdAt: string;
+  status: "active" | "cleanup_pending" | "closed";
+  completionEvidence: string | null;
+  closedBy: string | null;
+  closedAt: string | null;
+  workspaceCleanedAt: string | null;
+  mirrorCleaned: boolean;
 };
 
 export type WorkspaceFileSummary = {
@@ -49,6 +55,10 @@ export type DiscussionWorkspaceDiff = {
 
 const endpoint = () =>
   `${relayHttpBaseUrl().replace(/\/+$/, "")}/api/onebrick/repository-discussions`;
+
+export const repositoryDiscussionsQueryKey = [
+  "onebrick-repository-discussions",
+] as const;
 
 async function parseResponse<T>(response: Response): Promise<T> {
   const payload = (await response.json().catch(() => ({}))) as T & {
@@ -131,7 +141,7 @@ export async function createRepositoryDiscussion(input: {
 
 export function useRepositoryDiscussions(enabled = true) {
   return useQuery({
-    queryKey: ["onebrick-repository-discussions"],
+    queryKey: repositoryDiscussionsQueryKey,
     queryFn: fetchRepositoryDiscussions,
     enabled,
     retry: false,
@@ -170,4 +180,14 @@ export function commitDiscussionWorkspace(
   input: { message: string; expectedHeadSha: string },
 ): Promise<RepositoryDiscussion> {
   return signedPost(workspaceEndpoint(discussionId, "/commit"), input);
+}
+
+export function closeRepositoryDiscussion(
+  discussionId: string,
+  input: { expectedHeadSha: string; completionEvidence?: string },
+): Promise<RepositoryDiscussion> {
+  return signedPost(`${endpoint()}/${encodeURIComponent(discussionId)}/close`, {
+    expectedHeadSha: input.expectedHeadSha,
+    completionEvidence: input.completionEvidence || null,
+  });
 }

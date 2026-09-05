@@ -709,13 +709,16 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         expect(input.expectedHeadSha).toBe("ab".repeat(20));
         expect(input.message).toContain("deployment safety");
         workspaceDirty = false;
+        repositoryDiscussions[0] = {
+          ...repositoryDiscussions[0],
+          currentHeadSha: "cd".repeat(20),
+          proposalRevision: "cd".repeat(20),
+        };
         await route.fulfill({
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({
             ...repositoryDiscussions[0],
-            currentHeadSha: "cd".repeat(20),
-            proposalRevision: "cd".repeat(20),
           }),
         });
         return;
@@ -736,6 +739,35 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             { path: "README.md", status: null },
           ],
         }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/onebrick/repository-discussions/*/close",
+    async (route) => {
+      expect(nip98Pubkey(route.request().headers().authorization)).toBe(
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      );
+      const input = route.request().postDataJSON() as {
+        completionEvidence: string;
+        expectedHeadSha: string;
+      };
+      expect(input.expectedHeadSha).toBe("cd".repeat(20));
+      expect(input.completionEvidence).toBe(
+        "https://github.com/BrickO-Brick/mantul-be/pull/123",
+      );
+      repositoryDiscussions[0] = {
+        ...repositoryDiscussions[0],
+        status: "closed",
+        completionEvidence: input.completionEvidence,
+        closedAt: "2026-09-05T10:00:00Z",
+        workspaceCleanedAt: "2026-09-05T10:00:01Z",
+        mirrorCleaned: true,
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(repositoryDiscussions[0]),
       });
     },
   );
@@ -766,6 +798,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         createdBy:
           "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         createdAt: "2026-09-03T10:00:00Z",
+        status: "active",
+        completionEvidence: null,
+        closedBy: null,
+        closedAt: null,
+        workspaceCleanedAt: null,
+        mirrorCleaned: false,
       };
       repositoryDiscussions.push(discussion);
       await route.fulfill({
@@ -1465,6 +1503,30 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("hive-polished.png"),
     fullPage: true,
   });
+
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByTestId("close-discussion-panel")).toBeVisible();
+  const closeAction = page.getByRole("button", {
+    name: "Close and clean workspace",
+  });
+  await expect(closeAction).toBeDisabled();
+  await page
+    .getByPlaceholder(
+      "PR URL, staging deployment URL, or integrated commit SHA",
+    )
+    .fill("https://github.com/BrickO-Brick/mantul-be/pull/123");
+  await expect(closeAction).toBeEnabled();
+  await closeAction.click();
+  await expect(
+    page.getByText("Discussion closed · workspace cleaned"),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Completion evidence:.*mantul-be\/pull\/123/),
+  ).toBeVisible();
+  await expect(page.getByText(/archived and read-only/)).toBeVisible();
+  await expect(
+    page.getByPlaceholder("Message BrickO about mantul-be…"),
+  ).toHaveCount(0);
 
   const desktopNavigation = page.getByTestId("desktop-navigation");
   await expect(desktopNavigation).toHaveCSS("width", "352px");

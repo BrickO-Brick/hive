@@ -135,6 +135,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(api::onebrick_discussions::list).post(api::onebrick_discussions::create),
         )
         .route(
+            "/api/onebrick/repository-discussions/{id}/close",
+            post(api::onebrick_discussions::close),
+        )
+        .route(
             "/api/onebrick/repository-discussions/{id}/workspace",
             get(api::onebrick_discussions::workspace),
         )
