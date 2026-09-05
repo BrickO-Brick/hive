@@ -25,6 +25,7 @@ export type HiveNavigationProps = {
   collapsed: boolean;
   conversations: HiveConversation[];
   discussions: RepositoryDiscussion[];
+  discussionActivity: ReadonlyMap<string, number>;
   identityEmail: string;
   mobile?: boolean;
   onConversation: (conversation: HiveConversation) => void;
@@ -43,7 +44,10 @@ type RepositoryGroup = {
   name: string;
 };
 
-function groupDiscussions(discussions: RepositoryDiscussion[]) {
+function groupDiscussions(
+  discussions: RepositoryDiscussion[],
+  discussionActivity: ReadonlyMap<string, number>,
+) {
   const groups = new Map<string, RepositoryGroup>();
   for (const discussion of discussions) {
     const key = `${discussion.owner}/${discussion.repository}`;
@@ -59,11 +63,40 @@ function groupDiscussions(discussions: RepositoryDiscussion[]) {
   return [...groups.values()]
     .map((group) => ({
       ...group,
-      discussions: group.discussions.sort((left, right) =>
-        left.title.localeCompare(right.title),
+      discussions: group.discussions.sort(
+        (left, right) =>
+          (discussionActivity.get(right.id) ?? 0) -
+            (discussionActivity.get(left.id) ?? 0) ||
+          left.title.localeCompare(right.title),
       ),
     }))
-    .sort((left, right) => left.label.localeCompare(right.label));
+    .sort((left, right) => {
+      const latest = (group: RepositoryGroup) =>
+        Math.max(
+          0,
+          ...group.discussions.map(
+            (discussion) => discussionActivity.get(discussion.id) ?? 0,
+          ),
+        );
+      return (
+        latest(right) - latest(left) || left.label.localeCompare(right.label)
+      );
+    });
+}
+
+function formatActivity(createdAt: number): string {
+  const date = new Date(createdAt * 1_000);
+  const today = new Date();
+  const sameDay =
+    date.getFullYear() === today.getFullYear() &&
+    date.getMonth() === today.getMonth() &&
+    date.getDate() === today.getDate();
+  return new Intl.DateTimeFormat(
+    undefined,
+    sameDay
+      ? { hour: "2-digit", minute: "2-digit" }
+      : { day: "numeric", month: "short" },
+  ).format(date);
 }
 
 function RailButton({
@@ -106,6 +139,7 @@ export function HiveNavigation({
   collapsed,
   conversations,
   discussions,
+  discussionActivity,
   identityEmail,
   mobile = false,
   onConversation,
@@ -116,7 +150,10 @@ export function HiveNavigation({
   onToggle,
   surface,
 }: HiveNavigationProps) {
-  const groups = useMemo(() => groupDiscussions(discussions), [discussions]);
+  const groups = useMemo(
+    () => groupDiscussions(discussions, discussionActivity),
+    [discussionActivity, discussions],
+  );
   const [query, setQuery] = useState("");
   const activeRepository = discussions.find(
     (discussion) => discussion.id === activeDiscussionId,
@@ -401,6 +438,20 @@ export function HiveNavigation({
                             <span className="line-clamp-2">
                               {discussion.title}
                             </span>
+                            {discussionActivity.has(discussion.id) && (
+                              <time
+                                className="ml-auto shrink-0 text-[9px] font-medium text-[#8491A4]"
+                                dateTime={new Date(
+                                  (discussionActivity.get(discussion.id) ?? 0) *
+                                    1_000,
+                                ).toISOString()}
+                                title="Latest discussion activity"
+                              >
+                                {formatActivity(
+                                  discussionActivity.get(discussion.id) ?? 0,
+                                )}
+                              </time>
+                            )}
                           </button>
                         ))}
                       </div>

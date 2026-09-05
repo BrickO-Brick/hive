@@ -908,6 +908,17 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             archived: false,
             language: "TypeScript",
           },
+          ...Array.from({ length: 13 }, (_, index) => ({
+            owner: "BrickO-Brick",
+            name: `product-service-${String(index + 1).padStart(2, "0")}`,
+            description: `Product service ${index + 1}`,
+            url: `https://github.com/BrickO-Brick/product-service-${String(index + 1).padStart(2, "0")}`,
+            visibility: "private",
+            default_branch: "main",
+            updated_at: "2026-08-30T01:07:29Z",
+            archived: false,
+            language: "TypeScript",
+          })),
         ],
       }),
     });
@@ -1429,7 +1440,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     }),
   ).toBeVisible();
   await expect(
-    page.getByText("3 repositories available", { exact: false }),
+    page.getByText("16 repositories available", { exact: false }),
   ).toBeVisible();
   await expect(
     page.getByTestId("github-repository-BrickO-Brick-hive"),
@@ -1443,7 +1454,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
   ).toBeVisible();
   await expect(
-    page.getByText("2 organizations · 3 repositories", { exact: true }),
+    page.getByText("2 organizations · 16 repositories", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("3 more in BrickO-Brick")).toBeVisible();
+  await page.getByRole("button", { name: "Show 3 more" }).click();
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-product-service-13"),
   ).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 900 });
   const narrowCatalog = page.getByTestId(
@@ -1499,6 +1515,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toBeVisible();
   await expect(page.getByText("Isolated repository workspace")).toBeVisible();
   await expect(page.getByText(/Base snapshot created/)).toBeVisible();
+  await expect(
+    page
+      .getByTestId("discussion-11111111-2222-4333-8444-555555555555")
+      .locator('time[title="Latest discussion activity"]'),
+  ).toBeVisible();
   await expect(
     page.getByPlaceholder("Message BrickO about mantul-be…"),
   ).toHaveValue(/BrickO-Brick\/mantul-be/);

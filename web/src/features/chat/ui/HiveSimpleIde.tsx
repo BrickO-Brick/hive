@@ -667,7 +667,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 </div>
               </div>
 
-              <aside className="hidden w-48 shrink-0 border-l border-[#D8DEE8] bg-white p-3 min-[1600px]:block">
+              <aside className="hidden w-48 shrink-0 border-l border-[#D8DEE8] bg-white p-3 @5xl/hive-main:block">
                 <div className="text-xs font-bold text-[#10233F]">Changes</div>
                 <div className="mt-3 space-y-1.5">
                   {(workspace?.changes ?? []).map((item) => (
@@ -725,7 +725,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 </div>
                 {diff && <DiffView diff={diff} />}
               </div>
-              <aside className="w-full shrink-0 border-t border-[#D8DEE8] bg-white p-4 min-[1600px]:w-72 min-[1600px]:border-l min-[1600px]:border-t-0">
+              <aside className="w-full shrink-0 border-t border-[#D8DEE8] bg-white p-4 @5xl/hive-main:w-72 @5xl/hive-main:border-l @5xl/hive-main:border-t-0">
                 <div className="flex items-start gap-2.5">
                   <div className="grid size-8 shrink-0 place-items-center rounded-full border border-[#18A66A] text-[#138A57]">
                     <Check size={16} />

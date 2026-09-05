@@ -39,6 +39,8 @@ const CATEGORIES: RepositoryCategory[] = [
   "Product",
 ];
 const EMPTY_REPOSITORIES: OneBrickGitHubRepository[] = [];
+const INITIAL_REPOSITORIES_PER_OWNER = 12;
+const MORE_REPOSITORIES_STEP = 12;
 
 function categoryFor(repository: OneBrickGitHubRepository): RepositoryCategory {
   const name = repository.name.toLowerCase();
@@ -132,6 +134,9 @@ export function OneBrickRepositoryCatalog({
   const [collapsedOwners, setCollapsedOwners] = useState<Set<string>>(
     () => new Set(),
   );
+  const [visibleByOwner, setVisibleByOwner] = useState<Record<string, number>>(
+    {},
+  );
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const repositories = catalog.data?.repositories ?? EMPTY_REPOSITORIES;
   const categorized = useMemo(
@@ -196,7 +201,7 @@ export function OneBrickRepositoryCatalog({
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-4 py-6 sm:px-6">
-      <div className="flex min-w-0 flex-col gap-4 min-[1600px]:flex-row min-[1600px]:items-end min-[1600px]:justify-between">
+      <div className="flex min-w-0 flex-col gap-4 @5xl/hive-main:flex-row @5xl/hive-main:items-end @5xl/hive-main:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E35E43]">
             <Boxes size={14} /> GitHub repositories
@@ -209,7 +214,7 @@ export function OneBrickRepositoryCatalog({
             independent discussion topics as you need.
           </p>
         </div>
-        <div className="relative w-full min-[1600px]:max-w-sm">
+        <div className="relative w-full @5xl/hive-main:max-w-sm">
           <Search
             aria-hidden
             className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8491A4]"
@@ -265,6 +270,17 @@ export function OneBrickRepositoryCatalog({
                 ? true
                 : !collapsedOwners.has(owner) &&
                   (ownerIndex === 0 || expandedOwners.has(owner));
+              const visibilityKey = `${category}:${deferredQuery}:${owner}`;
+              const visibleCount =
+                visibleByOwner[visibilityKey] ?? INITIAL_REPOSITORIES_PER_OWNER;
+              const visibleRepositories = ownerRepositories.slice(
+                0,
+                visibleCount,
+              );
+              const remainingRepositories = Math.max(
+                0,
+                ownerRepositories.length - visibleRepositories.length,
+              );
               const toggleOwner = () => {
                 if (isExpanded) {
                   setCollapsedOwners((current) => new Set([...current, owner]));
@@ -317,10 +333,10 @@ export function OneBrickRepositoryCatalog({
                       id={`repository-owner-list-${owner}`}
                       className="overflow-hidden rounded-xl border border-[#D8DEE8] bg-white shadow-sm"
                     >
-                      {ownerRepositories.map(
+                      {visibleRepositories.map(
                         ({ repository, category: repositoryCategory }) => (
                           <article
-                            className="flex min-w-0 flex-col items-stretch gap-2 border-b border-[#E2E8F0] p-3 last:border-b-0 min-[1600px]:flex-row min-[1600px]:items-center"
+                            className="flex min-w-0 flex-col items-stretch gap-2 border-b border-[#E2E8F0] p-3 last:border-b-0 @5xl/hive-main:flex-row @5xl/hive-main:items-center"
                             data-testid={`github-repository-${repository.owner}-${repository.name}`}
                             key={`${repository.owner}/${repository.name}`}
                           >
@@ -354,7 +370,7 @@ export function OneBrickRepositoryCatalog({
                                 )}
                               </div>
                             </div>
-                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 min-[1600px]:shrink-0 min-[1600px]:justify-start">
+                            <div className="flex min-w-0 flex-wrap items-center justify-start gap-3 @5xl/hive-main:shrink-0">
                               <div className="flex min-w-0 flex-wrap items-center gap-3 text-[10px] text-[#8491A4]">
                                 <span className="flex items-center gap-1">
                                   <BookOpen size={11} />{" "}
@@ -407,6 +423,33 @@ export function OneBrickRepositoryCatalog({
                             </div>
                           </article>
                         ),
+                      )}
+                      {remainingRepositories > 0 && (
+                        <div className="flex items-center justify-between gap-3 bg-[#F9FBFD] px-3 py-2.5">
+                          <span className="text-[10px] font-semibold text-[#607086]">
+                            {remainingRepositories} more in {owner}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-md border border-[#C7D4E5] bg-white px-3 py-1.5 text-xs font-bold text-[#42526B] transition hover:border-[#2F6FED]/50 hover:text-[#1F55C5]"
+                            onClick={() =>
+                              setVisibleByOwner((current) => ({
+                                ...current,
+                                [visibilityKey]: Math.min(
+                                  ownerRepositories.length,
+                                  visibleCount + MORE_REPOSITORIES_STEP,
+                                ),
+                              }))
+                            }
+                          >
+                            Show{" "}
+                            {Math.min(
+                              MORE_REPOSITORIES_STEP,
+                              remainingRepositories,
+                            )}{" "}
+                            more
+                          </button>
+                        </div>
                       )}
                     </div>
                   )}

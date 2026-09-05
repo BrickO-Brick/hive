@@ -131,7 +131,7 @@ export function HiveWorkspaceSummary({
 
   return (
     <div className="mb-4 rounded-xl border border-[#BFD4FF] bg-[#EEF5FF] p-3 text-xs text-[#29466F] shadow-sm">
-      <div className="flex flex-col items-stretch gap-3 min-[1400px]:flex-row min-[1400px]:items-center min-[1400px]:justify-between">
+      <div className="flex flex-col items-stretch gap-3 @4xl/hive-main:flex-row @4xl/hive-main:items-center @4xl/hive-main:justify-between">
         <div className="flex items-center gap-2 font-bold text-[#10233F]">
           <GitBranch size={14} /> Isolated repository workspace
         </div>
@@ -162,7 +162,7 @@ export function HiveWorkspaceSummary({
         {snapshotDate}. Start a new discussion when work must begin from the
         latest default branch.
       </p>
-      <dl className="mt-2 grid gap-1.5 min-[1400px]:grid-cols-3">
+      <dl className="mt-2 grid gap-1.5 @4xl/hive-main:grid-cols-3">
         {values.map(([label, value]) => (
           <div
             key={label}

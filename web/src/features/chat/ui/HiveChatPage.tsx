@@ -47,6 +47,7 @@ import type { BrickOCelebration } from "./BrickOPet";
 import { deriveBrickOStatus } from "./brickOStatus";
 import type { HiveConversation } from "./discussionMessages";
 import { isAgentFailureMessage } from "./agentFailure";
+import { latestDiscussionActivity } from "./discussionActivity";
 import { HiveComposer } from "./HiveComposer";
 import { HiveAccountMenu } from "./HiveAccountMenu";
 import { HiveChatEmptyState } from "./HiveChatEmptyState";
@@ -179,6 +180,10 @@ export function HiveChatPage() {
   const { agentPubkey, participants, profiles } = useHiveParticipantDirectory(
     identity,
     messages,
+  );
+  const discussionActivity = useMemo(
+    () => latestDiscussionActivity(discussionList, messages),
+    [discussionList, messages],
   );
   const selectSurface = useCallback((next: "chat" | "repositories") => {
     setSurface(next);
@@ -583,6 +588,7 @@ export function HiveChatPage() {
         activeDiscussionId={activeDiscussionId}
         conversations={conversationList}
         discussions={discussionList}
+        discussionActivity={discussionActivity}
         identityEmail={identity.email}
         onConversation={openConversation}
         onDiscussion={openDiscussion}
@@ -611,6 +617,7 @@ export function HiveChatPage() {
               collapsed={false}
               conversations={conversationList}
               discussions={discussionList}
+              discussionActivity={discussionActivity}
               identityEmail={identity.email}
               mobile
               onConversation={openConversation}
@@ -628,7 +635,7 @@ export function HiveChatPage() {
         </div>
       )}
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
+      <main className="@container/hive-main flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <header className="z-10 flex h-14 shrink-0 items-center justify-between gap-2 overflow-visible border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <button

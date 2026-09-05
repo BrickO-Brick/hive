@@ -93,7 +93,7 @@ export function HiveHeaderCollaboration({
   return (
     <div className="flex items-center gap-2">
       <div
-        className="hidden -space-x-2 min-[1700px]:flex"
+        className="hidden -space-x-2 @6xl/hive-main:flex"
         title="Conversation members"
       >
         {visible.map((participant) =>
@@ -125,7 +125,7 @@ export function HiveHeaderCollaboration({
         aria-label={threadsOpen ? "Hide threads" : "Open threads"}
       >
         <MessageSquareText size={15} />
-        <span className="hidden min-[1600px]:inline">Threads</span>
+        <span className="hidden @5xl/hive-main:inline">Threads</span>
         {threadCount > 0 && (
           <span className="rounded-full bg-[#EEF5FF] px-1.5 py-0.5 text-[10px] text-[#1F55C5]">
             {threadCount}
@@ -197,14 +197,14 @@ export function HiveThreadPanel({
     <>
       <button
         type="button"
-        className="fixed inset-0 z-20 bg-[#10213F]/20 backdrop-blur-[1px] 2xl:hidden"
+        className="fixed inset-0 z-20 bg-[#10213F]/20 backdrop-blur-[1px] @6xl/hive-main:hidden"
         onClick={onClose}
         aria-label="Dismiss threads"
       />
       <aside
         id="hive-thread-panel"
         aria-label="Conversation threads"
-        className="fixed inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] sm:w-[min(24rem,calc(100vw-1rem))] 2xl:static 2xl:w-80 2xl:shadow-none"
+        className="fixed inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] sm:w-[min(24rem,calc(100vw-1rem))] @6xl/hive-main:static @6xl/hive-main:w-80 @6xl/hive-main:shadow-none"
       >
         <div className="flex min-h-14 w-full min-w-0 items-center justify-between gap-2 border-b border-[#D8DEE8] px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
