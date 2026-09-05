@@ -1238,9 +1238,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.goto("/app");
-  await expect(
-    page.getByTestId("desktop-navigation").getByText("Chat connected"),
-  ).toBeVisible();
+  await expect(page.getByTestId("header-connection-status")).toContainText(
+    "Chat connected",
+  );
+  await expect(page.getByTestId("desktop-navigation")).not.toContainText(
+    "Chat connected",
+  );
   await expect(page.getByText("Online and ready").first()).toBeVisible();
   await page.goto("/app?discussion=99999999-2222-4333-8444-555555555555");
   await expect(page.getByTestId("discussion-unavailable")).toBeVisible();
@@ -1387,6 +1390,19 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toBeVisible();
   await expect(
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
+  ).toBeVisible();
+  const brickOOwnerToggle = page.getByTestId(
+    "github-owner-toggle-BrickO-Brick",
+  );
+  await brickOOwnerToggle.click();
+  await expect(brickOOwnerToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-hive"),
+  ).toBeHidden();
+  await brickOOwnerToggle.click();
+  await expect(brickOOwnerToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.getByTestId("github-repository-BrickO-Brick-hive"),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("guide-05-repositories.png"),

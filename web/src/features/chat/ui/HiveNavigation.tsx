@@ -196,6 +196,36 @@ export function HiveNavigation({
               <GitBranch size={19} />
             </RailButton>
           </div>
+          <div className="group relative mb-3">
+            <div
+              className="grid size-10 place-items-center rounded-full border border-[#D8DEE8] bg-[#F7FAFC] shadow-sm"
+              data-testid="bricko-status-compact"
+              title={`BrickO: ${agentState.label}`}
+            >
+              <div className="relative size-8">
+                <BrickOPet
+                  mode={
+                    connected && agentState.label !== "Offline"
+                      ? "still"
+                      : "offline"
+                  }
+                  size="sm"
+                />
+                <span
+                  className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white ${toneClasses}`}
+                />
+              </div>
+            </div>
+            <div className="pointer-events-none absolute bottom-0 left-12 z-30 w-56 translate-y-1 rounded-lg border border-[#D8DEE8] bg-white p-3 opacity-0 shadow-[0_10px_24px_rgba(16,35,63,0.16)] transition group-hover:translate-y-0 group-hover:opacity-100">
+              <p className="text-sm font-bold text-[#10233F]">BrickO</p>
+              <p className="text-xs font-semibold text-[#607086]">
+                {agentState.label}
+              </p>
+              <p className="mt-1 text-xs leading-4 text-[#607086]">
+                {agentState.detail}
+              </p>
+            </div>
+          </div>
           <div className="relative mt-3 grid size-9 place-items-center rounded-full bg-[#10213F] text-[10px] font-extrabold text-white">
             {identityEmail.slice(0, 2).toUpperCase()}
             <span className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#1FA971]" />
@@ -389,43 +419,40 @@ export function HiveNavigation({
                   No chats or repositories match “{query}”.
                 </p>
               )}
-
-            <div className="mx-1 my-4 border-t border-[#E2E8F0]" />
-            <section
-              className="rounded-lg border border-[#D8DEE8] bg-[#F7FAFC] p-3"
-              aria-label="BrickO status"
-            >
-              <div className="flex items-center gap-2.5">
-                <div className="relative size-8 shrink-0">
-                  <BrickOPet
-                    mode={
-                      connected && agentState.label !== "Offline"
-                        ? "still"
-                        : "offline"
-                    }
-                    size="sm"
-                  />
-                  <span
-                    className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white ${toneClasses}`}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-[#10233F]">
-                      BrickO
-                    </span>
-                    <span className="rounded-full border border-[#D8DEE8] bg-white px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-[#526178]">
-                      Agent
-                    </span>
-                  </div>
-                  <p className="truncate text-[11px] font-semibold text-[#607086]">
-                    {agentState.label}
-                  </p>
-                </div>
-              </div>
-            </section>
           </nav>
-
+          <section
+            className="group relative shrink-0 border-t border-[#E2E8F0] p-3"
+            aria-label="BrickO status"
+          >
+            <div
+              className="flex w-fit items-center rounded-full border border-[#D8DEE8] bg-[#F7FAFC] p-1.5 shadow-sm"
+              data-testid="bricko-status-compact"
+              title={`BrickO: ${agentState.label}`}
+            >
+              <div className="relative size-8">
+                <BrickOPet
+                  mode={
+                    connected && agentState.label !== "Offline"
+                      ? "still"
+                      : "offline"
+                  }
+                  size="sm"
+                />
+                <span
+                  className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white ${toneClasses}`}
+                />
+              </div>
+            </div>
+            <div className="pointer-events-none absolute bottom-3 left-16 z-30 w-56 translate-y-1 rounded-lg border border-[#D8DEE8] bg-white p-3 opacity-0 shadow-[0_10px_24px_rgba(16,35,63,0.16)] transition group-hover:translate-y-0 group-hover:opacity-100">
+              <p className="text-sm font-bold text-[#10233F]">BrickO</p>
+              <p className="text-xs font-semibold text-[#607086]">
+                {agentState.label}
+              </p>
+              <p className="mt-1 text-xs leading-4 text-[#607086]">
+                {agentState.detail}
+              </p>
+            </div>
+          </section>
           <div className="shrink-0 border-t border-[#E2E8F0] bg-[#FBFCFE] p-3">
             <div className="flex items-center gap-2 text-[11px] font-semibold text-[#42526B]">
               {connected ? (

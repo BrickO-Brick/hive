@@ -7,6 +7,8 @@ import {
   MessageCircle,
   RefreshCw,
   ShieldCheck,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import {
   type FormEvent,
@@ -705,6 +707,18 @@ export function HiveChatPage() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2 lg:gap-3">
+            <div
+              className="hidden items-center gap-1.5 text-xs font-semibold text-[#42526B] sm:flex"
+              aria-live="polite"
+              data-testid="header-connection-status"
+            >
+              {connected ? (
+                <Wifi size={14} className="text-[#1FA971]" />
+              ) : (
+                <WifiOff size={14} className="text-[#D9861C]" />
+              )}
+              <span>{connected ? "Chat connected" : "Chat reconnecting"}</span>
+            </div>
             {surface === "chat" && (
               <HiveHeaderCollaboration
                 onThreads={() => setThreadPanelOpen((current) => !current)}
