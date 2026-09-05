@@ -93,7 +93,7 @@ export function HiveHeaderCollaboration({
   return (
     <div className="flex items-center gap-2">
       <div
-        className="hidden -space-x-2 min-[1500px]:flex"
+        className="hidden -space-x-2 min-[1700px]:flex"
         title="Conversation members"
       >
         {visible.map((participant) =>
@@ -125,7 +125,7 @@ export function HiveHeaderCollaboration({
         aria-label={threadsOpen ? "Hide threads" : "Open threads"}
       >
         <MessageSquareText size={15} />
-        <span className="hidden min-[1400px]:inline">Threads</span>
+        <span className="hidden min-[1600px]:inline">Threads</span>
         {threadCount > 0 && (
           <span className="rounded-full bg-[#EEF5FF] px-1.5 py-0.5 text-[10px] text-[#1F55C5]">
             {threadCount}

@@ -196,7 +196,7 @@ export function OneBrickRepositoryCatalog({
 
   return (
     <div className="mx-auto w-full max-w-[90rem] px-4 py-6 sm:px-6">
-      <div className="flex min-w-0 flex-col gap-4 min-[1400px]:flex-row min-[1400px]:items-end min-[1400px]:justify-between">
+      <div className="flex min-w-0 flex-col gap-4 min-[1600px]:flex-row min-[1600px]:items-end min-[1600px]:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E35E43]">
             <Boxes size={14} /> GitHub repositories
@@ -209,7 +209,7 @@ export function OneBrickRepositoryCatalog({
             independent discussion topics as you need.
           </p>
         </div>
-        <div className="relative w-full min-[1400px]:max-w-sm">
+        <div className="relative w-full min-[1600px]:max-w-sm">
           <Search
             aria-hidden
             className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8491A4]"
@@ -320,7 +320,7 @@ export function OneBrickRepositoryCatalog({
                       {ownerRepositories.map(
                         ({ repository, category: repositoryCategory }) => (
                           <article
-                            className="flex min-w-0 flex-col items-stretch gap-2 border-b border-[#E2E8F0] p-3 last:border-b-0 min-[1400px]:flex-row min-[1400px]:items-center"
+                            className="flex min-w-0 flex-col items-stretch gap-2 border-b border-[#E2E8F0] p-3 last:border-b-0 min-[1600px]:flex-row min-[1600px]:items-center"
                             data-testid={`github-repository-${repository.owner}-${repository.name}`}
                             key={`${repository.owner}/${repository.name}`}
                           >
@@ -354,7 +354,7 @@ export function OneBrickRepositoryCatalog({
                                 )}
                               </div>
                             </div>
-                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 min-[1400px]:shrink-0 min-[1400px]:justify-start">
+                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 min-[1600px]:shrink-0 min-[1600px]:justify-start">
                               <div className="flex min-w-0 flex-wrap items-center gap-3 text-[10px] text-[#8491A4]">
                                 <span className="flex items-center gap-1">
                                   <BookOpen size={11} />{" "}

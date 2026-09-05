@@ -1445,7 +1445,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByText("2 organizations · 3 repositories", { exact: true }),
   ).toBeVisible();
-  await page.setViewportSize({ width: 1155, height: 720 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   const narrowCatalog = page.getByTestId(
     "github-repository-BrickI-Brick-dummy",
   );
@@ -1455,7 +1455,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   expect(narrowDiscussBounds).not.toBeNull();
   expect(
     (narrowDiscussBounds?.x ?? 0) + (narrowDiscussBounds?.width ?? 0),
-  ).toBeLessThanOrEqual(1155);
+  ).toBeLessThanOrEqual(1440);
   await page.setViewportSize({ width: 1536, height: 1024 });
   await page.screenshot({
     path: testInfo.outputPath("guide-05-repositories.png"),
