@@ -43,6 +43,22 @@ const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_EDITABLE_FILE_BYTES: u64 = 512 * 1024;
 const MAX_WORKSPACE_LOCKS: usize = 1_024;
 
+const HIDDEN_WORKSPACE_SEGMENTS: &[&str] = &[
+    ".agents",
+    ".claude",
+    ".codex",
+    ".git",
+    ".goose",
+    ".intersect",
+    ".release",
+    ".vscode",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "test-results",
+];
+
 static GIT_WORKSPACE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 static LEGACY_MANIFEST_CLAIM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -894,6 +910,11 @@ fn workspace_file_summaries(
     let mut matches = paths
         .iter()
         .filter(|path| {
+            !path
+                .split('/')
+                .any(|segment| HIDDEN_WORKSPACE_SEGMENTS.contains(&segment))
+        })
+        .filter(|path| {
             normalized_query
                 .as_ref()
                 .is_none_or(|query| path.to_lowercase().contains(query))
@@ -1727,6 +1748,17 @@ mod tests {
         assert_eq!(initial.len(), MAX_WORKSPACE_FILE_RESULTS);
         assert_eq!(total_files, 451);
         assert!(has_more_files);
+
+        let noisy_paths = vec![
+            ".codex/session.json".into(),
+            "node_modules/package/index.js".into(),
+            "target/debug/buzz".into(),
+            "src/app.ts".into(),
+        ];
+        let (visible, total_visible, _) =
+            workspace_file_summaries(&noisy_paths, &HashMap::new(), None);
+        assert_eq!(total_visible, 1);
+        assert_eq!(visible[0].path, "src/app.ts");
 
         let (matches, total_matches, has_more_matches) =
             workspace_file_summaries(&paths, &statuses, Some("ONEBRICK_DISCUSSIONS"));

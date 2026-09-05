@@ -840,7 +840,7 @@ export function HiveChatPage() {
                   const day = formatMessageDay(message.created_at);
                   const showDay = day !== previousDay;
                   const retryTarget =
-                    fromBrickO && isAgentFailureMessage(message.content)
+                    !mine && isAgentFailureMessage(message.content)
                       ? visibleMessages
                           .slice(0, index)
                           .reverse()

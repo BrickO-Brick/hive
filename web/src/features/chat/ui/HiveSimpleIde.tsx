@@ -41,6 +41,8 @@ type BrowserDraft = {
   digest: string;
 };
 
+const INITIAL_VISIBLE_FILES = 80;
+
 function browserDraftKey(discussionId: string, path: string): string {
   return `hive.simple-ide.draft.v1:${discussionId}:${path}`;
 }
@@ -48,6 +50,33 @@ function browserDraftKey(discussionId: string, path: string): string {
 function fileLabel(path: string) {
   const parts = path.split("/");
   return parts[parts.length - 1] ?? path;
+}
+
+function fileContext(path: string) {
+  const parts = path.split("/");
+  return parts.length > 1 ? parts.slice(0, -1).join("/") : "Repository root";
+}
+
+function languageLabel(path: string) {
+  const extension = path.split(".").pop()?.toLowerCase();
+  const labels: Record<string, string> = {
+    css: "CSS",
+    dart: "Dart",
+    html: "HTML",
+    js: "JavaScript",
+    json: "JSON",
+    jsx: "JSX",
+    md: "Markdown",
+    py: "Python",
+    rs: "Rust",
+    sh: "Shell",
+    sql: "SQL",
+    ts: "TypeScript",
+    tsx: "TSX",
+    yaml: "YAML",
+    yml: "YAML",
+  };
+  return extension ? (labels[extension] ?? extension.toUpperCase()) : "Text";
 }
 
 function errorMessage(error: unknown) {
@@ -141,6 +170,10 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
   } | null>(null);
   const [searchingFiles, setSearchingFiles] = useState(false);
   const [fileSearchError, setFileSearchError] = useState("");
+  const [visibleFileLimit, setVisibleFileLimit] = useState(
+    INITIAL_VISIBLE_FILES,
+  );
+  const [editorScrollTop, setEditorScrollTop] = useState(0);
 
   const changed = Boolean(file && content !== file.content);
   const confirmDiscard = useCallback(() => {
@@ -371,16 +404,28 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
     [fileQuery, fileSearch, workspace],
   );
 
+  const visibleFiles = useMemo(
+    () => displayedFiles.slice(0, visibleFileLimit),
+    [displayedFiles, visibleFileLimit],
+  );
   const directories = useMemo(() => {
     const values = new Set<string>();
-    for (const item of displayedFiles) {
+    for (const item of visibleFiles) {
       const directory = item.path.includes("/")
         ? item.path.split("/")[0]
         : "Root";
       values.add(directory);
     }
     return [...values];
-  }, [displayedFiles]);
+  }, [visibleFiles]);
+  const lineNumbers = useMemo(
+    () =>
+      Array.from(
+        { length: content.split("\n").length },
+        (_, index) => index + 1,
+      ).join("\n"),
+    [content],
+  );
 
   return (
     <section
@@ -437,7 +482,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
             }}
             disabled={busy || loading}
             className="grid size-8 place-items-center rounded-md border border-[#D8DEE8] text-[#526178] hover:bg-[#F7FAFC] disabled:opacity-50"
-            aria-label="Refresh workspace"
+            aria-label="Reload workspace"
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
           </button>
@@ -457,9 +502,10 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                   <input
                     type="search"
                     value={fileQuery}
-                    onChange={(event) =>
-                      setFileQuery(event.currentTarget.value)
-                    }
+                    onChange={(event) => {
+                      setFileQuery(event.currentTarget.value);
+                      setVisibleFileLimit(INITIAL_VISIBLE_FILES);
+                    }}
                     placeholder="Find file"
                     className="h-8 w-full rounded-md border border-[#D8DEE8] bg-white pl-8 pr-2 text-xs outline-none focus:border-[#2F6FED]"
                   />
@@ -492,7 +538,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                     <div className="flex items-center gap-1.5 px-1 py-1 text-xs font-bold text-[#42526B]">
                       <Folder size={13} /> {directory}
                     </div>
-                    {displayedFiles
+                    {visibleFiles
                       .filter((item) =>
                         directory === "Root"
                           ? !item.path.includes("/")
@@ -511,8 +557,13 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                           }`}
                         >
                           <FileCode2 size={13} className="shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">
-                            {fileLabel(item.path)}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              {fileLabel(item.path)}
+                            </span>
+                            <span className="block truncate text-[9px] font-normal text-[#8491A4]">
+                              {fileContext(item.path)}
+                            </span>
                           </span>
                           {item.status && (
                             <span
@@ -529,6 +580,20 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                   <p className="px-2 py-4 text-center text-xs text-[#607086]">
                     No files match “{fileQuery}”.
                   </p>
+                )}
+                {visibleFiles.length < displayedFiles.length && (
+                  <button
+                    type="button"
+                    className="mt-2 w-full rounded-md border border-[#D8DEE8] bg-white px-2 py-2 text-[10px] font-bold text-[#42526B] hover:bg-[#F7FAFC]"
+                    onClick={() =>
+                      setVisibleFileLimit(
+                        (current) => current + INITIAL_VISIBLE_FILES,
+                      )
+                    }
+                  >
+                    Show more files (
+                    {displayedFiles.length - visibleFiles.length} remaining)
+                  </button>
                 )}
                 {fileSearch?.hasMoreFiles && (
                   <p className="px-2 py-2 text-center text-[10px] leading-4 text-[#607086]">
@@ -561,6 +626,11 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                       )}
                     </span>
                   ))}
+                  {selectedPath && (
+                    <span className="ml-auto shrink-0 rounded bg-[#EEF3F8] px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#607086]">
+                      {languageLabel(selectedPath)}
+                    </span>
+                  )}
                 </div>
                 <div className="relative min-h-0 flex-1 bg-[#FBFCFE]">
                   {loading && (
@@ -572,22 +642,41 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                     </div>
                   )}
                   {file ? (
-                    <textarea
-                      value={content}
-                      onChange={(event) => setContent(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (
-                          (event.metaKey || event.ctrlKey) &&
-                          event.key.toLowerCase() === "s"
-                        ) {
-                          event.preventDefault();
-                          void save();
+                    <div className="relative h-full min-h-80 overflow-hidden">
+                      <pre
+                        aria-hidden="true"
+                        className="pointer-events-none absolute bottom-0 left-0 top-0 w-12 overflow-hidden border-r border-[#E2E8F0] bg-[#F4F7FA] px-2 py-4 text-right font-mono text-[12px] leading-6 text-[#9AA7B8] sm:py-5"
+                      >
+                        <span
+                          className="block"
+                          style={{
+                            transform: `translateY(-${editorScrollTop}px)`,
+                          }}
+                        >
+                          {lineNumbers}
+                        </span>
+                      </pre>
+                      <textarea
+                        value={content}
+                        onChange={(event) => setContent(event.target.value)}
+                        onScroll={(event) =>
+                          setEditorScrollTop(event.currentTarget.scrollTop)
                         }
-                      }}
-                      spellCheck={false}
-                      aria-label={`Editing ${file.path}`}
-                      className="h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px] leading-6 text-[#132D4F] outline-none sm:p-5"
-                    />
+                        onKeyDown={(event) => {
+                          if (
+                            (event.metaKey || event.ctrlKey) &&
+                            event.key.toLowerCase() === "s"
+                          ) {
+                            event.preventDefault();
+                            void save();
+                          }
+                        }}
+                        spellCheck={false}
+                        wrap="off"
+                        aria-label={`Editing ${file.path}`}
+                        className="h-full min-h-80 w-full resize-none bg-transparent py-4 pl-16 pr-4 font-mono text-[13px] leading-6 text-[#132D4F] outline-none sm:py-5 sm:pr-5"
+                      />
+                    </div>
                   ) : (
                     <div className="grid h-full min-h-80 place-items-center text-xs text-[#607086]">
                       Select a text file to begin.

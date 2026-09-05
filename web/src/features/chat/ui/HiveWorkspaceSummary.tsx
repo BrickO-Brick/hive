@@ -5,6 +5,7 @@ import {
   Copy,
   GitBranch,
   LoaderCircle,
+  Clock3,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -65,6 +66,10 @@ export function HiveWorkspaceSummary({
     ["Base", discussion.baseSha],
     ["HEAD", discussion.currentHeadSha],
   ] as const;
+  const snapshotDate = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(discussion.createdAt));
 
   const closed = discussion.status === "closed";
   const cleanupPending = discussion.status === "cleanup_pending";
@@ -152,6 +157,11 @@ export function HiveWorkspaceSummary({
       <div className="mt-1.5 font-semibold">
         {discussion.owner}/{discussion.repository}
       </div>
+      <p className="mt-1 flex items-center gap-1.5 text-[10px] text-[#526178]">
+        <Clock3 aria-hidden="true" size={11} /> Base snapshot created{" "}
+        {snapshotDate}. Start a new discussion when work must begin from the
+        latest default branch.
+      </p>
       <dl className="mt-2 grid gap-1.5 min-[1400px]:grid-cols-3">
         {values.map(([label, value]) => (
           <div

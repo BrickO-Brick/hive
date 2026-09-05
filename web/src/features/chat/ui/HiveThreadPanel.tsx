@@ -24,6 +24,19 @@ type ThreadGroup = {
   rootId: string;
 };
 
+function latestThreadMessage(thread: ThreadGroup): NostrEvent | null {
+  return thread.replies[thread.replies.length - 1] ?? thread.root;
+}
+
+function formatThreadActivity(createdAt: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+  }).format(new Date(createdAt * 1_000));
+}
+
 function threadAnchorId(message: NostrEvent): string | null {
   return (
     message.tags.find(
@@ -59,10 +72,8 @@ export function groupConversationThreads(
       rootId,
     }))
     .sort((left, right) => {
-      const leftTime =
-        left.root?.created_at ?? left.replies[0]?.created_at ?? 0;
-      const rightTime =
-        right.root?.created_at ?? right.replies[0]?.created_at ?? 0;
+      const leftTime = latestThreadMessage(left)?.created_at ?? 0;
+      const rightTime = latestThreadMessage(right)?.created_at ?? 0;
       return rightTime - leftTime;
     });
 }
@@ -283,33 +294,61 @@ export function HiveThreadPanel({
                         normalizePubkey(agentPubkey ?? ""),
                     )
                   : "Original message";
-                const latest =
-                  thread.replies[thread.replies.length - 1] ?? thread.root;
-                const latestAuthor = latest
+                const latest = latestThreadMessage(thread);
+                const latestPresentation = latest
                   ? participantPresentation(
                       latest.pubkey,
                       identityPubkey,
                       agentPubkey,
                       profiles,
-                    ).authorLabel
-                  : "Unknown";
+                    )
+                  : null;
+                const latestAuthor =
+                  latestPresentation?.authorLabel ?? "Unknown";
+                const participantCount = new Set(
+                  [thread.root, ...thread.replies]
+                    .filter((message): message is NostrEvent =>
+                      Boolean(message),
+                    )
+                    .map((message) => normalizePubkey(message.pubkey)),
+                ).size;
+                const activity = latest
+                  ? formatThreadActivity(latest.created_at)
+                  : "Unknown time";
                 return (
                   <button
                     type="button"
                     key={thread.rootId}
                     onClick={() => setSelectedRootId(thread.rootId)}
                     className="w-full rounded-lg border border-transparent px-3 py-3 text-left transition hover:border-[#D8DEE8] hover:bg-[#F7FAFC] focus-visible:border-[#2F6FED] focus-visible:outline-none"
-                    aria-label={`Open thread: ${rootLabel}`}
+                    aria-label={`Open thread: ${rootLabel}. ${thread.replies.length} replies, ${participantCount} participants. Latest by ${latestAuthor}, ${activity}`}
                   >
                     <p className="line-clamp-2 text-xs font-bold leading-5 text-[#24324A]">
                       {rootLabel}
                     </p>
-                    <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-[#607086]">
-                      <span>
+                    <div className="mt-2 flex items-center gap-2 text-[10px] text-[#607086]">
+                      {latestPresentation?.fromBrickO ? (
+                        <span
+                          className="grid size-6 shrink-0 place-items-center rounded-full border border-[#FFD3C9] bg-[#FFF1EB]"
+                          aria-hidden="true"
+                        >
+                          <BrickOPet mode="still" size="sm" />
+                        </span>
+                      ) : (
+                        <span
+                          className="grid size-6 shrink-0 place-items-center rounded-full bg-[#10213F] text-[8px] font-extrabold text-white"
+                          aria-hidden="true"
+                        >
+                          {participantInitials(latestAuthor)}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        {latestAuthor} · {activity}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-[#EEF3F8] px-1.5 py-0.5 font-bold text-[#526178]">
                         {thread.replies.length}{" "}
                         {thread.replies.length === 1 ? "reply" : "replies"}
                       </span>
-                      <span className="truncate">Latest · {latestAuthor}</span>
                     </div>
                   </button>
                 );

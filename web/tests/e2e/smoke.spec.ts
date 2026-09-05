@@ -1273,6 +1273,13 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByTestId("desktop-navigation")).not.toContainText(
     "Chat connected",
   );
+  const navigationFilter = page.getByRole("textbox", {
+    name: "Filter chats and repository discussions",
+  });
+  await navigationFilter.fill("does-not-exist");
+  await expect(page.getByText("0 navigation matches")).toBeVisible();
+  await page.getByRole("button", { name: "Clear navigation filter" }).click();
+  await expect(navigationFilter).toHaveValue("");
   await expect(page.getByText("Online and ready").first()).toBeVisible();
   await page.goto("/app?discussion=99999999-2222-4333-8444-555555555555");
   await expect(page.getByTestId("discussion-unavailable")).toBeVisible();
@@ -1479,6 +1486,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByRole("heading", { name: "Improve Mantul deployment safety" }),
   ).toBeVisible();
   await expect(page.getByText("Isolated repository workspace")).toBeVisible();
+  await expect(page.getByText(/Base snapshot created/)).toBeVisible();
   await expect(
     page.getByPlaceholder("Message BrickO about mantul-be…"),
   ).toHaveValue(/BrickO-Brick\/mantul-be/);
@@ -1489,6 +1497,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByRole("button", { name: "Open Simple IDE" }).click();
   await expect(page.getByTestId("simple-ide")).toBeVisible();
+  await expect(page.getByText("TypeScript", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
       "Showing 3 of 5,023 files. Search checks the full repository.",

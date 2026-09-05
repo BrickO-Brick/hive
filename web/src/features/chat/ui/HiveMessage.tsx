@@ -2,7 +2,10 @@ import { CheckCircle2, RotateCcw, Reply } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { NostrEvent } from "@/shared/lib/nostr-client";
-import { agentFailureDisplayContent } from "./agentFailure";
+import {
+  agentFailureDisplayContent,
+  isAgentFailureMessage,
+} from "./agentFailure";
 import { BrickOPet } from "./BrickOPet";
 import { participantInitials } from "./useHiveParticipantDirectory";
 import { normalizeMessageContent } from "./messageContent";
@@ -35,12 +38,14 @@ export function HiveMessage({
   onRestoreRequest,
   showDay,
 }: Props) {
-  const failureAwareContent = fromBrickO
+  const agentFailure = !mine && isAgentFailureMessage(message.content);
+  const failureAwareContent = agentFailure
     ? agentFailureDisplayContent(message.content)
     : message.content;
-  const displayContent = fromBrickO
-    ? normalizeMessageContent(failureAwareContent)
-    : failureAwareContent;
+  const displayContent =
+    fromBrickO || agentFailure
+      ? normalizeMessageContent(failureAwareContent)
+      : failureAwareContent;
   return (
     <div>
       {showDay && (

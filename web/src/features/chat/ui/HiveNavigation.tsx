@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   Plus,
   Search,
+  SearchX,
   X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -136,6 +137,8 @@ export function HiveNavigation({
     );
   }, [activeRepository]);
   const normalizedQuery = query.trim().toLowerCase();
+  const generalMatches =
+    !normalizedQuery || "bricko-lab".includes(normalizedQuery);
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(normalizedQuery),
   );
@@ -154,6 +157,13 @@ export function HiveNavigation({
         !normalizedQuery ||
         group.label.toLowerCase().includes(normalizedQuery) ||
         group.discussions.length > 0,
+    );
+  const navigationMatchCount =
+    (generalMatches ? 1 : 0) +
+    filteredConversations.length +
+    filteredGroups.reduce(
+      (total, group) => total + group.discussions.length,
+      0,
     );
 
   const toggleRepository = (key: string) => {
@@ -236,7 +246,7 @@ export function HiveNavigation({
           <div className="border-b border-[#E2E8F0] p-3">
             <label className="relative block">
               <span className="sr-only">
-                Search conversations and repositories
+                Filter chats and repository discussions
               </span>
               <Search
                 aria-hidden="true"
@@ -246,10 +256,26 @@ export function HiveNavigation({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.currentTarget.value)}
-                placeholder="Search or jump to"
-                className="h-10 w-full rounded-lg border border-[#D8DEE8] bg-[#F9FBFD] pl-9 pr-3 text-sm text-[#172033] outline-none transition placeholder:text-[#8491A4] focus:border-[#2F6FED]/60 focus:bg-white focus:ring-4 focus:ring-[#2F6FED]/10"
+                placeholder="Filter navigation"
+                className="h-10 w-full rounded-lg border border-[#D8DEE8] bg-[#F9FBFD] pl-9 pr-9 text-sm text-[#172033] outline-none transition placeholder:text-[#8491A4] focus:border-[#2F6FED]/60 focus:bg-white focus:ring-4 focus:ring-[#2F6FED]/10"
               />
+              {query && (
+                <button
+                  type="button"
+                  aria-label="Clear navigation filter"
+                  className="absolute right-2 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded text-[#607086] hover:bg-[#EEF3F8] hover:text-[#10233F]"
+                  onClick={() => setQuery("")}
+                >
+                  <SearchX size={14} />
+                </button>
+              )}
             </label>
+            {normalizedQuery && (
+              <p className="mt-2 px-1 text-[10px] text-[#607086]" role="status">
+                {navigationMatchCount} navigation{" "}
+                {navigationMatchCount === 1 ? "match" : "matches"}
+              </p>
+            )}
           </div>
 
           <nav
@@ -269,26 +295,28 @@ export function HiveNavigation({
                 <Plus size={14} /> New chat
               </button>
             </div>
-            <button
-              type="button"
-              className={`flex h-10 w-full items-center gap-2 rounded-lg px-2.5 text-sm font-semibold transition ${
-                surface === "chat" &&
-                activeDiscussionId === null &&
-                activeConversationId === null
-                  ? "bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
-                  : "text-[#526178] hover:bg-[#F7FAFC]"
-              }`}
-              aria-current={
-                surface === "chat" &&
-                activeDiscussionId === null &&
-                activeConversationId === null
-                  ? "page"
-                  : undefined
-              }
-              onClick={onGeneral}
-            >
-              <Hash size={15} /> <span className="truncate">bricko-lab</span>
-            </button>
+            {generalMatches && (
+              <button
+                type="button"
+                className={`flex h-10 w-full items-center gap-2 rounded-lg px-2.5 text-sm font-semibold transition ${
+                  surface === "chat" &&
+                  activeDiscussionId === null &&
+                  activeConversationId === null
+                    ? "bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
+                    : "text-[#526178] hover:bg-[#F7FAFC]"
+                }`}
+                aria-current={
+                  surface === "chat" &&
+                  activeDiscussionId === null &&
+                  activeConversationId === null
+                    ? "page"
+                    : undefined
+                }
+                onClick={onGeneral}
+              >
+                <Hash size={15} /> <span className="truncate">bricko-lab</span>
+              </button>
+            )}
             {filteredConversations.map((conversation) => (
               <button
                 type="button"
@@ -383,6 +411,7 @@ export function HiveNavigation({
             </div>
             {normalizedQuery &&
               filteredConversations.length === 0 &&
+              !generalMatches &&
               filteredGroups.length === 0 && (
                 <p className="px-2 py-6 text-center text-xs text-[#607086]">
                   No chats or repositories match “{query}”.
