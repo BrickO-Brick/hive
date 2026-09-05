@@ -93,6 +93,7 @@ import {
 import { useHiveChatHistory } from "./useHiveChatHistory";
 import { useCloseOnEscape } from "./useCloseOnEscape";
 import { useHiveVisibleMessages } from "./useHiveVisibleMessages";
+import { useMobileNavigationFocus } from "./useMobileNavigationFocus";
 
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
@@ -148,6 +149,7 @@ export function HiveChatPage() {
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const mobileNavigationFocus = useMobileNavigationFocus(mobileNavigationOpen);
   const discussionList = discussions.data ?? [];
   const activeDiscussion =
     discussionList.find((item) => item.id === activeDiscussionId) ?? null;
@@ -610,6 +612,10 @@ export function HiveChatPage() {
           <aside
             data-testid="mobile-navigation"
             className="relative flex h-full w-[min(320px,90vw)] flex-col border-r border-[#D8DEE8] bg-white shadow-[16px_0_40px_rgba(16,35,63,0.18)]"
+            role="dialog"
+            aria-label="Navigation"
+            aria-modal="true"
+            onKeyDown={mobileNavigationFocus.trapFocus}
           >
             <HiveNavigation
               activeConversationId={activeConversationId}
@@ -640,6 +646,7 @@ export function HiveChatPage() {
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <button
               type="button"
+              ref={mobileNavigationFocus.triggerRef}
               data-testid="mobile-navigation-open"
               onClick={() => setMobileNavigationOpen(true)}
               className="grid size-8 shrink-0 place-items-center rounded border border-[#FF6F52] bg-[#FF6F52] text-white shadow-[0_6px_14px_rgba(255,111,82,0.22)] transition hover:bg-[#E35E43] md:hidden"

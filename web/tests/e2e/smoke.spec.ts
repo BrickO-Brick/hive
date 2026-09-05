@@ -634,6 +634,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .update(workspaceContent)
     .digest("hex");
   let workspaceDirty = false;
+  let catalogRequestCount = 0;
   await page.route("**/api/onebrick/channels/*/participants", async (route) => {
     expect(nip98Pubkey(route.request().headers().authorization)).toBe(
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -866,6 +867,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.route("**/api/onebrick/github/repositories", async (route) => {
+    catalogRequestCount += 1;
     expect(nip98Pubkey(route.request().headers().authorization)).toBe(
       "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
     );
@@ -1456,6 +1458,15 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByText("2 organizations · 16 repositories", { exact: true }),
   ).toBeVisible();
+  await expect(page.getByText("Catalog synced just now")).toBeVisible();
+  const catalogRequestsBeforeRefresh = catalogRequestCount;
+  await page
+    .getByRole("button", { name: "Refresh repository catalog" })
+    .click();
+  await expect
+    .poll(() => catalogRequestCount)
+    .toBe(catalogRequestsBeforeRefresh + 1);
+  await expect(page.getByText("Catalog synced just now")).toBeVisible();
   await expect(page.getByText("3 more in BrickO-Brick")).toBeVisible();
   await page.getByRole("button", { name: "Show 3 more" }).click();
   await expect(
@@ -1527,6 +1538,41 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("guide-07-repo-discussion.png"),
     fullPage: true,
   });
+
+  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.evaluate(
+    ({ channelId }) => {
+      (
+        window as Window & {
+          __hiveEmit?: (event: Record<string, unknown>) => void;
+        }
+      ).__hiveEmit?.({
+        id: "e7".repeat(32),
+        pubkey: "22".repeat(32),
+        created_at: Math.floor(Date.now() / 1_000) + 2,
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["discussion", "11111111-2222-4333-8444-555555555555"],
+        ],
+        content: "Review is ready for the next pass.",
+        sig: "00".repeat(64),
+      });
+    },
+    { channelId: "62ae672f-ab7b-4619-b013-13eec0111943" },
+  );
+  const unreadDiscussion = page.getByTestId(
+    "discussion-11111111-2222-4333-8444-555555555555",
+  );
+  await expect(unreadDiscussion.getByTestId("unread-discussion")).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("guide-07a-unread-discussion.png"),
+    fullPage: true,
+  });
+  await unreadDiscussion.click();
+  await expect(unreadDiscussion.getByTestId("unread-discussion")).toHaveCount(
+    0,
+  );
 
   await page.getByRole("button", { name: "Open Simple IDE" }).click();
   await expect(page.getByTestId("simple-ide")).toBeVisible();
@@ -2075,6 +2121,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByTestId("mobile-navigation-open").click();
   await expect(page.getByTestId("mobile-navigation")).toBeVisible();
+  const mobileNavigationClose = page.getByTestId("mobile-navigation-close");
+  await expect(mobileNavigationClose).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(mobileNavigationClose).not.toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(mobileNavigationClose).toBeFocused();
   await expect(
     page.getByTestId("mobile-navigation").getByText(/.+@onebrick\.io/),
   ).toBeVisible();
@@ -2085,12 +2137,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("06-mobile-navigation-open.png"),
     fullPage: true,
   });
-  await page.getByTestId("mobile-navigation-close").click();
+  await mobileNavigationClose.click();
   await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+  await expect(page.getByTestId("mobile-navigation-open")).toBeFocused();
 
   await page.getByTestId("mobile-navigation-open").click();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
+  await expect(page.getByTestId("mobile-navigation-open")).toBeFocused();
 
   await page.getByTestId("mobile-navigation-open").click();
   await page

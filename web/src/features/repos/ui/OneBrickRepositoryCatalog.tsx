@@ -12,7 +12,7 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import type { OneBrickGitHubRepository } from "../onebrick-github-api";
 import {
@@ -87,6 +87,14 @@ function formatUpdatedAt(value: string): string {
   }).format(date);
 }
 
+function formatCatalogFreshness(updatedAt: number, now: number): string {
+  if (!updatedAt) return "Waiting for catalog sync";
+  const elapsedMinutes = Math.max(0, Math.floor((now - updatedAt) / 60_000));
+  if (elapsedMinutes < 1) return "Catalog synced just now";
+  if (elapsedMinutes === 1) return "Catalog synced 1 minute ago";
+  return `Catalog synced ${elapsedMinutes} minutes ago`;
+}
+
 function CatalogErrorState({
   error,
   retry,
@@ -126,6 +134,7 @@ export function OneBrickRepositoryCatalog({
   onDiscuss: (repository: OneBrickGitHubRepository) => void;
 }) {
   const catalog = useOneBrickGitHubCatalog();
+  const [now, setNow] = useState(Date.now);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<RepositoryCategory>("All");
   const [expandedOwners, setExpandedOwners] = useState<Set<string>>(
@@ -179,6 +188,10 @@ export function OneBrickRepositoryCatalog({
       repositories: ownerRepositories,
     }));
   }, [filtered]);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   if (catalog.isLoading) {
     return (
@@ -200,7 +213,7 @@ export function OneBrickRepositoryCatalog({
   }
 
   return (
-    <div className="mx-auto w-full max-w-[90rem] px-4 py-6 sm:px-6">
+    <div className="mx-auto w-full max-w-[90rem] px-4 py-6 sm:px-6 [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-[#2F6FED] [&_button]:focus-visible:ring-offset-2 [&_a]:focus-visible:outline-none [&_a]:focus-visible:ring-2 [&_a]:focus-visible:ring-[#2F6FED] [&_a]:focus-visible:ring-offset-2">
       <div className="flex min-w-0 flex-col gap-4 @5xl/hive-main:flex-row @5xl/hive-main:items-end @5xl/hive-main:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E35E43]">
@@ -258,11 +271,35 @@ export function OneBrickRepositoryCatalog({
         </div>
       ) : (
         <div className="mt-5 space-y-4">
-          <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E2E8F0] pb-3">
             <p className="text-xs text-[#607086]">
               {repositoriesByOwner.length} organizations · {filtered.length}{" "}
               repositories
             </p>
+            <div className="flex items-center gap-2">
+              <p
+                className="text-[10px] font-medium text-[#607086]"
+                role="status"
+                aria-live="polite"
+              >
+                {catalog.isFetching
+                  ? "Syncing repository catalog…"
+                  : formatCatalogFreshness(catalog.dataUpdatedAt, now)}
+              </p>
+              <button
+                type="button"
+                className="grid size-8 place-items-center rounded-md border border-[#C7D4E5] bg-white text-[#42526B] transition hover:border-[#2F6FED]/50 hover:text-[#1F55C5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2F6FED] focus-visible:ring-offset-2 disabled:cursor-wait disabled:text-[#8491A4]"
+                disabled={catalog.isFetching}
+                onClick={() => void catalog.refetch()}
+                aria-label="Refresh repository catalog"
+                title="Refresh repository catalog"
+              >
+                <RefreshCw
+                  className={catalog.isFetching ? "animate-spin" : ""}
+                  size={14}
+                />
+              </button>
+            </div>
           </div>
           {repositoriesByOwner.map(
             ({ owner, repositories: ownerRepositories }, ownerIndex) => {

@@ -71,6 +71,9 @@ export function useOneBrickGitHubCatalog() {
     queryKey: ["onebrick-github-repositories"],
     queryFn: fetchCatalog,
     retry: false,
+    refetchInterval: 5 * 60_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime: 60_000,
   });
 }

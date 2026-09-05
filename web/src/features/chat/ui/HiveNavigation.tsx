@@ -12,10 +12,11 @@ import {
   SearchX,
   X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import hiveIconUrl from "@/assets/hive-icon.png";
 import type { RepositoryDiscussion } from "@/features/repos/repository-discussions-api";
 import type { HiveConversation } from "./discussionMessages";
+import { useDiscussionReadState } from "./useDiscussionReadState";
 
 export type HiveAgentState = { detail: string; label: string };
 
@@ -155,6 +156,13 @@ export function HiveNavigation({
     [discussionActivity, discussions],
   );
   const [query, setQuery] = useState("");
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const unreadDiscussionIds = useDiscussionReadState({
+    activeDiscussionId,
+    activity: discussionActivity,
+    identityPubkey: identityEmail,
+    viewingDiscussion: surface === "chat",
+  });
   const activeRepository = discussions.find(
     (discussion) => discussion.id === activeDiscussionId,
   );
@@ -173,6 +181,9 @@ export function HiveNavigation({
       current.has(key) ? current : new Set([...current, key]),
     );
   }, [activeRepository]);
+  useEffect(() => {
+    if (mobile) closeButtonRef.current?.focus();
+  }, [mobile]);
   const normalizedQuery = query.trim().toLowerCase();
   const generalMatches =
     !normalizedQuery || "bricko-lab".includes(normalizedQuery);
@@ -213,7 +224,7 @@ export function HiveNavigation({
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 flex-1 [&_button]:focus-visible:outline-none [&_button]:focus-visible:ring-2 [&_button]:focus-visible:ring-[#2F6FED] [&_button]:focus-visible:ring-offset-2">
       {!mobile && (
         <div className="flex w-[68px] shrink-0 flex-col items-center border-r border-[#E2E8F0] bg-[#FBFCFE] py-3">
           <img
@@ -270,6 +281,7 @@ export function HiveNavigation({
                 mobile ? "mobile-navigation-close" : "sidebar-toggle"
               }
               onClick={onToggle}
+              ref={closeButtonRef}
               className="grid size-8 shrink-0 place-items-center rounded-md border border-[#D8DEE8] text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#1F55C5]"
               aria-label={
                 mobile ? "Close navigation menu" : "Hide navigation menu"
@@ -293,6 +305,11 @@ export function HiveNavigation({
               <input
                 value={query}
                 onChange={(event) => setQuery(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape" || !query) return;
+                  event.stopPropagation();
+                  setQuery("");
+                }}
                 placeholder="Filter navigation"
                 className="h-10 w-full rounded-lg border border-[#D8DEE8] bg-[#F9FBFD] pl-9 pr-9 text-sm text-[#172033] outline-none transition placeholder:text-[#8491A4] focus:border-[#2F6FED]/60 focus:bg-white focus:ring-4 focus:ring-[#2F6FED]/10"
               />
@@ -390,6 +407,9 @@ export function HiveNavigation({
               {filteredGroups.map((group) => {
                 const isExpanded =
                   Boolean(normalizedQuery) || expanded.has(group.key);
+                const unreadCount = group.discussions.filter((discussion) =>
+                  unreadDiscussionIds.has(discussion.id),
+                ).length;
                 return (
                   <div key={group.key}>
                     <button
@@ -408,52 +428,93 @@ export function HiveNavigation({
                         className="shrink-0 text-[#607086]"
                       />
                       <span className="truncate">{group.name}</span>
-                      <span className="ml-auto rounded-full bg-[#F1F5FA] px-1.5 py-0.5 text-[10px] font-bold text-[#607086]">
-                        {group.discussions.length}
+                      {unreadCount > 0 && (
+                        <span
+                          className="ml-auto rounded-full bg-[#2F6FED] px-1.5 py-0.5 text-[10px] font-extrabold text-white"
+                          aria-hidden="true"
+                        >
+                          {`${unreadCount} new`}
+                        </span>
+                      )}
+                      {unreadCount > 0 && (
+                        <span className="sr-only">
+                          {unreadCount} unread{" "}
+                          {unreadCount === 1 ? "discussion" : "discussions"},
+                        </span>
+                      )}
+                      {unreadCount === 0 && (
+                        <span
+                          className="ml-auto rounded-full bg-[#F1F5FA] px-1.5 py-0.5 text-[10px] font-bold text-[#607086]"
+                          aria-hidden="true"
+                        >
+                          {group.discussions.length}
+                        </span>
+                      )}
+                      <span className="sr-only">
+                        {group.discussions.length} total discussions
                       </span>
                     </button>
                     {isExpanded && (
                       <div className="ml-4 border-l border-[#D8DEE8] pl-2">
-                        {group.discussions.map((discussion) => (
-                          <button
-                            type="button"
-                            key={discussion.id}
-                            data-testid={`discussion-${discussion.id}`}
-                            className={`mt-0.5 flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold leading-4 transition ${
-                              surface === "chat" &&
-                              activeDiscussionId === discussion.id
-                                ? "bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
-                                : "text-[#526178] hover:bg-[#F7FAFC]"
-                            }`}
-                            aria-current={
-                              surface === "chat" &&
-                              activeDiscussionId === discussion.id
-                                ? "page"
-                                : undefined
-                            }
-                            onClick={() => onDiscussion(discussion)}
-                            title={`${group.label}: ${discussion.title}`}
-                          >
-                            <MessageSquareText size={14} className="shrink-0" />
-                            <span className="line-clamp-2">
-                              {discussion.title}
-                            </span>
-                            {discussionActivity.has(discussion.id) && (
-                              <time
-                                className="ml-auto shrink-0 text-[9px] font-medium text-[#8491A4]"
-                                dateTime={new Date(
-                                  (discussionActivity.get(discussion.id) ?? 0) *
-                                    1_000,
-                                ).toISOString()}
-                                title="Latest discussion activity"
-                              >
-                                {formatActivity(
-                                  discussionActivity.get(discussion.id) ?? 0,
-                                )}
-                              </time>
-                            )}
-                          </button>
-                        ))}
+                        {group.discussions.map((discussion) => {
+                          const unread = unreadDiscussionIds.has(discussion.id);
+                          return (
+                            <button
+                              type="button"
+                              key={discussion.id}
+                              data-testid={`discussion-${discussion.id}`}
+                              className={`mt-0.5 flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold leading-4 transition ${
+                                surface === "chat" &&
+                                activeDiscussionId === discussion.id
+                                  ? "bg-[#EEF5FF] text-[#1F55C5] shadow-[inset_3px_0_0_#2F6FED]"
+                                  : "text-[#526178] hover:bg-[#F7FAFC]"
+                              }`}
+                              aria-current={
+                                surface === "chat" &&
+                                activeDiscussionId === discussion.id
+                                  ? "page"
+                                  : undefined
+                              }
+                              onClick={() => onDiscussion(discussion)}
+                              title={`${group.label}: ${discussion.title}${unread ? " — unread" : ""}`}
+                            >
+                              <MessageSquareText
+                                size={14}
+                                className="shrink-0"
+                              />
+                              <span className="line-clamp-2">
+                                {discussion.title}
+                              </span>
+                              {unread && (
+                                <span
+                                  className="size-2 shrink-0 rounded-full bg-[#2F6FED] ring-2 ring-[#DCE8FF]"
+                                  aria-hidden="true"
+                                  data-testid="unread-discussion"
+                                  title="Unread discussion"
+                                />
+                              )}
+                              {unread && (
+                                <span className="sr-only">
+                                  Unread discussion
+                                </span>
+                              )}
+                              {discussionActivity.has(discussion.id) && (
+                                <time
+                                  className="ml-auto shrink-0 text-[9px] font-medium text-[#8491A4]"
+                                  dateTime={new Date(
+                                    (discussionActivity.get(discussion.id) ??
+                                      0) * 1_000,
+                                  ).toISOString()}
+                                  title="Latest discussion activity"
+                                >
+                                  {formatActivity(
+                                    discussionActivity.get(discussion.id) ?? 0,
+                                  )}
+                                </time>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
