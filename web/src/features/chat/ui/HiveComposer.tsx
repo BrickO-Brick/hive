@@ -81,6 +81,16 @@ export function HiveComposer({
   }, [mention, participants]);
   const mentionOpen = Boolean(mention && mentionOptions.length > 0);
 
+  if (activeDiscussion?.status && activeDiscussion.status !== "active") {
+    return (
+      <div className="shrink-0 border-t border-[#D8DEE8] bg-[#F4F7FA] px-4 py-3 text-center text-xs font-semibold text-[#607086]">
+        {activeDiscussion.status === "closed"
+          ? "This discussion is archived and read-only. Its audit history remains available."
+          : "Workspace cleanup is pending. Retry cleanup from the discussion summary."}
+      </div>
+    );
+  }
+
   const insertMention = (participant: HiveParticipant) => {
     if (!mention) return;
     const next = `${text.slice(0, mention.start)}@${participant.displayName} ${text.slice(mention.end)}`;

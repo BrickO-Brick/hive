@@ -67,6 +67,27 @@ pub(crate) struct RepositoryDiscussion {
     test_evidence: Vec<String>,
     created_by: String,
     created_at: DateTime<Utc>,
+    #[serde(default)]
+    status: DiscussionStatus,
+    #[serde(default)]
+    completion_evidence: Option<String>,
+    #[serde(default)]
+    closed_by: Option<String>,
+    #[serde(default)]
+    closed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    workspace_cleaned_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    mirror_cleaned: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DiscussionStatus {
+    #[default]
+    Active,
+    CleanupPending,
+    Closed,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,6 +122,13 @@ pub(crate) struct WorkspaceFileWriteRequest {
 pub(crate) struct WorkspaceCommitRequest {
     message: String,
     expected_head_sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseDiscussionRequest {
+    expected_head_sha: String,
+    completion_evidence: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,6 +302,10 @@ fn workspace_api_path(id: Uuid, suffix: &str) -> String {
     format!("{DISCUSSIONS_PATH}/{id}/workspace{suffix}")
 }
 
+fn close_api_path(id: Uuid) -> String {
+    format!("{DISCUSSIONS_PATH}/{id}/close")
+}
+
 fn valid_workspace_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 1_024
@@ -284,7 +316,7 @@ fn valid_workspace_path(path: &str) -> bool {
         })
 }
 
-async fn load_manifest(
+async fn read_manifest(
     state: &AppState,
     id: Uuid,
 ) -> Result<DiscussionManifest, (StatusCode, Json<Value>)> {
@@ -307,8 +339,18 @@ async fn load_manifest(
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|error| internal_error(&format!("read discussion manifest: {error}")))?;
-    let manifest: DiscussionManifest = serde_json::from_slice(&bytes)
-        .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))
+}
+
+async fn load_manifest(
+    state: &AppState,
+    id: Uuid,
+) -> Result<DiscussionManifest, (StatusCode, Json<Value>)> {
+    let manifest = read_manifest(state, id).await?;
+    if manifest.discussion.status != DiscussionStatus::Active {
+        return Err(api_error(StatusCode::CONFLICT, "discussion_closed"));
+    }
     let worktrees = tokio::fs::canonicalize(workspace_root(state).join("worktrees"))
         .await
         .map_err(|error| internal_error(&format!("resolve workspace root: {error}")))?;
@@ -519,6 +561,12 @@ async fn create_workspace(
         test_evidence: Vec::new(),
         created_by: creator,
         created_at: Utc::now(),
+        status: DiscussionStatus::Active,
+        completion_evidence: None,
+        closed_by: None,
+        closed_at: None,
+        workspace_cleaned_at: None,
+        mirror_cleaned: false,
     };
     let manifest = DiscussionManifest {
         discussion: discussion.clone(),
@@ -876,6 +924,210 @@ async fn persist_manifest(
     Ok(())
 }
 
+fn completion_evidence(value: Option<String>) -> Result<Option<String>, (StatusCode, Json<Value>)> {
+    let evidence = value.map(|item| item.trim().to_string());
+    if evidence
+        .as_ref()
+        .is_some_and(|item| item.is_empty() || item.chars().count() > 500)
+    {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_completion_evidence",
+        ));
+    }
+    Ok(evidence)
+}
+
+async fn mirror_has_other_open_discussions(
+    root: &Path,
+    discussion: &RepositoryDiscussion,
+) -> Result<bool, (StatusCode, Json<Value>)> {
+    let directory = root.join("manifests");
+    let mut entries = tokio::fs::read_dir(directory)
+        .await
+        .map_err(|error| internal_error(&format!("read discussions: {error}")))?;
+    let mut manifest_count = 0usize;
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| internal_error(&format!("read discussion entry: {error}")))?
+    {
+        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        manifest_count = manifest_count.saturating_add(1);
+        if manifest_count > MAX_DISCUSSIONS {
+            return Err(internal_error("discussion manifest limit exceeded"));
+        }
+        let metadata = entry
+            .metadata()
+            .await
+            .map_err(|error| internal_error(&format!("read discussion metadata: {error}")))?;
+        if metadata.len() > MAX_MANIFEST_BYTES {
+            return Err(internal_error(
+                "discussion manifest exceeded its size limit",
+            ));
+        }
+        let bytes = tokio::fs::read(entry.path())
+            .await
+            .map_err(|error| internal_error(&format!("read discussion manifest: {error}")))?;
+        let manifest: DiscussionManifest = serde_json::from_slice(&bytes)
+            .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))?;
+        if manifest.discussion.id != discussion.id
+            && manifest.discussion.mirror_id == discussion.mirror_id
+            && manifest.discussion.status != DiscussionStatus::Closed
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn clean_discussion_workspace(
+    state: &AppState,
+    manifest: &DiscussionManifest,
+) -> Result<bool, (StatusCode, Json<Value>)> {
+    let root = workspace_root(state);
+    clean_discussion_workspace_at(&root, manifest).await
+}
+
+async fn clean_discussion_workspace_at(
+    root: &Path,
+    manifest: &DiscussionManifest,
+) -> Result<bool, (StatusCode, Json<Value>)> {
+    let expected_mirror = root
+        .join("mirrors")
+        .join(format!("{}.git", manifest.discussion.mirror_id));
+    let expected_worktree = root
+        .join("worktrees")
+        .join(&manifest.discussion.worktree_id);
+    if manifest.mirror_path != expected_mirror || manifest.worktree_path != expected_worktree {
+        return Err(internal_error(
+            "discussion cleanup path did not match its manifest identity",
+        ));
+    }
+
+    let mirror_arg = expected_mirror.to_string_lossy();
+    let worktree_arg = expected_worktree.to_string_lossy();
+    if expected_worktree.exists() {
+        if !expected_mirror.exists() {
+            return Err(internal_error(
+                "discussion mirror is missing during cleanup",
+            ));
+        }
+        git_status(
+            &[
+                "--git-dir",
+                &mirror_arg,
+                "worktree",
+                "remove",
+                "--force",
+                &worktree_arg,
+            ],
+            None,
+        )
+        .await
+        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    }
+    if expected_mirror.exists() {
+        git_status(
+            &[
+                "--git-dir",
+                &mirror_arg,
+                "update-ref",
+                "-d",
+                &manifest.discussion.branch_ref,
+            ],
+            None,
+        )
+        .await
+        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    }
+
+    if mirror_has_other_open_discussions(root, &manifest.discussion).await? {
+        return Ok(false);
+    }
+    match tokio::fs::remove_dir_all(&expected_mirror).await {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(internal_error(&format!(
+            "remove discussion mirror: {error}"
+        ))),
+    }
+}
+
+pub(crate) async fn close(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<Uuid>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<RepositoryDiscussion>, (StatusCode, Json<Value>)> {
+    let api_path = close_api_path(id);
+    let actor = authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let request: CloseDiscussionRequest = serde_json::from_slice(&body)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_close_request"))?;
+    let evidence = completion_evidence(request.completion_evidence)?;
+    let _guard = GIT_WORKSPACE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await;
+    let mut manifest = read_manifest(&state, id).await?;
+    if request.expected_head_sha != manifest.discussion.current_head_sha {
+        return Err(api_error(StatusCode::CONFLICT, "workspace_head_changed"));
+    }
+    if manifest.discussion.status == DiscussionStatus::Closed {
+        return Ok(Json(manifest.discussion));
+    }
+
+    if manifest.discussion.status == DiscussionStatus::Active {
+        let worktree = manifest.worktree_path.to_string_lossy();
+        let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
+            .await
+            .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+        if current_head_sha != request.expected_head_sha {
+            return Err(api_error(StatusCode::CONFLICT, "workspace_head_changed"));
+        }
+        let status = git_output(
+            &[
+                "-C",
+                &worktree,
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ],
+            MAX_GIT_OUTPUT_BYTES,
+        )
+        .await
+        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+        if !status.status.success() {
+            return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
+        }
+        if !status.stdout.is_empty() {
+            return Err(api_error(StatusCode::CONFLICT, "workspace_has_changes"));
+        }
+        if manifest.discussion.proposal_revision.is_some() && evidence.is_none() {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "completion_evidence_required",
+            ));
+        }
+        let now = Utc::now();
+        manifest.discussion.status = DiscussionStatus::CleanupPending;
+        manifest.discussion.completion_evidence = evidence;
+        manifest.discussion.closed_by = Some(actor);
+        manifest.discussion.closed_at = Some(now);
+        persist_manifest(&state, &manifest).await?;
+    }
+
+    let mirror_cleaned = clean_discussion_workspace(&state, &manifest).await?;
+    manifest.discussion.status = DiscussionStatus::Closed;
+    manifest.discussion.workspace_cleaned_at = Some(Utc::now());
+    manifest.discussion.mirror_cleaned = mirror_cleaned;
+    persist_manifest(&state, &manifest).await?;
+    Ok(Json(manifest.discussion))
+}
+
 pub(crate) async fn commit(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<Uuid>,
@@ -991,5 +1243,145 @@ mod tests {
     fn diff_summary_ignores_headers() {
         let diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n-old\n+new\n";
         assert_eq!(diff_counts(diff), (1, 1, 1));
+    }
+
+    #[test]
+    fn legacy_discussions_remain_active_after_lifecycle_upgrade() {
+        let discussion: RepositoryDiscussion = serde_json::from_value(serde_json::json!({
+            "id": "11111111-2222-4333-8444-555555555555",
+            "owner": "BrickO-Brick",
+            "repository": "hive",
+            "title": "Existing discussion",
+            "mirrorId": "aa",
+            "worktreeId": "bb",
+            "branchRef": "refs/heads/codex/hive-discussion-test",
+            "baseRef": "refs/heads/main",
+            "baseSha": "cc",
+            "currentHeadSha": "dd",
+            "proposalRevision": null,
+            "proposalDigest": null,
+            "testEvidence": [],
+            "createdBy": "ee",
+            "createdAt": "2026-09-03T10:00:00Z"
+        }))
+        .expect("legacy discussion must deserialize");
+
+        assert_eq!(discussion.status, DiscussionStatus::Active);
+        assert!(discussion.closed_at.is_none());
+        assert!(!discussion.mirror_cleaned);
+    }
+
+    #[test]
+    fn completion_evidence_is_trimmed_and_bounded() {
+        assert_eq!(
+            completion_evidence(Some("  https://example.test/build/1  ".into()))
+                .expect("valid evidence"),
+            Some("https://example.test/build/1".into())
+        );
+        assert!(completion_evidence(Some("   ".into())).is_err());
+        assert!(completion_evidence(Some("x".repeat(501))).is_err());
+    }
+
+    #[tokio::test]
+    async fn completed_discussion_removes_its_worktree_branch_and_unused_mirror() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("onebrick-discussions");
+        let source = temporary.path().join("source");
+        let id =
+            Uuid::parse_str("11111111-2222-4333-8444-555555555555").expect("valid discussion id");
+        let mirror_id = "aa".repeat(32);
+        let worktree_id = id.simple().to_string();
+        let mirror = root.join("mirrors").join(format!("{mirror_id}.git"));
+        let worktree = root.join("worktrees").join(&worktree_id);
+        let manifests = root.join("manifests");
+        std::fs::create_dir_all(&source).expect("source directory");
+        std::fs::create_dir_all(root.join("mirrors")).expect("mirror directory");
+        std::fs::create_dir_all(root.join("worktrees")).expect("worktree directory");
+        std::fs::create_dir_all(&manifests).expect("manifest directory");
+
+        let run_git = |args: &[&str], directory: &Path| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(directory)
+                .env("GIT_AUTHOR_NAME", "Hive Test")
+                .env("GIT_AUTHOR_EMAIL", "hive-test@example.test")
+                .env("GIT_COMMITTER_NAME", "Hive Test")
+                .env("GIT_COMMITTER_EMAIL", "hive-test@example.test")
+                .status()
+                .expect("git must start");
+            assert!(status.success(), "git {args:?} must succeed");
+        };
+        run_git(&["init", "-b", "main"], &source);
+        std::fs::write(source.join("README.md"), "Hive cleanup test\n").expect("fixture file");
+        run_git(&["add", "README.md"], &source);
+        run_git(&["commit", "-m", "Initial fixture"], &source);
+        run_git(
+            &[
+                "clone",
+                "--mirror",
+                source.to_str().expect("source path"),
+                mirror.to_str().expect("mirror path"),
+            ],
+            temporary.path(),
+        );
+        run_git(
+            &[
+                "--git-dir",
+                mirror.to_str().expect("mirror path"),
+                "worktree",
+                "add",
+                "-b",
+                "codex/hive-discussion-111111112222",
+                worktree.to_str().expect("worktree path"),
+                "HEAD",
+            ],
+            temporary.path(),
+        );
+        let head = git_value(&[
+            "-C",
+            worktree.to_str().expect("worktree path"),
+            "rev-parse",
+            "HEAD",
+        ])
+        .await
+        .expect("fixture head");
+        let manifest = DiscussionManifest {
+            discussion: RepositoryDiscussion {
+                id,
+                owner: "BrickO-Brick".into(),
+                repository: "hive".into(),
+                title: "Cleanup lifecycle".into(),
+                mirror_id,
+                worktree_id,
+                branch_ref: "refs/heads/codex/hive-discussion-111111112222".into(),
+                base_ref: "refs/heads/main".into(),
+                base_sha: head.clone(),
+                current_head_sha: head,
+                proposal_revision: None,
+                proposal_digest: None,
+                test_evidence: Vec::new(),
+                created_by: "test-user".into(),
+                created_at: Utc::now(),
+                status: DiscussionStatus::CleanupPending,
+                completion_evidence: None,
+                closed_by: Some("test-user".into()),
+                closed_at: Some(Utc::now()),
+                workspace_cleaned_at: None,
+                mirror_cleaned: false,
+            },
+            mirror_path: mirror.clone(),
+            worktree_path: worktree.clone(),
+        };
+        std::fs::write(
+            manifests.join(format!("{id}.json")),
+            serde_json::to_vec(&manifest).expect("manifest serialization"),
+        )
+        .expect("manifest write");
+
+        assert!(clean_discussion_workspace_at(&root, &manifest)
+            .await
+            .expect("cleanup must succeed"));
+        assert!(!worktree.exists(), "worktree must be deleted");
+        assert!(!mirror.exists(), "unused mirror must be deleted");
     }
 }

@@ -1,6 +1,18 @@
-import { Check, Code2, Copy, GitBranch } from "lucide-react";
+import {
+  Archive,
+  Check,
+  Code2,
+  Copy,
+  GitBranch,
+  LoaderCircle,
+} from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { RepositoryDiscussion } from "@/features/repos/repository-discussions-api";
+import {
+  closeRepositoryDiscussion,
+  type RepositoryDiscussion,
+  repositoryDiscussionsQueryKey,
+} from "@/features/repos/repository-discussions-api";
 
 type Props = {
   discussion: RepositoryDiscussion;
@@ -13,7 +25,14 @@ export function HiveWorkspaceSummary({
   hasRoot,
   onOpenEditor,
 }: Props) {
+  const queryClient = useQueryClient();
   const [copied, setCopied] = useState("");
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [completionEvidence, setCompletionEvidence] = useState(
+    discussion.completionEvidence ?? "",
+  );
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState("");
 
   useEffect(() => {
     if (!copied) return;
@@ -36,19 +55,87 @@ export function HiveWorkspaceSummary({
     ["HEAD", discussion.currentHeadSha],
   ] as const;
 
+  const closed = discussion.status === "closed";
+  const cleanupPending = discussion.status === "cleanup_pending";
+  const requiresEvidence = Boolean(discussion.proposalRevision);
+
+  const closeDiscussion = async () => {
+    if (closing || (requiresEvidence && !completionEvidence.trim())) return;
+    setClosing(true);
+    setCloseError("");
+    try {
+      await closeRepositoryDiscussion(discussion.id, {
+        expectedHeadSha: discussion.currentHeadSha,
+        completionEvidence: completionEvidence.trim() || undefined,
+      });
+      setCloseOpen(false);
+      await queryClient.invalidateQueries({
+        queryKey: repositoryDiscussionsQueryKey,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "close_failed";
+      const friendly: Record<string, string> = {
+        completion_evidence_required:
+          "Add the GitHub or staging evidence for this proposal.",
+        workspace_has_changes:
+          "The workspace still has uncommitted changes. Review and commit them first.",
+        workspace_head_changed:
+          "The workspace changed. Refresh this discussion before closing it.",
+      };
+      setCloseError(
+        friendly[message] ??
+          "Hive could not finish cleanup. The discussion remains recoverable and can be retried.",
+      );
+    } finally {
+      setClosing(false);
+    }
+  };
+
+  if (closed) {
+    return (
+      <div className="mb-4 rounded-xl border border-[#C7D4E5] bg-[#F4F7FA] p-3 text-xs text-[#526178] shadow-sm">
+        <div className="flex items-center gap-2 font-bold text-[#10233F]">
+          <Archive size={14} /> Discussion closed · workspace cleaned
+        </div>
+        <p className="mt-1.5 leading-5">
+          The conversation and Git revision remain as audit history. Its
+          isolated worktree and local branch have been removed
+          {discussion.mirrorCleaned
+            ? ", together with the unused repository mirror."
+            : "; the shared repository mirror is still used by another discussion."}
+        </p>
+        {discussion.completionEvidence && (
+          <p className="mt-2 break-all rounded border border-[#D8DEE8] bg-white px-2 py-1.5 font-mono text-[10px]">
+            Completion evidence: {discussion.completionEvidence}
+          </p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mb-4 rounded-xl border border-[#BFD4FF] bg-[#EEF5FF] p-3 text-xs text-[#29466F] shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 font-bold text-[#10233F]">
           <GitBranch size={14} /> Isolated repository workspace
         </div>
-        <button
-          type="button"
-          onClick={onOpenEditor}
-          className="flex shrink-0 items-center gap-1.5 rounded-md bg-[#2F6FED] px-2.5 py-1.5 text-[10px] font-bold text-white shadow-sm hover:bg-[#245CC8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2F6FED]"
-        >
-          <Code2 size={12} /> Open Simple IDE
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCloseOpen(true)}
+            className="flex items-center gap-1.5 rounded-md border border-[#C7D4E5] bg-white px-2.5 py-1.5 text-[10px] font-bold text-[#526178] hover:border-[#8491A4] hover:text-[#10233F]"
+          >
+            <Archive size={12} /> {cleanupPending ? "Retry cleanup" : "Close"}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenEditor}
+            disabled={cleanupPending}
+            className="flex items-center gap-1.5 rounded-md bg-[#2F6FED] px-2.5 py-1.5 text-[10px] font-bold text-white shadow-sm hover:bg-[#245CC8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#2F6FED] disabled:opacity-50"
+          >
+            <Code2 size={12} /> Open Simple IDE
+          </button>
+        </div>
       </div>
       <div className="mt-1.5 font-semibold">
         {discussion.owner}/{discussion.repository}
@@ -88,6 +175,62 @@ export function HiveWorkspaceSummary({
         <p className="mt-2 font-semibold text-[#1F55C5]">
           Send the prepared first message to start this discussion thread.
         </p>
+      )}
+      {closeOpen && (
+        <div
+          className="mt-3 rounded-lg border border-[#F3C7BC] bg-[#FFF8F5] p-3"
+          data-testid="close-discussion-panel"
+        >
+          <div className="font-bold text-[#10233F]">
+            {cleanupPending
+              ? "Retry the pending Git workspace cleanup?"
+              : "Close discussion and clean its Git workspace?"}
+          </div>
+          <p className="mt-1 leading-5 text-[#607086]">
+            Hive will retain this discussion, final revision, and completion
+            evidence, then delete its worktree and local branch. A shared mirror
+            is deleted only when no other open discussion uses it.
+          </p>
+          {requiresEvidence && (
+            <label className="mt-2 block font-bold text-[#42526B]">
+              GitHub or staging evidence
+              <input
+                className="mt-1 h-9 w-full rounded-md border border-[#D8DEE8] bg-white px-2.5 font-normal outline-none focus:border-[#2F6FED] focus:ring-4 focus:ring-[#2F6FED]/10"
+                onChange={(event) =>
+                  setCompletionEvidence(event.currentTarget.value)
+                }
+                placeholder="PR URL, staging deployment URL, or integrated commit SHA"
+                value={completionEvidence}
+              />
+            </label>
+          )}
+          {closeError && (
+            <p className="mt-2 font-semibold text-[#C93F4A]" role="alert">
+              {closeError}
+            </p>
+          )}
+          <div className="mt-3 flex justify-end gap-2">
+            <button
+              className="rounded-md border border-[#D8DEE8] bg-white px-3 py-2 font-bold text-[#526178] hover:bg-[#F7FAFC]"
+              disabled={closing}
+              onClick={() => setCloseOpen(false)}
+              type="button"
+            >
+              Keep open
+            </button>
+            <button
+              className="flex items-center gap-1.5 rounded-md bg-[#10233F] px-3 py-2 font-bold text-white hover:bg-[#243B5A] disabled:opacity-50"
+              disabled={
+                closing || (requiresEvidence && !completionEvidence.trim())
+              }
+              onClick={() => void closeDiscussion()}
+              type="button"
+            >
+              {closing && <LoaderCircle className="animate-spin" size={13} />}
+              Close and clean workspace
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
