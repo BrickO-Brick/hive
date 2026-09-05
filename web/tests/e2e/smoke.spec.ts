@@ -1467,6 +1467,15 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .poll(() => catalogRequestCount)
     .toBe(catalogRequestsBeforeRefresh + 1);
   await expect(page.getByText("Catalog synced just now")).toBeVisible();
+  await page.setViewportSize({ width: 1155, height: 900 });
+  const refreshCatalogBounds = await page
+    .getByRole("button", { name: "Refresh repository catalog" })
+    .boundingBox();
+  expect(refreshCatalogBounds).not.toBeNull();
+  expect(
+    (refreshCatalogBounds?.x ?? 0) + (refreshCatalogBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(1155);
+  await page.setViewportSize({ width: 1536, height: 1024 });
   await expect(page.getByText("3 more in BrickO-Brick")).toBeVisible();
   await page.getByRole("button", { name: "Show 3 more" }).click();
   await expect(

@@ -271,7 +271,7 @@ export function OneBrickRepositoryCatalog({
         </div>
       ) : (
         <div className="mt-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E2E8F0] pb-3">
+          <div className="flex flex-wrap items-center justify-start gap-x-4 gap-y-2 border-b border-[#E2E8F0] pb-3">
             <p className="text-xs text-[#607086]">
               {repositoriesByOwner.length} organizations · {filtered.length}{" "}
               repositories
