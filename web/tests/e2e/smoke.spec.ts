@@ -1379,7 +1379,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await page.getByTestId("open-github-repositories").click();
   await expect(
     page.getByRole("heading", {
-      name: "BrickO-Brick + brick-io + BrickI-Brick",
+      name: "Repositories",
     }),
   ).toBeVisible();
   await expect(
@@ -1391,6 +1391,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
   ).toBeVisible();
+  await expect(
+    page.getByTestId("github-owner-toggle-BrickI-Brick"),
+  ).toHaveAttribute("aria-expanded", "true");
   const brickOOwnerToggle = page.getByTestId(
     "github-owner-toggle-BrickO-Brick",
   );

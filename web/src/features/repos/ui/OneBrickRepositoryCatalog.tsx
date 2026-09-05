@@ -213,10 +213,10 @@ export function OneBrickRepositoryCatalog({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E35E43]">
-            <Boxes size={14} /> GitHub owners
+            <Boxes size={14} /> GitHub repositories
           </div>
           <h2 className="mt-1 text-2xl font-bold tracking-tight text-[#10233F]">
-            {catalog.data?.organizations.join(" + ")}
+            Repositories
           </h2>
           <p className="mt-1 text-sm text-[#607086]">
             {repositories.length} repositories available. Start as many
