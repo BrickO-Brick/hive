@@ -233,10 +233,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
                 if let (Some(index), Some(files)) = (web_index, web_files) {
                     if is_web_static_path(path) {
-                        return files.oneshot(req).await.map(IntoResponse::into_response);
+                        let asset_path = path.to_owned();
+                        let response = files.oneshot(req).await.map(IntoResponse::into_response)?;
+                        return Ok(with_public_asset_cache(&asset_path, response));
                     }
                     if should_serve_spa(path, serve_git_web_gui) {
-                        return Ok(read_spa_index(&index).await);
+                        return Ok(with_public_spa_cache(read_spa_index(&index).await));
                     }
                 }
                 Ok(StatusCode::NOT_FOUND.into_response())
@@ -314,6 +316,27 @@ async fn read_spa_index(index: &std::path::Path) -> axum::response::Response {
         Ok(body) => axum::response::Html(body).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+fn with_public_spa_cache(mut response: axum::response::Response) -> axum::response::Response {
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    response
+}
+
+fn with_public_asset_cache(
+    path: &str,
+    mut response: axum::response::Response,
+) -> axum::response::Response {
+    let value = if response.status().is_success() && path.starts_with("/assets/") {
+        HeaderValue::from_static("public, max-age=31536000, immutable")
+    } else {
+        HeaderValue::from_static("no-cache")
+    };
+    response.headers_mut().insert(header::CACHE_CONTROL, value);
+    response
 }
 
 /// The admin dashboard holds the operator token in `sessionStorage`, so its
@@ -785,6 +808,41 @@ mod tests {
 
         let response = spa_response(state, "public.example", "/unlisted-icon.png").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn public_spa_documents_revalidate_while_hashed_assets_are_immutable() {
+        let admin_dir = tempfile::tempdir().expect("admin bundle dir");
+        let web_dir = tempfile::tempdir().expect("public bundle dir");
+        write_bundle(admin_dir.path());
+        write_bundle(web_dir.path());
+        let state = spa_state(admin_dir.path(), web_dir.path()).await;
+
+        let document = spa_response(state.clone(), "public.example", "/app").await;
+        assert_eq!(
+            document
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache, no-store, must-revalidate")
+        );
+
+        let asset = spa_response(state.clone(), "public.example", "/assets/app.js").await;
+        assert_eq!(
+            asset
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
+        let icon = spa_response(state, "public.example", "/hive-icon.svg").await;
+        assert_eq!(
+            icon.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
     }
 
     #[test]
