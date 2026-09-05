@@ -35,7 +35,7 @@ export function NewMessageScreen() {
   const { goChannel } = useAppNavigation();
 
   const [isRecipientPickerOpen, setIsRecipientPickerOpen] =
-    React.useState(true);
+    React.useState(false);
   const [highlightedRecipientPubkey, setHighlightedRecipientPubkey] =
     React.useState<string | null>(null);
   const [inspectedRecipientPubkey, setInspectedRecipientPubkey] =
@@ -573,7 +573,70 @@ export function NewMessageScreen() {
       <div
         className="min-h-0 flex-1 bg-background"
         data-testid="new-message-body"
-      />
+      >
+        <section
+          aria-labelledby="new-message-people-heading"
+          className="mx-auto w-full max-w-2xl px-5 py-8"
+          data-testid="new-message-people"
+        >
+          <div className="mb-4">
+            <h1
+              className="text-lg font-semibold tracking-tight"
+              id="new-message-people-heading"
+            >
+              People
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Select someone from this community to start a direct message.
+            </p>
+          </div>
+          <div
+            aria-label="People available for direct messages"
+            className="overflow-hidden rounded-xl border border-border/60 bg-card"
+            data-testid="new-message-people-list"
+            role="listbox"
+          >
+            {visibleSearchResults.length > 0 ? (
+              visibleSearchResults.map((user) => {
+                const isSelected = selectedUsers.some(
+                  (selectedUser) => selectedUser.pubkey === user.pubkey,
+                );
+                return (
+                  <NewMessageResultRow
+                    currentPubkey={currentPubkey}
+                    disabled={
+                      isPending || (hasReachedRecipientLimit && !isSelected)
+                    }
+                    idPrefix="new-message-directory"
+                    isAlreadySelected={isSelected}
+                    key={user.pubkey}
+                    onSelect={handleResultSelect}
+                    ownerProfiles={ownerProfiles}
+                    testIdPrefix="new-message-directory-result"
+                    user={user}
+                  />
+                );
+              })
+            ) : isDirectoryLoading ? (
+              <div
+                aria-busy="true"
+                className="px-4 py-5 text-sm text-muted-foreground"
+                data-testid="new-message-people-loading"
+                role="status"
+              >
+                Loading people…
+              </div>
+            ) : (
+              <p
+                className="px-4 py-5 text-sm text-muted-foreground"
+                data-testid="new-message-people-empty"
+              >
+                No people or agents available to message.
+              </p>
+            )}
+          </div>
+        </section>
+      </div>
 
       {hasReachedRecipientLimit ? (
         <p

@@ -67,18 +67,22 @@ function HoverRecipientIdentity({
 export function NewMessageResultRow({
   currentPubkey,
   disabled,
+  idPrefix = "new-dm",
   isAlreadySelected = false,
   isKeyboardHighlighted = false,
   onSelect,
   ownerProfiles,
+  testIdPrefix = "new-dm-result",
   user,
 }: {
   currentPubkey?: string;
   disabled: boolean;
+  idPrefix?: string;
   isAlreadySelected?: boolean;
   isKeyboardHighlighted?: boolean;
   onSelect: (user: UserSearchResult) => void;
   ownerProfiles?: UserProfileLookup;
+  testIdPrefix?: string;
   user: UserSearchResult;
 }) {
   const name = formatRecipientName(user);
@@ -100,9 +104,9 @@ export function NewMessageResultRow({
           "group/dm-result flex min-h-14 w-full cursor-pointer items-center gap-3 px-4 py-3.5 text-left transition-colors duration-150 ease-out hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
           isKeyboardHighlighted && "bg-muted/40",
         )}
-        data-testid={`new-dm-result-${user.pubkey}`}
+        data-testid={`${testIdPrefix}-${user.pubkey}`}
         disabled={disabled}
-        id={`new-dm-option-${user.pubkey}`}
+        id={`${idPrefix}-option-${user.pubkey}`}
         onClick={() => onSelect(user)}
         role="option"
         tabIndex={-1}

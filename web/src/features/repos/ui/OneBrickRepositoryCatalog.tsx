@@ -2,6 +2,8 @@ import {
   Archive,
   BookOpen,
   Boxes,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   GitBranch,
   LoaderCircle,
@@ -128,6 +130,9 @@ export function OneBrickRepositoryCatalog({
   const [visiblePerOwner, setVisiblePerOwner] = useState(
     REPOSITORIES_PER_OWNER_PAGE,
   );
+  const [collapsedOwners, setCollapsedOwners] = useState<Set<string>>(
+    () => new Set(),
+  );
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const repositories = catalog.data?.repositories ?? EMPTY_REPOSITORIES;
   const categorized = useMemo(
@@ -175,6 +180,14 @@ export function OneBrickRepositoryCatalog({
     (total, owner) => total + owner.repositories.length,
     0,
   );
+  const ownerNames = visibleByOwner.map(({ owner }) => owner);
+  const allOwnersCollapsed =
+    ownerNames.length > 0 &&
+    ownerNames.every((owner) => collapsedOwners.has(owner));
+
+  function setAllOwnersCollapsed(collapsed: boolean) {
+    setCollapsedOwners(collapsed ? new Set(ownerNames) : new Set());
+  }
 
   if (catalog.isLoading) {
     return (
@@ -221,6 +234,7 @@ export function OneBrickRepositoryCatalog({
             onChange={(event) => {
               setQuery(event.currentTarget.value);
               setVisiblePerOwner(REPOSITORIES_PER_OWNER_PAGE);
+              setCollapsedOwners(new Set());
             }}
             placeholder="Search repositories…"
             value={query}
@@ -242,6 +256,7 @@ export function OneBrickRepositoryCatalog({
             onClick={() => {
               setCategory(item);
               setVisiblePerOwner(REPOSITORIES_PER_OWNER_PAGE);
+              setCollapsedOwners(new Set());
             }}
             type="button"
           >
@@ -256,24 +271,67 @@ export function OneBrickRepositoryCatalog({
         </div>
       ) : (
         <div className="mt-5 space-y-7">
+          <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
+            <p className="text-xs text-[#607086]">
+              {visibleByOwner.length} organizations · {filtered.length}{" "}
+              repositories
+            </p>
+            <button
+              className="text-xs font-bold text-[#526178] hover:text-[#D95336]"
+              onClick={() => setAllOwnersCollapsed(!allOwnersCollapsed)}
+              type="button"
+            >
+              {allOwnersCollapsed ? "Expand all" : "Collapse all"}
+            </button>
+          </div>
           {visibleByOwner.map(
             ({ owner, repositories: ownerRepositories, total }) => (
               <section
                 key={owner}
                 aria-labelledby={`repository-owner-${owner}`}
               >
-                <div className="mb-3 flex items-center gap-2">
-                  <h3
-                    id={`repository-owner-${owner}`}
-                    className="text-sm font-extrabold text-[#10233F]"
+                <h3
+                  id={`repository-owner-${owner}`}
+                  className="mb-3 text-sm font-extrabold text-[#10233F]"
+                >
+                  <button
+                    aria-controls={`repository-list-${owner}`}
+                    aria-expanded={!collapsedOwners.has(owner)}
+                    className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:bg-[#F7F9FC]"
+                    data-testid={`github-owner-toggle-${owner}`}
+                    onClick={() => {
+                      setCollapsedOwners((current) => {
+                        const next = new Set(current);
+                        if (next.has(owner)) next.delete(owner);
+                        else next.add(owner);
+                        return next;
+                      });
+                    }}
+                    type="button"
                   >
-                    {owner}
-                  </h3>
-                  <span className="rounded-full bg-[#EEF3F8] px-2 py-0.5 text-[10px] font-bold text-[#607086]">
-                    {total}
-                  </span>
-                </div>
-                <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                    {collapsedOwners.has(owner) ? (
+                      <ChevronRight
+                        aria-hidden
+                        size={16}
+                        className="text-[#607086]"
+                      />
+                    ) : (
+                      <ChevronDown
+                        aria-hidden
+                        size={16}
+                        className="text-[#607086]"
+                      />
+                    )}
+                    <span>{owner}</span>
+                    <span className="rounded-full bg-[#EEF3F8] px-2 py-0.5 text-[10px] font-bold text-[#607086]">
+                      {total}
+                    </span>
+                  </button>
+                </h3>
+                <div
+                  className={`grid gap-3 lg:grid-cols-2 2xl:grid-cols-3 ${collapsedOwners.has(owner) ? "hidden" : ""}`}
+                  id={`repository-list-${owner}`}
+                >
                   {ownerRepositories.map(
                     ({ repository, category: repositoryCategory }) => (
                       <article
