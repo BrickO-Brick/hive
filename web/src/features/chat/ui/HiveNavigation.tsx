@@ -14,7 +14,6 @@ import {
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import hiveIconUrl from "@/assets/hive-icon.png";
 import type { RepositoryDiscussion } from "@/features/repos/repository-discussions-api";
-import { BrickOPet } from "./BrickOPet";
 import type { HiveConversation } from "./discussionMessages";
 
 export type HiveAgentState = { detail: string; label: string };
@@ -22,9 +21,7 @@ export type HiveAgentState = { detail: string; label: string };
 export type HiveNavigationProps = {
   activeConversationId: string | null;
   activeDiscussionId: string | null;
-  agentState: HiveAgentState;
   collapsed: boolean;
-  connected: boolean;
   conversations: HiveConversation[];
   discussions: RepositoryDiscussion[];
   identityEmail: string;
@@ -36,7 +33,6 @@ export type HiveNavigationProps = {
   onRepositories: () => void;
   onToggle: () => void;
   surface: "chat" | "repositories";
-  toneClasses: string;
 };
 
 type RepositoryGroup = {
@@ -103,9 +99,7 @@ function RailButton({
 export function HiveNavigation({
   activeConversationId,
   activeDiscussionId,
-  agentState,
   collapsed,
-  connected,
   conversations,
   discussions,
   identityEmail,
@@ -117,7 +111,6 @@ export function HiveNavigation({
   onRepositories,
   onToggle,
   surface,
-  toneClasses,
 }: HiveNavigationProps) {
   const groups = useMemo(() => groupDiscussions(discussions), [discussions]);
   const [query, setQuery] = useState("");
@@ -193,40 +186,6 @@ export function HiveNavigation({
             >
               <GitBranch size={19} />
             </RailButton>
-          </div>
-          <div className="group relative mb-3">
-            <div
-              className="grid size-10 place-items-center rounded-full border border-[#D8DEE8] bg-[#F7FAFC] shadow-sm"
-              data-testid="bricko-status-compact"
-              title={`BrickO: ${agentState.label}`}
-            >
-              <div className="relative size-8">
-                <BrickOPet
-                  mode={
-                    connected && agentState.label !== "Offline"
-                      ? "still"
-                      : "offline"
-                  }
-                  size="sm"
-                />
-                <span
-                  className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white ${toneClasses}`}
-                />
-              </div>
-            </div>
-            <div className="pointer-events-none absolute bottom-0 left-12 z-30 w-56 translate-y-1 rounded-lg border border-[#D8DEE8] bg-white p-3 opacity-0 shadow-[0_10px_24px_rgba(16,35,63,0.16)] transition group-hover:translate-y-0 group-hover:opacity-100">
-              <p className="text-sm font-bold text-[#10233F]">BrickO</p>
-              <p className="text-xs font-semibold text-[#607086]">
-                {agentState.label}
-              </p>
-              <p className="mt-1 text-xs leading-4 text-[#607086]">
-                {agentState.detail}
-              </p>
-            </div>
-          </div>
-          <div className="relative mt-3 grid size-9 place-items-center rounded-full bg-[#10213F] text-[10px] font-extrabold text-white">
-            {identityEmail.slice(0, 2).toUpperCase()}
-            <span className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#1FA971]" />
           </div>
         </div>
       )}
@@ -418,44 +377,25 @@ export function HiveNavigation({
                 </p>
               )}
           </nav>
-          <section
-            className="group relative shrink-0 border-t border-[#E2E8F0] p-3"
-            aria-label="BrickO status"
-          >
-            <div
-              className="flex w-fit items-center rounded-full border border-[#D8DEE8] bg-[#F7FAFC] p-1.5 shadow-sm"
-              data-testid="bricko-status-compact"
-              title={`BrickO: ${agentState.label}`}
-            >
-              <div className="relative size-8">
-                <BrickOPet
-                  mode={
-                    connected && agentState.label !== "Offline"
-                      ? "still"
-                      : "offline"
-                  }
-                  size="sm"
-                />
-                <span
-                  className={`absolute -bottom-1 -right-1 size-3 rounded-full border-2 border-white ${toneClasses}`}
-                />
+          {mobile && (
+            <div className="flex shrink-0 items-center gap-2.5 border-t border-[#E2E8F0] bg-[#FBFCFE] px-4 py-3">
+              <div
+                className="relative grid size-8 shrink-0 place-items-center rounded-full bg-[#10213F] text-[10px] font-extrabold text-white"
+                aria-hidden="true"
+              >
+                {identityEmail.slice(0, 2).toUpperCase()}
+                <span className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#1FA971]" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8491A4]">
+                  Signed in
+                </p>
+                <p className="truncate text-xs font-medium text-[#526178]">
+                  {identityEmail}
+                </p>
               </div>
             </div>
-            <div className="pointer-events-none absolute bottom-3 left-16 z-30 w-56 translate-y-1 rounded-lg border border-[#D8DEE8] bg-white p-3 opacity-0 shadow-[0_10px_24px_rgba(16,35,63,0.16)] transition group-hover:translate-y-0 group-hover:opacity-100">
-              <p className="text-sm font-bold text-[#10233F]">BrickO</p>
-              <p className="text-xs font-semibold text-[#607086]">
-                {agentState.label}
-              </p>
-              <p className="mt-1 text-xs leading-4 text-[#607086]">
-                {agentState.detail}
-              </p>
-            </div>
-          </section>
-          <div className="shrink-0 border-t border-[#E2E8F0] bg-[#FBFCFE] p-3">
-            <div className="truncate text-[10px] font-normal text-[#607086]">
-              {identityEmail}
-            </div>
-          </div>
+          )}
         </div>
       )}
 

@@ -582,8 +582,6 @@ export function HiveChatPage() {
       <HiveResizableNavigation
         activeConversationId={activeConversationId}
         activeDiscussionId={activeDiscussionId}
-        agentState={agentState}
-        connected={connected}
         conversations={conversationList}
         discussions={discussionList}
         identityEmail={identity.email}
@@ -593,7 +591,6 @@ export function HiveChatPage() {
         onNewConversation={openNewConversationDialog}
         onRepositories={() => selectSurface("repositories")}
         surface={surface}
-        toneClasses={toneClasses}
       />
 
       {mobileNavigationOpen && (
@@ -612,9 +609,7 @@ export function HiveChatPage() {
             <HiveNavigation
               activeConversationId={activeConversationId}
               activeDiscussionId={activeDiscussionId}
-              agentState={agentState}
               collapsed={false}
-              connected={connected}
               conversations={conversationList}
               discussions={discussionList}
               identityEmail={identity.email}
@@ -629,7 +624,6 @@ export function HiveChatPage() {
               onRepositories={() => selectSurface("repositories")}
               onToggle={() => setMobileNavigationOpen(false)}
               surface={surface}
-              toneClasses={toneClasses}
             />
           </aside>
         </div>

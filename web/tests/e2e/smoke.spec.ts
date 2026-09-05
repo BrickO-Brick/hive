@@ -1865,6 +1865,13 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   const desktopNavigation = page.getByTestId("desktop-navigation");
   await expect(desktopNavigation).toHaveCSS("width", "300px");
   await expect(
+    desktopNavigation.getByRole("img", {
+      name: /^Signed in as /,
+    }),
+  ).toHaveCount(0);
+  await expect(desktopNavigation.getByLabel("BrickO status")).toHaveCount(0);
+  await expect(desktopNavigation).not.toContainText(/@onebrick\.io/);
+  await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toBeVisible();
   const resizeHandle = page.getByTestId("navigation-resize-handle");
@@ -1901,6 +1908,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     desktopNavigation.getByRole("button", { name: "Repositories" }),
   ).toBeVisible();
+  await expect(
+    desktopNavigation.getByRole("img", {
+      name: /^Signed in as /,
+    }),
+  ).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("02-desktop-navigation-collapsed.png"),
     fullPage: true,
@@ -1940,6 +1952,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByTestId("mobile-navigation-open").click();
   await expect(page.getByTestId("mobile-navigation")).toBeVisible();
+  await expect(
+    page.getByTestId("mobile-navigation").getByText(/.+@onebrick\.io/),
+  ).toBeVisible();
   await expect(
     page.getByTestId("mobile-navigation").getByRole("img", { name: "Hive" }),
   ).toBeVisible();
