@@ -26,7 +26,6 @@ import {
   searchDiscussionWorkspaceFiles,
   writeDiscussionWorkspaceFile,
 } from "@/features/repos/repository-discussions-api";
-import { BrickOPet } from "./BrickOPet";
 
 type Props = {
   discussion: RepositoryDiscussion;
@@ -432,23 +431,6 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       className="flex min-h-0 flex-1 flex-col bg-[#F7FAFC] px-3 pb-4 pt-3 sm:px-5"
       data-testid="simple-ide"
     >
-      <div className="mx-auto mb-3 flex min-h-12 w-full max-w-[1120px] shrink-0 items-center gap-2.5 rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-1.5">
-        <BrickOPet
-          label="BrickO is online and ready"
-          mode="idle"
-          size="sm"
-          testId="simple-ide-bricko"
-        />
-        <div className="min-w-0">
-          <div className="text-xs font-bold text-[#10233F]">
-            Online and ready
-          </div>
-          <div className="truncate text-[10px] text-[#526178]">
-            Built-in Simple IDE — edit safely, review the diff, then create a
-            local commit.
-          </div>
-        </div>
-      </div>
       <div className="mx-auto flex min-h-0 w-full max-w-[1120px] flex-1 flex-col overflow-hidden rounded-xl border border-[#D8DEE8] bg-white shadow-[0_12px_36px_rgba(16,35,63,0.08)]">
         <div className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#D8DEE8] px-3 sm:px-4">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -685,7 +667,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 </div>
               </div>
 
-              <aside className="hidden w-48 shrink-0 border-l border-[#D8DEE8] bg-white p-3 lg:block">
+              <aside className="hidden w-48 shrink-0 border-l border-[#D8DEE8] bg-white p-3 min-[1400px]:block">
                 <div className="text-xs font-bold text-[#10233F]">Changes</div>
                 <div className="mt-3 space-y-1.5">
                   {(workspace?.changes ?? []).map((item) => (
@@ -743,7 +725,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                 </div>
                 {diff && <DiffView diff={diff} />}
               </div>
-              <aside className="w-full shrink-0 border-t border-[#D8DEE8] bg-white p-4 lg:w-72 lg:border-l lg:border-t-0">
+              <aside className="w-full shrink-0 border-t border-[#D8DEE8] bg-white p-4 min-[1400px]:w-72 min-[1400px]:border-l min-[1400px]:border-t-0">
                 <div className="flex items-start gap-2.5">
                   <div className="grid size-8 shrink-0 place-items-center rounded-full border border-[#18A66A] text-[#138A57]">
                     <Check size={16} />

@@ -846,8 +846,9 @@ export function HiveChatPage() {
                           .reverse()
                           .find(
                             (candidate) =>
-                              normalizePubkey(candidate.pubkey) ===
-                              normalizePubkey(identity.pubkey),
+                              normalizePubkey(candidate.pubkey) !==
+                                normalizePubkey(agentPubkey ?? "") &&
+                              !isAgentFailureMessage(candidate.content),
                           )
                       : undefined;
                   previousDay = day;

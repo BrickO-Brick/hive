@@ -92,7 +92,10 @@ export function HiveHeaderCollaboration({
   const visible = participants.slice(0, 4);
   return (
     <div className="flex items-center gap-2">
-      <div className="hidden -space-x-2 xl:flex" title="Conversation members">
+      <div
+        className="hidden -space-x-2 min-[1500px]:flex"
+        title="Conversation members"
+      >
         {visible.map((participant) =>
           participant.isAgent ? (
             <span
@@ -122,7 +125,7 @@ export function HiveHeaderCollaboration({
         aria-label={threadsOpen ? "Hide threads" : "Open threads"}
       >
         <MessageSquareText size={15} />
-        <span className="hidden lg:inline">Threads</span>
+        <span className="hidden min-[1400px]:inline">Threads</span>
         {threadCount > 0 && (
           <span className="rounded-full bg-[#EEF5FF] px-1.5 py-0.5 text-[10px] text-[#1F55C5]">
             {threadCount}
@@ -201,9 +204,9 @@ export function HiveThreadPanel({
       <aside
         id="hive-thread-panel"
         aria-label="Conversation threads"
-        className="fixed inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] sm:w-[min(24rem,calc(100vw-1rem))] 2xl:static 2xl:w-80 2xl:shadow-none"
+        className="fixed inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col overflow-hidden border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] sm:w-[min(24rem,calc(100vw-1rem))] 2xl:static 2xl:w-80 2xl:shadow-none"
       >
-        <div className="flex min-h-14 items-center justify-between gap-2 border-b border-[#D8DEE8] px-3 py-2">
+        <div className="flex min-h-14 w-full min-w-0 items-center justify-between gap-2 border-b border-[#D8DEE8] px-3 py-2">
           <div className="flex min-w-0 items-center gap-2">
             {selectedThread && (
               <button
@@ -320,10 +323,10 @@ export function HiveThreadPanel({
                     type="button"
                     key={thread.rootId}
                     onClick={() => setSelectedRootId(thread.rootId)}
-                    className="w-full rounded-lg border border-transparent px-3 py-3 text-left transition hover:border-[#D8DEE8] hover:bg-[#F7FAFC] focus-visible:border-[#2F6FED] focus-visible:outline-none"
+                    className="w-full min-w-0 overflow-hidden rounded-lg border border-transparent px-3 py-3 text-left transition hover:border-[#D8DEE8] hover:bg-[#F7FAFC] focus-visible:border-[#2F6FED] focus-visible:outline-none"
                     aria-label={`Open thread: ${rootLabel}. ${thread.replies.length} replies, ${participantCount} participants. Latest by ${latestAuthor}, ${activity}`}
                   >
-                    <p className="line-clamp-2 text-xs font-bold leading-5 text-[#24324A]">
+                    <p className="line-clamp-2 overflow-hidden break-words text-xs font-bold leading-5 text-[#24324A]">
                       {rootLabel}
                     </p>
                     <div className="mt-2 flex items-center gap-2 text-[10px] text-[#607086]">

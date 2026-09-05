@@ -1445,6 +1445,18 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByText("2 organizations · 3 repositories", { exact: true }),
   ).toBeVisible();
+  await page.setViewportSize({ width: 1155, height: 720 });
+  const narrowCatalog = page.getByTestId(
+    "github-repository-BrickI-Brick-dummy",
+  );
+  const narrowDiscussBounds = await narrowCatalog
+    .getByRole("button", { name: "Start discussion in BrickI-Brick/dummy" })
+    .boundingBox();
+  expect(narrowDiscussBounds).not.toBeNull();
+  expect(
+    (narrowDiscussBounds?.x ?? 0) + (narrowDiscussBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(1155);
+  await page.setViewportSize({ width: 1536, height: 1024 });
   await page.screenshot({
     path: testInfo.outputPath("guide-05-repositories.png"),
     fullPage: true,
@@ -1830,7 +1842,34 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await page.waitForTimeout(1_150);
 
   await page.evaluate(
-    ({ agentPubkey, channelId }) => {
+    ({ channelId, discussionId, oldRequestId, oldUserPubkey }) => {
+      (
+        window as Window & {
+          __hiveEmit?: (event: Record<string, unknown>) => void;
+        }
+      ).__hiveEmit?.({
+        id: oldRequestId,
+        pubkey: oldUserPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 9,
+        tags: [
+          ["h", channelId],
+          ["discussion", discussionId],
+        ],
+        content: "Permintaan dari perangkat lama",
+        sig: "00".repeat(64),
+      });
+    },
+    {
+      channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+      discussionId: "11111111-2222-4333-8444-555555555555",
+      oldRequestId: "f5".repeat(32),
+      oldUserPubkey: "55".repeat(32),
+    },
+  );
+
+  await page.evaluate(
+    ({ agentPubkey, channelId, oldRequestId }) => {
       (
         window as Window & {
           __hiveEmit?: (event: Record<string, unknown>) => void;
@@ -1842,17 +1881,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         kind: 9,
         tags: [
           ["h", channelId],
-          ["e", "d1".repeat(32), "", "root"],
-          [
-            "e",
-            (
-              window as Window & {
-                __hiveLastPublished?: { id: string };
-              }
-            ).__hiveLastPublished?.id,
-            "",
-            "reply",
-          ],
+          ["e", oldRequestId, "", "root"],
+          ["e", oldRequestId, "", "reply"],
         ],
         content:
           "⚠️ BrickO could not complete this request because of a temporary internal failure. Your original request remains visible above. Use ‘Restore failed request’ to review it before sending again.",
@@ -1862,6 +1892,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     {
       agentPubkey: "22".repeat(32),
       channelId: "62ae672f-ab7b-4619-b013-13eec0111943",
+      oldRequestId: "f5".repeat(32),
     },
   );
   const restore = page.getByRole("button", { name: "Restore failed request" });
@@ -1869,8 +1900,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await restore.click();
   await expect(
     page.getByRole("combobox", { name: "Reply in thread" }),
-  ).toHaveValue("Tolong cek status Hive sekarang");
-  await expect(page.getByText(/Replying to You:/)).toBeVisible();
+  ).toHaveValue("Permintaan dari perangkat lama");
+  await expect(page.getByText(/Replying to .*Permintaan/)).toBeVisible();
   await page.getByRole("button", { name: "Cancel reply" }).click();
 
   await page.screenshot({
