@@ -651,6 +651,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
           },
           {
             pubkey: "33".repeat(32),
+            linkedPubkeys: ["33".repeat(32), "66".repeat(32)],
             displayName: "Dewi Lestari",
             role: "member",
           },
@@ -1010,7 +1011,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             kind: 9,
             tags: [["h", "62ae672f-ab7b-4619-b013-13eec0111943"]],
             content:
-              "**Sudah aktif.** Balasan sekarang muncul otomatis tanpa refresh manual.",
+              "**Sudah aktif.**\\n\\n- Balasan sekarang muncul otomatis tanpa refresh manual.",
             sig: "00".repeat(64),
           },
           {
@@ -1175,7 +1176,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
                 kind: 9,
                 tags: [["h", channelId]],
                 content:
-                  "**Sudah aktif.** Balasan sekarang muncul otomatis tanpa refresh manual.",
+                  "**Sudah aktif.**\\n\\n- Balasan sekarang muncul otomatis tanpa refresh manual.",
                 sig: "00".repeat(64),
               },
               {
@@ -1260,6 +1261,15 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByTestId("header-connection-status")).toContainText(
     "Chat connected",
   );
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await expect(page.getByText("bricki@onebrick.io")).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "Refresh conversation" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("menuitem", { name: "Refresh conversation" }),
+  ).toHaveCount(0);
   await expect(page.getByTestId("desktop-navigation")).not.toContainText(
     "Chat connected",
   );
@@ -1279,6 +1289,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     name: "Message from BrickO",
   });
   await expect(agentMessage.getByText("Sudah aktif.")).toBeVisible();
+  await expect(
+    agentMessage.getByText(
+      "Balasan sekarang muncul otomatis tanpa refresh manual.",
+    ),
+  ).toBeVisible();
+  await expect(agentMessage).not.toContainText("\\n");
   const teammateMessage = page.getByRole("article", {
     name: "Message from Sanny Gaddafi",
   });
@@ -1308,7 +1324,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     mentionPicker.getByRole("option", {
       name: /Dewi Lestari.*member/,
     }),
-  ).toBeVisible();
+  ).toHaveCount(1);
   await page.screenshot({
     path: testInfo.outputPath("guide-02-mention-picker.png"),
     fullPage: true,
@@ -1324,6 +1340,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(newChatDialog).toBeVisible();
   await expect(page.getByTestId("conversation-title-input")).toBeFocused();
   await expect(page.getByText("Start a private chat")).toBeVisible();
+  await expect(newChatDialog.getByLabel("Dewi Lestari")).toHaveCount(1);
+  await newChatDialog.getByPlaceholder("Search people…").fill("Dewi");
+  await expect(newChatDialog.getByLabel("Dewi Lestari")).toBeVisible();
+  await newChatDialog.getByPlaceholder("Search people…").fill("");
   await page.screenshot({
     path: testInfo.outputPath("guide-03-new-chat.png"),
     fullPage: true,
@@ -1407,6 +1427,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     page.getByTestId("github-repository-BrickO-Brick-hive"),
   ).toBeVisible();
+  const brickIRepositories = page.getByRole("button", {
+    name: /BrickI-Brick 1 Expand/,
+  });
+  await expect(brickIRepositories).toHaveAttribute("aria-expanded", "false");
+  await brickIRepositories.click();
   await expect(
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
   ).toBeVisible();
@@ -1643,10 +1668,20 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     threadPanel.getByText("2 threads in this conversation"),
   ).toBeVisible();
+  await threadPanel
+    .getByRole("button", { name: "Open thread: Second top-level question" })
+    .click();
   await expect(
-    threadPanel.getByRole("region", {
-      name: "Thread: Second top-level question",
-    }),
+    threadPanel.getByRole("heading", { name: "Thread" }),
+  ).toBeVisible();
+  await expect(
+    threadPanel.getByText("Reply to the second root remains visible"),
+  ).toBeVisible();
+  await threadPanel
+    .getByRole("button", { name: "Reply in this thread" })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: "Reply in thread" }),
   ).toBeVisible();
   await page.setViewportSize({ width: 1155, height: 720 });
   const threadBounds = await threadPanel.boundingBox();
@@ -1823,7 +1858,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   const restore = page.getByRole("button", { name: "Restore failed request" });
   await expect(restore).toBeVisible();
   await restore.click();
-  await expect(composer).toHaveValue("Tolong cek status Hive sekarang");
+  await expect(
+    page.getByRole("combobox", { name: "Reply in thread" }),
+  ).toHaveValue("Tolong cek status Hive sekarang");
   await expect(page.getByText(/Replying to You:/)).toBeVisible();
   await page.getByRole("button", { name: "Cancel reply" }).click();
 
@@ -1908,6 +1945,19 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(
     desktopNavigation.getByRole("button", { name: "Repositories" }),
   ).toBeVisible();
+  const showNavigation = desktopNavigation.getByRole("button", {
+    name: "Show navigation menu",
+  });
+  const chatsRailButton = desktopNavigation.getByRole("button", {
+    name: "Chats",
+  });
+  const showNavigationBounds = await showNavigation.boundingBox();
+  const chatsRailBounds = await chatsRailButton.boundingBox();
+  expect(showNavigationBounds).not.toBeNull();
+  expect(chatsRailBounds).not.toBeNull();
+  expect(
+    (showNavigationBounds?.y ?? 0) + (showNavigationBounds?.height ?? 0),
+  ).toBeLessThanOrEqual(chatsRailBounds?.y ?? 0);
   await expect(
     desktopNavigation.getByRole("img", {
       name: /^Signed in as /,
@@ -1944,6 +1994,18 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   await expect(page.getByTestId("mobile-navigation-open")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Improve Mantul deployment safety" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open threads" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "Conversation threads" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("07-mobile-threads.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Close threads" }).click();
   await expect(page.getByTestId("mobile-navigation")).toHaveCount(0);
   await page.screenshot({
     path: testInfo.outputPath("05-mobile-navigation-closed.png"),

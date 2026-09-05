@@ -70,16 +70,19 @@ function RailButton({
   children,
   label,
   onClick,
+  testId,
 }: {
   active?: boolean;
   children: ReactNode;
   label: string;
   onClick?: () => void;
+  testId?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      data-testid={testId}
       className={`relative grid size-10 place-items-center rounded-lg transition ${
         active
           ? "bg-[#EEF5FF] text-[#1F55C5]"
@@ -168,10 +171,19 @@ export function HiveNavigation({
         <div className="flex w-[68px] shrink-0 flex-col items-center border-r border-[#E2E8F0] bg-[#FBFCFE] py-3">
           <img
             alt="Hive"
-            className="mb-5 size-10 rounded-xl object-contain"
+            className="mb-3 size-10 rounded-xl object-contain"
             src={hiveIconUrl}
           />
           <div className="flex flex-1 flex-col items-center gap-2">
+            {collapsed && (
+              <RailButton
+                label="Show navigation menu"
+                onClick={onToggle}
+                testId="sidebar-toggle"
+              >
+                <Menu size={18} />
+              </RailButton>
+            )}
             <RailButton
               active={surface === "chat"}
               label="Chats"
@@ -397,19 +409,6 @@ export function HiveNavigation({
             </div>
           )}
         </div>
-      )}
-
-      {collapsed && !mobile && (
-        <button
-          type="button"
-          data-testid="sidebar-toggle"
-          onClick={onToggle}
-          className="absolute left-[18px] top-[64px] z-10 grid size-8 place-items-center rounded-md border border-[#D8DEE8] bg-white text-[#526178] shadow-sm transition hover:text-[#1F55C5]"
-          aria-label="Show navigation menu"
-          title="Show menu"
-        >
-          <Menu size={17} />
-        </button>
       )}
     </div>
   );

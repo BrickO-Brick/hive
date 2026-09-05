@@ -5,6 +5,7 @@ import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 
 export type OneBrickParticipant = {
   pubkey: string;
+  linkedPubkeys?: string[];
   displayName: string | null;
   role: string;
 };
@@ -37,6 +38,13 @@ async function fetchParticipants(
       typeof participant === "object" &&
       participant !== null &&
       typeof (participant as OneBrickParticipant).pubkey === "string" &&
+      ((participant as OneBrickParticipant).linkedPubkeys === undefined ||
+        (Array.isArray((participant as OneBrickParticipant).linkedPubkeys) &&
+          Boolean(
+            (participant as OneBrickParticipant).linkedPubkeys?.every(
+              (pubkey) => typeof pubkey === "string",
+            ),
+          ))) &&
       (typeof (participant as OneBrickParticipant).displayName === "string" ||
         (participant as OneBrickParticipant).displayName === null) &&
       typeof (participant as OneBrickParticipant).role === "string",

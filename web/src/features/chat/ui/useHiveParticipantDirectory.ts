@@ -24,6 +24,7 @@ export type HiveParticipant = {
   identityHint: string;
   isAgent: boolean;
   isCurrentUser: boolean;
+  linkedPubkeys: string[];
   pubkey: string;
   role: string;
 };
@@ -68,7 +69,9 @@ export function participantsInPrivateChat(
   if (!participantPubkeys) return participants;
   const allowed = new Set(participantPubkeys.map(normalizePubkey));
   return participants.filter((participant) =>
-    allowed.has(normalizePubkey(participant.pubkey)),
+    participant.linkedPubkeys.some((pubkey) =>
+      allowed.has(normalizePubkey(pubkey)),
+    ),
   );
 }
 
@@ -183,7 +186,9 @@ export function useHiveParticipantDirectory(
       pubkeys.add(pubkey);
     }
     for (const participant of directory.data ?? []) {
-      pubkeys.add(normalizePubkey(participant.pubkey));
+      for (const pubkey of participant.linkedPubkeys ?? [participant.pubkey]) {
+        pubkeys.add(normalizePubkey(pubkey));
+      }
     }
     if (identity) pubkeys.add(normalizePubkey(identity.pubkey));
     return [...pubkeys].filter(Boolean).sort().join(",");
@@ -225,24 +230,28 @@ export function useHiveParticipantDirectory(
 
   const roles = useMemo(() => {
     const serverRoles = Object.fromEntries(
-      (directory.data ?? []).map((participant) => [
-        normalizePubkey(participant.pubkey),
-        participant.role,
-      ]),
+      (directory.data ?? []).flatMap((participant) =>
+        (participant.linkedPubkeys ?? [participant.pubkey]).map((pubkey) => [
+          normalizePubkey(pubkey),
+          participant.role,
+        ]),
+      ),
     );
     return { ...serverRoles, ...eventRoles };
   }, [directory.data, eventRoles]);
 
   const profiles = useMemo(() => {
     const serverProfiles = Object.fromEntries(
-      (directory.data ?? []).map((participant) => [
-        normalizePubkey(participant.pubkey),
-        {
-          createdAt: 0,
-          displayName: participant.displayName,
-          nip05: null,
-        } satisfies ParticipantProfile,
-      ]),
+      (directory.data ?? []).flatMap((participant) =>
+        (participant.linkedPubkeys ?? [participant.pubkey]).map((pubkey) => [
+          normalizePubkey(pubkey),
+          {
+            createdAt: 0,
+            displayName: participant.displayName,
+            nip05: null,
+          } satisfies ParticipantProfile,
+        ]),
+      ),
     );
     return { ...serverProfiles, ...nostrProfiles };
   }, [directory.data, nostrProfiles]);
@@ -264,8 +273,40 @@ export function useHiveParticipantDirectory(
     if (ownPubkey) pubkeys.add(ownPubkey);
     for (const message of messages)
       pubkeys.add(normalizePubkey(message.pubkey));
-    return [...pubkeys]
-      .filter(Boolean)
+    const groupedPubkeys = new Set<string>();
+    const groupedParticipants = (directory.data ?? []).map((entry) => {
+      const linkedPubkeys = (entry.linkedPubkeys ?? [entry.pubkey])
+        .map(normalizePubkey)
+        .filter(Boolean);
+      for (const pubkey of linkedPubkeys) groupedPubkeys.add(pubkey);
+      const pubkey = normalizePubkey(entry.pubkey);
+      const isCurrentUser = linkedPubkeys.includes(ownPubkey);
+      const isAgent = linkedPubkeys.includes(agentPubkey ?? "");
+      const fallback = isCurrentUser
+        ? "You"
+        : isAgent
+          ? "BrickO"
+          : `Teammate · ${truncatePubkey(pubkey)}`;
+      const displayName =
+        entry.displayName ??
+        profiles[pubkey]?.displayName ??
+        profiles[pubkey]?.nip05 ??
+        fallback;
+      return {
+        displayName,
+        identityHint:
+          linkedPubkeys.length > 1
+            ? `${linkedPubkeys.length} linked devices`
+            : (profiles[pubkey]?.nip05 ?? truncatePubkey(pubkey)),
+        isAgent,
+        isCurrentUser,
+        linkedPubkeys,
+        pubkey,
+        role: isAgent ? "Agent" : entry.role,
+      };
+    });
+    const ungroupedParticipants = [...pubkeys]
+      .filter((pubkey) => Boolean(pubkey) && !groupedPubkeys.has(pubkey))
       .map((pubkey) => {
         const isCurrentUser = pubkey === ownPubkey;
         const isAgent = pubkey === agentPubkey;
@@ -285,18 +326,21 @@ export function useHiveParticipantDirectory(
               : truncatePubkey(pubkey),
           isAgent,
           isCurrentUser,
+          linkedPubkeys: [pubkey],
           pubkey,
           role: isAgent ? "Agent" : (roles[pubkey] ?? "member"),
         };
-      })
-      .sort((left, right) => {
+      });
+    return [...groupedParticipants, ...ungroupedParticipants].sort(
+      (left, right) => {
         if (left.isAgent !== right.isAgent) return left.isAgent ? -1 : 1;
         if (left.isCurrentUser !== right.isCurrentUser) {
           return left.isCurrentUser ? 1 : -1;
         }
         return left.displayName.localeCompare(right.displayName);
-      });
-  }, [agentPubkey, identity, messages, profiles, roles]);
+      },
+    );
+  }, [agentPubkey, directory.data, identity, messages, profiles, roles]);
 
   return { agentPubkey, participants, profiles };
 }

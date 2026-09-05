@@ -86,6 +86,46 @@ pub struct MantapSsoProvision<'a> {
     pub pubkey_hex: &'a str,
 }
 
+/// Authoritative Mantap account binding for one Nostr browser key.
+#[derive(Debug, Clone)]
+pub struct MantapSsoIdentityBinding {
+    /// Stable Mantap subject shared by every browser key for the same person.
+    pub subject: String,
+    /// Bound raw 32-byte Nostr public key.
+    pub pubkey: Vec<u8>,
+    /// Most recent successful verification for selecting the active key.
+    pub last_verified_at: DateTime<Utc>,
+}
+
+/// Return Mantap identity bindings for the requested keys inside one community.
+pub async fn get_mantap_sso_bindings_bulk(
+    db: &Db,
+    community_id: CommunityId,
+    pubkeys: &[Vec<u8>],
+) -> Result<Vec<MantapSsoIdentityBinding>> {
+    if pubkeys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(
+        "SELECT subject, pubkey, last_verified_at FROM mantap_sso_bindings \
+         WHERE community_id = $1 AND pubkey = ANY($2::bytea[]) \
+         ORDER BY subject, last_verified_at DESC, pubkey",
+    )
+    .bind(community_id.as_uuid())
+    .bind(pubkeys)
+    .fetch_all(&db.pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(MantapSsoIdentityBinding {
+                subject: row.try_get("subject")?,
+                pubkey: row.try_get("pubkey")?,
+                last_verified_at: row.try_get("last_verified_at")?,
+            })
+        })
+        .collect()
+}
+
 /// Atomically consume a ticket, bind the identity, and synchronize Mantap's
 /// authoritative access level into relay membership. Channel membership stays
 /// ordinary because channel-specific ownership is managed separately.
@@ -253,6 +293,16 @@ impl Db {
     ) -> Result<MantapSsoProvisionOutcome> {
         provision_mantap_sso(self, input).await
     }
+
+    /// Bulk-fetch authoritative Mantap identity bindings for Nostr keys.
+    #[datastore_span(name = "get_mantap_sso_bindings_bulk", system = "postgresql")]
+    pub async fn get_mantap_sso_bindings_bulk(
+        &self,
+        community_id: CommunityId,
+        pubkeys: &[Vec<u8>],
+    ) -> Result<Vec<MantapSsoIdentityBinding>> {
+        get_mantap_sso_bindings_bulk(self, community_id, pubkeys).await
+    }
 }
 
 #[cfg(test)]
@@ -355,6 +405,19 @@ mod tests {
         )
         .await
         .expect("provision reader on second key");
+
+        let bindings = get_mantap_sso_bindings_bulk(
+            &db,
+            community,
+            &[first_key.to_vec(), second_key.to_vec()],
+        )
+        .await
+        .expect("read subject bindings");
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings
+            .iter()
+            .all(|binding| binding.subject == "mantul-user:rbac-test"));
+        assert_eq!(bindings[0].pubkey, second_key);
 
         let roles: Vec<(String, String)> = sqlx::query_as(
             "SELECT pubkey, role FROM relay_members WHERE community_id = $1 AND pubkey = ANY($2) ORDER BY pubkey",

@@ -2,10 +2,8 @@ import {
   CircleAlert,
   GitBranch,
   Hash,
-  LogOut,
   Menu,
   MessageCircle,
-  RefreshCw,
   ShieldCheck,
   Wifi,
   WifiOff,
@@ -50,6 +48,7 @@ import { deriveBrickOStatus } from "./brickOStatus";
 import type { HiveConversation } from "./discussionMessages";
 import { isAgentFailureMessage } from "./agentFailure";
 import { HiveComposer } from "./HiveComposer";
+import { HiveAccountMenu } from "./HiveAccountMenu";
 import { HiveChatEmptyState } from "./HiveChatEmptyState";
 import { HiveBrickOStatusBanner } from "./HiveBrickOStatusBanner";
 import {
@@ -630,7 +629,7 @@ export function HiveChatPage() {
       )}
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <header className="z-10 flex h-14 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
+        <header className="z-10 flex h-14 shrink-0 items-center justify-between gap-2 overflow-visible border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <button
               type="button"
@@ -641,10 +640,7 @@ export function HiveChatPage() {
             >
               <Menu size={17} />
             </button>
-            <span className="text-base font-extrabold tracking-[-0.03em] text-[#10233F] md:hidden">
-              Hive
-            </span>
-            <div className="hidden min-w-0 flex-1 overflow-hidden sm:block">
+            <div className="min-w-0 flex-1 overflow-hidden">
               <div className="flex min-w-0 items-center gap-2">
                 <h1 className="min-w-0 truncate text-[15px] font-bold text-[#10233F]">
                   {surface === "repositories"
@@ -664,7 +660,7 @@ export function HiveChatPage() {
                   {agentState.label}
                 </span>
               </div>
-              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-[#607086]">
+              <p className="mt-0.5 hidden min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-[#607086] sm:flex">
                 {surface === "repositories" ? (
                   <>
                     <GitBranch size={10} /> BrickO-Brick
@@ -702,7 +698,11 @@ export function HiveChatPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2 lg:gap-3">
             <div
-              className="hidden items-center gap-1.5 text-xs font-semibold text-[#42526B] sm:flex"
+              className={
+                connected
+                  ? "sr-only"
+                  : "hidden items-center gap-1.5 text-xs font-semibold text-[#8A4B00] sm:flex"
+              }
               aria-live="polite"
               data-testid="header-connection-status"
             >
@@ -721,32 +721,11 @@ export function HiveChatPage() {
                 threadsOpen={threadPanelOpen}
               />
             )}
-            <div className="flex items-center overflow-hidden rounded border border-[#D8DEE8] bg-white">
-              <div className="hidden min-h-9 items-center gap-2 border-r border-[#D8DEE8] px-3 2xl:flex">
-                <div className="grid size-6 place-items-center rounded-full bg-[#10213F] text-[9px] font-extrabold text-white">
-                  {identity.email.slice(0, 2).toUpperCase()}
-                </div>
-                <span className="max-w-40 truncate text-[11px] font-semibold text-[#42526B]">
-                  {identity.email}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => void refresh()}
-                className="grid size-9 place-items-center text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#FF6F52]"
-                aria-label="Refresh"
-              >
-                <RefreshCw size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={logout}
-                className="grid size-9 place-items-center border-l border-[#D8DEE8] text-[#526178] transition hover:bg-[#F7FAFC] hover:text-[#C93F4A]"
-                aria-label="Sign out"
-              >
-                <LogOut size={15} />
-              </button>
-            </div>
+            <HiveAccountMenu
+              email={identity.email}
+              onLogout={logout}
+              onRefresh={() => void refresh()}
+            />
           </div>
         </header>
 

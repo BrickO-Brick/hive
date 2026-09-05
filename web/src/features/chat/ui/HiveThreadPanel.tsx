@@ -1,4 +1,7 @@
-import { MessageSquareText, X } from "lucide-react";
+import { ArrowLeft, MessageSquareText, Reply, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { NostrEvent } from "@/shared/lib/nostr-client";
 import { BrickOPet } from "./BrickOPet";
 import type {
@@ -6,9 +9,14 @@ import type {
   ParticipantProfile,
 } from "./useHiveParticipantDirectory";
 import {
+  normalizePubkey,
   participantInitials,
   participantPresentation,
 } from "./useHiveParticipantDirectory";
+import {
+  messageContentPreview,
+  normalizeMessageContent,
+} from "./messageContent";
 
 type ThreadGroup = {
   replies: NostrEvent[];
@@ -72,8 +80,8 @@ export function HiveHeaderCollaboration({
 }) {
   const visible = participants.slice(0, 4);
   return (
-    <div className="hidden items-center gap-2 md:flex">
-      <div className="hidden -space-x-2 lg:flex" title="Conversation members">
+    <div className="flex items-center gap-2">
+      <div className="hidden -space-x-2 xl:flex" title="Conversation members">
         {visible.map((participant) =>
           participant.isAgent ? (
             <span
@@ -97,7 +105,7 @@ export function HiveHeaderCollaboration({
       <button
         type="button"
         onClick={onThreads}
-        className="flex h-9 items-center gap-2 rounded-md border border-[#D8DEE8] px-2 text-xs font-bold text-[#42526B] transition hover:border-[#BFD4FF] hover:bg-[#EEF5FF] hover:text-[#1F55C5] lg:px-3"
+        className="flex h-9 min-w-9 items-center justify-center gap-2 rounded-md border border-[#D8DEE8] px-2 text-xs font-bold text-[#42526B] transition hover:border-[#BFD4FF] hover:bg-[#EEF5FF] hover:text-[#1F55C5] lg:px-3"
         aria-expanded={threadsOpen}
         aria-controls="hive-thread-panel"
         aria-label={threadsOpen ? "Hide threads" : "Open threads"}
@@ -161,26 +169,51 @@ export function HiveThreadPanel({
   profiles: Record<string, ParticipantProfile>;
 }) {
   const threads = groupConversationThreads(messages);
+  const [selectedRootId, setSelectedRootId] = useState<string | null>(null);
+  const selectedThread =
+    threads.find((thread) => thread.rootId === selectedRootId) ?? null;
+  const contentForDisplay = (message: NostrEvent) =>
+    normalizePubkey(message.pubkey) === normalizePubkey(agentPubkey ?? "")
+      ? normalizeMessageContent(message.content)
+      : message.content;
+  useEffect(() => {
+    if (selectedRootId && !selectedThread) setSelectedRootId(null);
+  }, [selectedRootId, selectedThread]);
   return (
     <>
       <button
         type="button"
-        className="fixed inset-0 z-20 hidden bg-[#10213F]/20 backdrop-blur-[1px] md:block 2xl:hidden"
+        className="fixed inset-0 z-20 bg-[#10213F]/20 backdrop-blur-[1px] 2xl:hidden"
         onClick={onClose}
         aria-label="Dismiss threads"
       />
       <aside
         id="hive-thread-panel"
         aria-label="Conversation threads"
-        className="fixed inset-y-0 right-0 z-30 hidden w-[min(24rem,calc(100vw-1rem))] shrink-0 flex-col border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] md:flex 2xl:static 2xl:w-80 2xl:shadow-none"
+        className="fixed inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] sm:w-[min(24rem,calc(100vw-1rem))] 2xl:static 2xl:w-80 2xl:shadow-none"
       >
-        <div className="flex h-14 items-center justify-between border-b border-[#D8DEE8] px-4">
-          <div>
-            <h2 className="text-sm font-bold text-[#10233F]">Threads</h2>
-            <p className="text-[10px] text-[#607086]">
-              {threads.length} {threads.length === 1 ? "thread" : "threads"} in
-              this conversation
-            </p>
+        <div className="flex min-h-14 items-center justify-between gap-2 border-b border-[#D8DEE8] px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            {selectedThread && (
+              <button
+                type="button"
+                onClick={() => setSelectedRootId(null)}
+                className="grid size-9 shrink-0 place-items-center rounded-md text-[#526178] hover:bg-[#F1F5FA]"
+                aria-label="Back to thread list"
+              >
+                <ArrowLeft size={16} />
+              </button>
+            )}
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-bold text-[#10233F]">
+                {selectedThread ? "Thread" : "Threads"}
+              </h2>
+              <p className="truncate text-[10px] text-[#607086]">
+                {selectedThread
+                  ? `${selectedThread.replies.length} ${selectedThread.replies.length === 1 ? "reply" : "replies"}`
+                  : `${threads.length} ${threads.length === 1 ? "thread" : "threads"} in this conversation`}
+              </p>
+            </div>
           </div>
           <button
             type="button"
@@ -192,7 +225,45 @@ export function HiveThreadPanel({
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {threads.length === 0 ? (
+          {selectedThread ? (
+            <div className="space-y-4">
+              {[selectedThread.root, ...selectedThread.replies]
+                .filter((message): message is NostrEvent => Boolean(message))
+                .map((message, index) => (
+                  <article
+                    key={message.id}
+                    className={
+                      index === 0
+                        ? "rounded-xl border border-[#C7D2E3] bg-[#F7FAFC] p-3"
+                        : "border-b border-[#E2E8F0] px-1 pb-4 last:border-0"
+                    }
+                  >
+                    <Author
+                      agentPubkey={agentPubkey}
+                      identityPubkey={identityPubkey}
+                      message={message}
+                      profiles={profiles}
+                    />
+                    <div className="prose prose-sm ml-9 mt-1 max-w-none break-words text-xs leading-5 text-[#42526B] prose-p:my-1 prose-pre:bg-[#10213F] prose-pre:text-white">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {contentForDisplay(message)}
+                      </ReactMarkdown>
+                    </div>
+                  </article>
+                ))}
+              {(selectedThread.root ?? selectedThread.replies[0]) && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onReply(selectedThread.root ?? selectedThread.replies[0])
+                  }
+                  className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#2F6FED] text-xs font-bold text-white hover:bg-[#244FB3]"
+                >
+                  <Reply size={14} /> Reply in this thread
+                </button>
+              )}
+            </div>
+          ) : threads.length === 0 ? (
             <div className="rounded-lg border border-dashed border-[#C7D2E3] bg-[#F9FBFD] px-4 py-8 text-center">
               <MessageSquareText className="mx-auto text-[#8491A4]" size={22} />
               <p className="mt-2 text-xs font-bold text-[#42526B]">
@@ -203,60 +274,44 @@ export function HiveThreadPanel({
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-1">
               {threads.map((thread) => {
-                const replyTarget = thread.root ?? thread.replies[0];
-                const rootLabel =
-                  thread.root?.content.trim() || "Original message";
+                const rootLabel = thread.root
+                  ? messageContentPreview(
+                      thread.root.content,
+                      normalizePubkey(thread.root.pubkey) ===
+                        normalizePubkey(agentPubkey ?? ""),
+                    )
+                  : "Original message";
+                const latest =
+                  thread.replies[thread.replies.length - 1] ?? thread.root;
+                const latestAuthor = latest
+                  ? participantPresentation(
+                      latest.pubkey,
+                      identityPubkey,
+                      agentPubkey,
+                      profiles,
+                    ).authorLabel
+                  : "Unknown";
                 return (
-                  <section
+                  <button
+                    type="button"
                     key={thread.rootId}
-                    className="overflow-hidden rounded-xl border border-[#D8DEE8] bg-white"
-                    aria-label={`Thread: ${rootLabel}`}
+                    onClick={() => setSelectedRootId(thread.rootId)}
+                    className="w-full rounded-lg border border-transparent px-3 py-3 text-left transition hover:border-[#D8DEE8] hover:bg-[#F7FAFC] focus-visible:border-[#2F6FED] focus-visible:outline-none"
+                    aria-label={`Open thread: ${rootLabel}`}
                   >
-                    <div className="border-b border-[#E2E8F0] bg-[#F7FAFC] p-3">
-                      {thread.root && (
-                        <Author
-                          agentPubkey={agentPubkey}
-                          identityPubkey={identityPubkey}
-                          message={thread.root}
-                          profiles={profiles}
-                        />
-                      )}
-                      <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[#24324A]">
-                        {rootLabel}
-                      </p>
-                      <p className="mt-1 text-[10px] font-bold text-[#607086]">
+                    <p className="line-clamp-2 text-xs font-bold leading-5 text-[#24324A]">
+                      {rootLabel}
+                    </p>
+                    <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-[#607086]">
+                      <span>
                         {thread.replies.length}{" "}
                         {thread.replies.length === 1 ? "reply" : "replies"}
-                      </p>
+                      </span>
+                      <span className="truncate">Latest · {latestAuthor}</span>
                     </div>
-                    <div className="space-y-3 p-3">
-                      {thread.replies.map((reply) => (
-                        <article key={reply.id}>
-                          <Author
-                            agentPubkey={agentPubkey}
-                            identityPubkey={identityPubkey}
-                            message={reply}
-                            profiles={profiles}
-                          />
-                          <p className="ml-9 mt-1 line-clamp-4 text-xs leading-5 text-[#42526B]">
-                            {reply.content}
-                          </p>
-                        </article>
-                      ))}
-                      {replyTarget && (
-                        <button
-                          type="button"
-                          onClick={() => onReply(replyTarget)}
-                          className="text-[11px] font-bold text-[#1F55C5] hover:underline"
-                          aria-label={`Reply to thread: ${rootLabel}`}
-                        >
-                          Reply to thread
-                        </button>
-                      )}
-                    </div>
-                  </section>
+                  </button>
                 );
               })}
             </div>

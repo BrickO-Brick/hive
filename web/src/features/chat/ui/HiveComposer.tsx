@@ -13,6 +13,7 @@ import {
   type HiveParticipant,
   participantInitials,
 } from "./useHiveParticipantDirectory";
+import { messageContentPreview } from "./messageContent";
 
 type Props = {
   activeDiscussion: RepositoryDiscussion | null;
@@ -66,9 +67,11 @@ export function HiveComposer({
   const [cursor, setCursor] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
   const [selectedMention, setSelectedMention] = useState(0);
-  const accessibleName = activeDiscussion
-    ? `Message BrickO about ${activeDiscussion.repository}`
-    : "Message BrickO";
+  const accessibleName = replyTo
+    ? "Reply in thread"
+    : activeDiscussion
+      ? `Message BrickO about ${activeDiscussion.repository}`
+      : "Message BrickO";
   const mention = mentionClosed ? null : activeMention(text, cursor);
   const mentionOptions = useMemo(() => {
     if (!mention) return [];
@@ -150,7 +153,8 @@ export function HiveComposer({
         {replyTo && (
           <div className="mb-2 flex items-start justify-between rounded border border-[#BFD4FF] bg-[#EEF5FF] px-3 py-2 text-xs text-[#29466F]">
             <span className="line-clamp-2 leading-5">
-              <strong>Replying to {replyAuthor}:</strong> {replyTo.content}
+              <strong>Replying to {replyAuthor}:</strong>{" "}
+              {messageContentPreview(replyTo.content)}
             </span>
             <button
               type="button"

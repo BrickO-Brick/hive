@@ -1,10 +1,20 @@
-import { Bot, Check, Plus, RefreshCw, UserRound, X } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Plus,
+  RefreshCw,
+  Search,
+  UserRound,
+  X,
+} from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
+  useState,
 } from "react";
 import type { OneBrickGitHubRepository } from "@/features/repos/onebrick-github-api";
 import type { HiveParticipant } from "./useHiveParticipantDirectory";
@@ -178,6 +188,21 @@ export function HiveNewConversationDialog({
   selectedPubkeys: Set<string>;
   title: string;
 }) {
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const selectableParticipants = useMemo(
+    () => participants.filter((participant) => !participant.isCurrentUser),
+    [participants],
+  );
+  const selectedParticipants = selectableParticipants.filter((participant) =>
+    selectedPubkeys.has(participant.pubkey),
+  );
+  const normalizedQuery = peopleQuery.trim().toLowerCase();
+  const filteredParticipants = selectableParticipants.filter(
+    (participant) =>
+      !normalizedQuery ||
+      participant.displayName.toLowerCase().includes(normalizedQuery) ||
+      participant.role.toLowerCase().includes(normalizedQuery),
+  );
   return (
     <DialogFrame
       eyebrow="New chat"
@@ -210,13 +235,45 @@ export function HiveNewConversationDialog({
         <legend className="text-xs font-bold text-[#42526B]">
           People ({selectedPubkeys.size}/8)
         </legend>
+        {selectedParticipants.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {selectedParticipants.map((participant) => (
+              <button
+                key={participant.pubkey}
+                type="button"
+                onClick={() => onToggleParticipant(participant.pubkey)}
+                className="flex h-7 items-center gap-1.5 rounded-full border border-[#BFD4FF] bg-[#EEF5FF] pl-2.5 pr-1.5 text-[11px] font-bold text-[#1F55C5]"
+                aria-label={`Remove ${participant.displayName}`}
+              >
+                {participant.displayName} <X size={12} />
+              </button>
+            ))}
+          </div>
+        )}
+        <label className="relative mt-2 block">
+          <span className="sr-only">Search people</span>
+          <Search
+            aria-hidden="true"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8491A4]"
+            size={14}
+          />
+          <input
+            value={peopleQuery}
+            onChange={(event) => setPeopleQuery(event.currentTarget.value)}
+            placeholder="Search people…"
+            className="h-10 w-full rounded-lg border border-[#D8DEE8] bg-[#F9FBFD] pl-9 pr-3 text-sm outline-none focus:border-[#2F6FED]/60 focus:bg-white focus:ring-4 focus:ring-[#2F6FED]/10"
+          />
+        </label>
         <div
-          className="mt-1.5 max-h-56 overflow-y-auto rounded-lg border border-[#D8DEE8] p-1.5"
+          className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-[#D8DEE8] p-1.5"
           data-testid="conversation-participants"
         >
-          {participants
-            .filter((participant) => !participant.isCurrentUser)
-            .map((participant) => {
+          {filteredParticipants.length === 0 ? (
+            <p className="px-3 py-6 text-center text-xs text-[#607086]">
+              No people match “{peopleQuery}”.
+            </p>
+          ) : (
+            filteredParticipants.map((participant) => {
               const selected = selectedPubkeys.has(participant.pubkey);
               const disabled = !selected && selectedPubkeys.size >= 8;
               return (
@@ -270,7 +327,8 @@ export function HiveNewConversationDialog({
                   </span>
                 </label>
               );
-            })}
+            })
+          )}
         </div>
       </fieldset>
       <DialogError error={error} />

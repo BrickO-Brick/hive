@@ -24,6 +24,7 @@ export function HiveBrickOStatusBanner({
   typing: boolean;
   waiting: boolean;
 }) {
+  if (connected && !waiting && !typing && !celebration) return null;
   return (
     <div
       className="mx-3 mt-2 flex min-h-12 shrink-0 items-center gap-2.5 rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-1.5 sm:mx-5"

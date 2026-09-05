@@ -5,6 +5,7 @@ import type { NostrEvent } from "@/shared/lib/nostr-client";
 import { agentFailureDisplayContent } from "./agentFailure";
 import { BrickOPet } from "./BrickOPet";
 import { participantInitials } from "./useHiveParticipantDirectory";
+import { normalizeMessageContent } from "./messageContent";
 
 type Props = {
   authorLabel: string;
@@ -34,9 +35,12 @@ export function HiveMessage({
   onRestoreRequest,
   showDay,
 }: Props) {
-  const displayContent = fromBrickO
+  const failureAwareContent = fromBrickO
     ? agentFailureDisplayContent(message.content)
     : message.content;
+  const displayContent = fromBrickO
+    ? normalizeMessageContent(failureAwareContent)
+    : failureAwareContent;
   return (
     <div>
       {showDay && (
