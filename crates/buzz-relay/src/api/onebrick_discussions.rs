@@ -37,7 +37,8 @@ const MAX_DISCUSSIONS: usize = 500;
 const MAX_MANIFEST_SCAN: usize = 5_000;
 const MAX_LEGACY_MANIFEST_CLAIMS_PER_LIST: usize = 64;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-const MAX_WORKSPACE_FILES: usize = 2_000;
+const MAX_WORKSPACE_FILE_RESULTS: usize = 300;
+const MAX_WORKSPACE_FILE_QUERY_BYTES: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_EDITABLE_FILE_BYTES: u64 = 512 * 1024;
 const MAX_WORKSPACE_LOCKS: usize = 1_024;
@@ -135,6 +136,12 @@ pub(crate) struct WorkspaceFileWriteRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceFileSearchRequest {
+    query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceCommitRequest {
     message: String,
     expected_head_sha: String,
@@ -161,6 +168,17 @@ pub(crate) struct WorkspaceState {
     current_head_sha: String,
     dirty: bool,
     files: Vec<WorkspaceFileSummary>,
+    changes: Vec<WorkspaceFileSummary>,
+    total_files: usize,
+    has_more_files: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceFileSearch {
+    files: Vec<WorkspaceFileSummary>,
+    total_matches: usize,
+    has_more_files: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -864,19 +882,53 @@ fn parse_statuses(bytes: &[u8]) -> HashMap<String, String> {
     statuses
 }
 
-pub(crate) async fn workspace(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<Uuid>,
-    headers: HeaderMap,
-) -> Result<Json<WorkspaceState>, (StatusCode, Json<Value>)> {
-    let path = workspace_api_path(id, "");
-    let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
-    let manifest =
-        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
-            .await?;
-    let worktree = manifest.worktree_path.to_string_lossy();
+fn workspace_file_summaries(
+    paths: &[String],
+    statuses: &HashMap<String, String>,
+    query: Option<&str>,
+) -> (Vec<WorkspaceFileSummary>, usize, bool) {
+    let normalized_query = query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+    let mut matches = paths
+        .iter()
+        .filter(|path| {
+            normalized_query
+                .as_ref()
+                .is_none_or(|query| path.to_lowercase().contains(query))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_unstable();
+    let total_matches = matches.len();
+    let files = matches
+        .into_iter()
+        .take(MAX_WORKSPACE_FILE_RESULTS)
+        .map(|path| WorkspaceFileSummary {
+            status: statuses.get(path).cloned(),
+            path: path.clone(),
+        })
+        .collect();
+    (
+        files,
+        total_matches,
+        total_matches > MAX_WORKSPACE_FILE_RESULTS,
+    )
+}
+
+async fn workspace_catalog(
+    worktree: &str,
+) -> Result<(Vec<String>, HashMap<String, String>), (StatusCode, Json<Value>)> {
     let file_output = git_output(
-        &["-C", &worktree, "ls-files", "-z", "--cached"],
+        &[
+            "-C",
+            worktree,
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
         MAX_GIT_OUTPUT_BYTES,
     )
     .await
@@ -887,7 +939,7 @@ pub(crate) async fn workspace(
     let status_output = git_output(
         &[
             "-C",
-            &worktree,
+            worktree,
             "status",
             "--porcelain=v1",
             "-z",
@@ -900,27 +952,39 @@ pub(crate) async fn workspace(
     if !status_output.status.success() {
         return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
     }
-    let statuses = parse_statuses(&status_output.stdout);
-    let mut files = file_output
+    let files = file_output
         .stdout
         .split(|byte| *byte == 0)
         .filter(|value| !value.is_empty())
         .filter_map(|value| String::from_utf8(value.to_vec()).ok())
         .filter(|path| valid_workspace_path(path))
-        .take(MAX_WORKSPACE_FILES + 1)
+        .collect();
+    Ok((files, parse_statuses(&status_output.stdout)))
+}
+
+pub(crate) async fn workspace(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<WorkspaceState>, (StatusCode, Json<Value>)> {
+    let path = workspace_api_path(id, "");
+    let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
+            .await?;
+    let worktree = manifest.worktree_path.to_string_lossy();
+    let (catalog, statuses) = workspace_catalog(&worktree).await?;
+    let (files, total_files, has_more_files) = workspace_file_summaries(&catalog, &statuses, None);
+    let mut changed_paths = statuses.keys().cloned().collect::<Vec<_>>();
+    changed_paths.sort_unstable();
+    let changes = changed_paths
+        .into_iter()
         .map(|path| WorkspaceFileSummary {
             status: statuses.get(&path).cloned(),
             path,
         })
-        .collect::<Vec<_>>();
-    if files.len() > MAX_WORKSPACE_FILES {
-        return Err(api_error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "workspace_has_too_many_files",
-        ));
-    }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    let dirty = files.iter().any(|file| file.status.is_some());
+        .collect();
+    let dirty = !statuses.is_empty();
     let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
         .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
@@ -929,6 +993,39 @@ pub(crate) async fn workspace(
         current_head_sha,
         dirty,
         files,
+        changes,
+        total_files,
+        has_more_files,
+    }))
+}
+
+pub(crate) async fn search_workspace_files(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<Uuid>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<WorkspaceFileSearch>, (StatusCode, Json<Value>)> {
+    let api_path = workspace_api_path(id, "/files/search");
+    let (tenant, pubkey) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let request: WorkspaceFileSearchRequest = serde_json::from_slice(&body)
+        .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_file_search_request"))?;
+    let query = request.query.trim();
+    if query.is_empty() || query.len() > MAX_WORKSPACE_FILE_QUERY_BYTES {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_file_search_query",
+        ));
+    }
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey).await?;
+    let worktree = manifest.worktree_path.to_string_lossy();
+    let (catalog, statuses) = workspace_catalog(&worktree).await?;
+    let (files, total_matches, has_more_files) =
+        workspace_file_summaries(&catalog, &statuses, Some(query));
+    Ok(Json(WorkspaceFileSearch {
+        files,
+        total_matches,
+        has_more_files,
     }))
 }
 
@@ -1612,6 +1709,34 @@ mod tests {
         ] {
             assert!(!valid_workspace_path(invalid), "{invalid} must be rejected");
         }
+    }
+
+    #[test]
+    fn workspace_catalog_is_bounded_but_searches_the_full_repository() {
+        let mut paths = (0..450)
+            .map(|index| format!("src/generated/file-{index:03}.ts"))
+            .collect::<Vec<_>>();
+        paths.push("crates/buzz-relay/src/api/onebrick_discussions.rs".into());
+        let statuses = HashMap::from([(
+            "crates/buzz-relay/src/api/onebrick_discussions.rs".into(),
+            "M".into(),
+        )]);
+
+        let (initial, total_files, has_more_files) =
+            workspace_file_summaries(&paths, &statuses, None);
+        assert_eq!(initial.len(), MAX_WORKSPACE_FILE_RESULTS);
+        assert_eq!(total_files, 451);
+        assert!(has_more_files);
+
+        let (matches, total_matches, has_more_matches) =
+            workspace_file_summaries(&paths, &statuses, Some("ONEBRICK_DISCUSSIONS"));
+        assert_eq!(total_matches, 1);
+        assert!(!has_more_matches);
+        assert_eq!(
+            matches[0].path,
+            "crates/buzz-relay/src/api/onebrick_discussions.rs"
+        );
+        assert_eq!(matches[0].status.as_deref(), Some("M"));
     }
 
     #[test]

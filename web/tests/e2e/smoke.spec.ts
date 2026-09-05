@@ -666,6 +666,20 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
       );
       const url = request.url();
+      if (url.endsWith("/files/search")) {
+        const input = request.postDataJSON() as { query: string };
+        expect(input.query).toBe("retry");
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            files: [{ path: "src/retry.ts", status: null }],
+            totalMatches: 1,
+            hasMoreFiles: false,
+          }),
+        });
+        return;
+      }
       if (url.endsWith("/file/read")) {
         await route.fulfill({
           status: 200,
@@ -763,6 +777,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
             { path: "src/retry.ts", status: null },
             { path: "README.md", status: null },
           ],
+          changes: workspaceDirty
+            ? [{ path: "src/timeout.ts", status: "M" }]
+            : [],
+          totalFiles: 5023,
+          hasMoreFiles: true,
         }),
       });
     },
@@ -1445,6 +1464,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByRole("button", { name: "Open Simple IDE" }).click();
   await expect(page.getByTestId("simple-ide")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Showing 3 of 5,023 files. Search checks the full repository.",
+    ),
+  ).toBeVisible();
   const fileSearch = page.getByRole("searchbox", {
     name: "Search workspace files",
   });
@@ -1491,6 +1515,20 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByText(/Commit cdcdcdcdcdcd created locally/),
   ).toBeVisible();
   await page.getByRole("button", { name: "Back to discussion" }).click();
+  await page.setViewportSize({ width: 1155, height: 720 });
+  const workspaceCard = page
+    .getByText("Isolated repository workspace")
+    .locator("..")
+    .locator("..");
+  await expect(
+    workspaceCard.getByRole("button", { name: "Open Simple IDE" }),
+  ).toBeVisible();
+  const workspaceBounds = await workspaceCard.boundingBox();
+  expect(workspaceBounds).not.toBeNull();
+  expect(
+    (workspaceBounds?.x ?? 0) + (workspaceBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(1155);
+  await page.setViewportSize({ width: 1536, height: 1024 });
 
   await page.evaluate(() => {
     const emit = (
@@ -1610,11 +1648,19 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       name: "Thread: Second top-level question",
     }),
   ).toBeVisible();
+  await page.setViewportSize({ width: 1155, height: 720 });
+  const threadBounds = await threadPanel.boundingBox();
+  expect(threadBounds).not.toBeNull();
+  expect(threadBounds?.width).toBeGreaterThanOrEqual(300);
+  expect(
+    (threadBounds?.x ?? 0) + (threadBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(1155);
   await page.screenshot({
     path: testInfo.outputPath("guide-08-reply-thread.png"),
     fullPage: true,
   });
   await threadPanel.getByRole("button", { name: "Close threads" }).click();
+  await page.setViewportSize({ width: 1536, height: 1024 });
   await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
   const statusPet = page.getByTestId("bricko-status-pet");
@@ -1787,7 +1833,13 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.getByTestId("close-discussion-panel")).toBeVisible();
+  const closeDialog = page.getByRole("dialog", {
+    name: "Close discussion and clean its Git workspace?",
+  });
+  await expect(closeDialog).toBeVisible();
+  await expect(
+    closeDialog.getByText("Close discussion and clean its Git workspace?"),
+  ).toBeFocused();
   const closeAction = page.getByRole("button", {
     name: "Close and clean workspace",
   });

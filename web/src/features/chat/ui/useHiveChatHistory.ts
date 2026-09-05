@@ -38,6 +38,12 @@ function mergeEvents(current: NostrEvent[], incoming: NostrEvent[]) {
   return chronological([...byId.values()]);
 }
 
+function isMessageEndVisible(element: HTMLDivElement | null): boolean {
+  if (!element) return true;
+  const bounds = element.getBoundingClientRect();
+  return bounds.top <= window.innerHeight + 96 && bounds.bottom >= -96;
+}
+
 export function useHiveChatHistory({
   activeChannelId,
   messagesEndRef,
@@ -59,49 +65,58 @@ export function useHiveChatHistory({
     until: number;
   } | null>(null);
   const generationRef = useRef(0);
+  const initialLoadStartedRef = useRef(false);
   const mergeMessage = useCallback(
     (event: NostrEvent) => {
+      const shouldFollow = isMessageEndVisible(messagesEndRef.current);
       setMessages((current) => mergeEvents(current, [event]));
-      window.requestAnimationFrame(() =>
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }),
-      );
+      if (shouldFollow) {
+        window.requestAnimationFrame(() =>
+          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }),
+        );
+      }
     },
     [messagesEndRef],
   );
 
-  const refresh = useCallback(async () => {
-    if (!activeChannelId) return;
-    const generation = generationRef.current;
-    setLoading(true);
-    setError("");
-    try {
-      const page = newestFirst(
-        await queryEventsHttp([
-          {
-            kinds: [9],
-            "#h": [activeChannelId],
-            limit: HISTORY_PAGE_SIZE,
-          },
-        ]),
-      );
-      if (generation !== generationRef.current) return;
-      setMessages((current) => mergeEvents(current, page));
-      const oldest = page[page.length - 1];
-      setCursor(
-        oldest ? { beforeId: oldest.id, until: oldest.created_at } : null,
-      );
-      setHasOlder(page.length === HISTORY_PAGE_SIZE);
-      window.requestAnimationFrame(() =>
-        messagesEndRef.current?.scrollIntoView({ behavior: "auto" }),
-      );
-    } catch (cause) {
-      if (generation === generationRef.current) {
-        setError(hiveUserFacingError(cause, "load"));
+  const refresh = useCallback(
+    async (scrollToEnd = false) => {
+      if (!activeChannelId) return;
+      const generation = generationRef.current;
+      setLoading(true);
+      setError("");
+      try {
+        const page = newestFirst(
+          await queryEventsHttp([
+            {
+              kinds: [9],
+              "#h": [activeChannelId],
+              limit: HISTORY_PAGE_SIZE,
+            },
+          ]),
+        );
+        if (generation !== generationRef.current) return;
+        setMessages((current) => mergeEvents(current, page));
+        const oldest = page[page.length - 1];
+        setCursor(
+          oldest ? { beforeId: oldest.id, until: oldest.created_at } : null,
+        );
+        setHasOlder(page.length === HISTORY_PAGE_SIZE);
+        if (scrollToEnd) {
+          window.requestAnimationFrame(() =>
+            messagesEndRef.current?.scrollIntoView({ behavior: "auto" }),
+          );
+        }
+      } catch (cause) {
+        if (generation === generationRef.current) {
+          setError(hiveUserFacingError(cause, "load"));
+        }
+      } finally {
+        if (generation === generationRef.current) setLoading(false);
       }
-    } finally {
-      if (generation === generationRef.current) setLoading(false);
-    }
-  }, [activeChannelId, messagesEndRef, setError]);
+    },
+    [activeChannelId, messagesEndRef, setError],
+  );
 
   const loadOlder = useCallback(async () => {
     if (!activeChannelId || !cursor || loadingOlder || !hasOlder) return;
@@ -135,6 +150,7 @@ export function useHiveChatHistory({
 
   useEffect(() => {
     generationRef.current += 1;
+    initialLoadStartedRef.current = false;
     setMessages([]);
     setCursor(null);
     setHasOlder(false);
@@ -159,7 +175,9 @@ export function useHiveChatHistory({
         setConnection(state);
         if (state === "connected") {
           setError("");
-          void refresh();
+          const scrollToEnd = !initialLoadStartedRef.current;
+          initialLoadStartedRef.current = true;
+          void refresh(scrollToEnd);
         }
       },
     );

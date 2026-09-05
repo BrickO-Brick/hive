@@ -23,6 +23,7 @@ import {
   fetchDiscussionWorkspaceDiff,
   readDiscussionWorkspaceFile,
   type RepositoryDiscussion,
+  searchDiscussionWorkspaceFiles,
   writeDiscussionWorkspaceFile,
 } from "@/features/repos/repository-discussions-api";
 import { BrickOPet } from "./BrickOPet";
@@ -133,6 +134,13 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [fileQuery, setFileQuery] = useState("");
+  const [fileSearch, setFileSearch] = useState<{
+    files: DiscussionWorkspace["files"];
+    totalMatches: number;
+    hasMoreFiles: boolean;
+  } | null>(null);
+  const [searchingFiles, setSearchingFiles] = useState(false);
+  const [fileSearchError, setFileSearchError] = useState("");
 
   const changed = Boolean(file && content !== file.content);
   const confirmDiscard = useCallback(() => {
@@ -181,11 +189,9 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       const next = await fetchDiscussionWorkspace(discussion.id);
       setWorkspace(next);
       setSelectedPath((current) => {
-        if (current && next.files.some((item) => item.path === current)) {
-          return current;
-        }
+        if (current) return current;
         return (
-          next.files.find((item) => item.status)?.path ??
+          next.changes[0]?.path ??
           next.files.find((item) => /readme|src\//i.test(item.path))?.path ??
           next.files[0]?.path ??
           ""
@@ -201,6 +207,39 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    const query = fileQuery.trim();
+    if (!query) {
+      setFileSearch(null);
+      setFileSearchError("");
+      setSearchingFiles(false);
+      return;
+    }
+    setFileSearch(null);
+    setSearchingFiles(true);
+    setFileSearchError("");
+    let current = true;
+    const timeout = window.setTimeout(() => {
+      void searchDiscussionWorkspaceFiles(discussion.id, query)
+        .then((result) => {
+          if (current) setFileSearch(result);
+        })
+        .catch(() => {
+          if (current) {
+            setFileSearch(null);
+            setFileSearchError("Could not search workspace files. Try again.");
+          }
+        })
+        .finally(() => {
+          if (current) setSearchingFiles(false);
+        });
+    }, 250);
+    return () => {
+      current = false;
+      window.clearTimeout(timeout);
+    };
+  }, [discussion.id, fileQuery]);
 
   useEffect(() => {
     if (!selectedPath) {
@@ -326,24 +365,22 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
     }
   };
 
-  const filteredFiles = useMemo(() => {
-    const normalizedQuery = fileQuery.trim().toLowerCase();
-    if (!normalizedQuery) return workspace?.files ?? [];
-    return (workspace?.files ?? []).filter((item) =>
-      item.path.toLowerCase().includes(normalizedQuery),
-    );
-  }, [fileQuery, workspace]);
+  const displayedFiles = useMemo(
+    () =>
+      fileQuery.trim() ? (fileSearch?.files ?? []) : (workspace?.files ?? []),
+    [fileQuery, fileSearch, workspace],
+  );
 
   const directories = useMemo(() => {
     const values = new Set<string>();
-    for (const item of filteredFiles) {
+    for (const item of displayedFiles) {
       const directory = item.path.includes("/")
         ? item.path.split("/")[0]
         : "Root";
       values.add(directory);
     }
     return [...values];
-  }, [filteredFiles]);
+  }, [displayedFiles]);
 
   return (
     <section
@@ -427,12 +464,35 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                     className="h-8 w-full rounded-md border border-[#D8DEE8] bg-white pl-8 pr-2 text-xs outline-none focus:border-[#2F6FED]"
                   />
                 </label>
+                {workspace?.hasMoreFiles && !fileQuery.trim() && (
+                  <p className="mb-2 px-1 text-[10px] leading-4 text-[#607086]">
+                    Showing {workspace.files.length.toLocaleString()} of{" "}
+                    {workspace.totalFiles.toLocaleString()} files. Search checks
+                    the full repository.
+                  </p>
+                )}
+                {searchingFiles && (
+                  <p
+                    className="mb-2 px-1 text-[10px] text-[#607086]"
+                    role="status"
+                  >
+                    Searching all workspace files…
+                  </p>
+                )}
+                {fileSearchError && (
+                  <p
+                    className="mb-2 px-1 text-[10px] text-[#C93F4A]"
+                    role="alert"
+                  >
+                    {fileSearchError}
+                  </p>
+                )}
                 {directories.map((directory) => (
                   <div className="mb-2" key={directory}>
                     <div className="flex items-center gap-1.5 px-1 py-1 text-xs font-bold text-[#42526B]">
                       <Folder size={13} /> {directory}
                     </div>
-                    {filteredFiles
+                    {displayedFiles
                       .filter((item) =>
                         directory === "Root"
                           ? !item.path.includes("/")
@@ -465,9 +525,16 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                       ))}
                   </div>
                 ))}
-                {filteredFiles.length === 0 && (
+                {!searchingFiles && displayedFiles.length === 0 && (
                   <p className="px-2 py-4 text-center text-xs text-[#607086]">
                     No files match “{fileQuery}”.
+                  </p>
+                )}
+                {fileSearch?.hasMoreFiles && (
+                  <p className="px-2 py-2 text-center text-[10px] leading-4 text-[#607086]">
+                    Showing the first {fileSearch.files.length.toLocaleString()}{" "}
+                    of {fileSearch.totalMatches.toLocaleString()} matches.
+                    Refine the search to narrow the list.
                   </p>
                 )}
               </aside>
@@ -532,26 +599,24 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
               <aside className="hidden w-48 shrink-0 border-l border-[#D8DEE8] bg-white p-3 lg:block">
                 <div className="text-xs font-bold text-[#10233F]">Changes</div>
                 <div className="mt-3 space-y-1.5">
-                  {(workspace?.files ?? [])
-                    .filter((item) => item.status)
-                    .map((item) => (
-                      <button
-                        type="button"
-                        onClick={() => selectFile(item.path)}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#42526B] hover:bg-[#F7FAFC]"
-                        key={item.path}
+                  {(workspace?.changes ?? []).map((item) => (
+                    <button
+                      type="button"
+                      onClick={() => selectFile(item.path)}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-[#42526B] hover:bg-[#F7FAFC]"
+                      key={item.path}
+                    >
+                      <FileCode2 size={13} />
+                      <span className="min-w-0 flex-1 truncate">
+                        {fileLabel(item.path)}
+                      </span>
+                      <span
+                        className={`rounded px-1 py-0.5 text-[9px] font-bold ${statusTone(item.status)}`}
                       >
-                        <FileCode2 size={13} />
-                        <span className="min-w-0 flex-1 truncate">
-                          {fileLabel(item.path)}
-                        </span>
-                        <span
-                          className={`rounded px-1 py-0.5 text-[9px] font-bold ${statusTone(item.status)}`}
-                        >
-                          {item.status?.trim() || "M"}
-                        </span>
-                      </button>
-                    ))}
+                        {item.status?.trim() || "M"}
+                      </span>
+                    </button>
+                  ))}
                   {!workspace?.dirty && (
                     <p className="rounded-md bg-[#F7FAFC] px-2 py-3 text-[10px] leading-4 text-[#607086]">
                       Saved edits will appear here.

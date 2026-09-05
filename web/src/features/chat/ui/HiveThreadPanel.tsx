@@ -165,14 +165,14 @@ export function HiveThreadPanel({
     <>
       <button
         type="button"
-        className="fixed inset-0 z-20 hidden bg-[#10213F]/20 backdrop-blur-[1px] md:block xl:hidden"
+        className="fixed inset-0 z-20 hidden bg-[#10213F]/20 backdrop-blur-[1px] md:block 2xl:hidden"
         onClick={onClose}
         aria-label="Dismiss threads"
       />
       <aside
         id="hive-thread-panel"
         aria-label="Conversation threads"
-        className="fixed inset-y-0 right-0 z-30 hidden w-[min(24rem,calc(100vw-1rem))] shrink-0 flex-col border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] md:flex xl:static xl:w-80 xl:shadow-none"
+        className="fixed inset-y-0 right-0 z-30 hidden w-[min(24rem,calc(100vw-1rem))] shrink-0 flex-col border-l border-[#D8DEE8] bg-white shadow-[-16px_0_40px_rgba(16,35,63,0.16)] md:flex 2xl:static 2xl:w-80 2xl:shadow-none"
       >
         <div className="flex h-14 items-center justify-between border-b border-[#D8DEE8] px-4">
           <div>

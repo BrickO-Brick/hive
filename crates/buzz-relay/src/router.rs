@@ -151,6 +151,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(api::onebrick_discussions::read_file),
         )
         .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/files/search",
+            post(api::onebrick_discussions::search_workspace_files),
+        )
+        .route(
             "/api/onebrick/repository-discussions/{id}/workspace/file/write",
             post(api::onebrick_discussions::write_file),
         )

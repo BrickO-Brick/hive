@@ -37,6 +37,15 @@ export type DiscussionWorkspace = {
   currentHeadSha: string;
   dirty: boolean;
   files: WorkspaceFileSummary[];
+  changes: WorkspaceFileSummary[];
+  totalFiles: number;
+  hasMoreFiles: boolean;
+};
+
+export type DiscussionWorkspaceFileSearch = {
+  files: WorkspaceFileSummary[];
+  totalMatches: number;
+  hasMoreFiles: boolean;
 };
 
 export type DiscussionWorkspaceFile = {
@@ -160,6 +169,15 @@ export function readDiscussionWorkspaceFile(
   path: string,
 ): Promise<DiscussionWorkspaceFile> {
   return signedPost(workspaceEndpoint(discussionId, "/file/read"), { path });
+}
+
+export function searchDiscussionWorkspaceFiles(
+  discussionId: string,
+  query: string,
+): Promise<DiscussionWorkspaceFileSearch> {
+  return signedPost(workspaceEndpoint(discussionId, "/files/search"), {
+    query,
+  });
 }
 
 export function writeDiscussionWorkspaceFile(

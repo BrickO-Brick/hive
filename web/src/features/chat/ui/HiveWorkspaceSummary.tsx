@@ -7,7 +7,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   closeRepositoryDiscussion,
   type RepositoryDiscussion,
@@ -33,12 +33,23 @@ export function HiveWorkspaceSummary({
   );
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState("");
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeDialogTitleRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!copied) return;
     const timeout = window.setTimeout(() => setCopied(""), 1_500);
     return () => window.clearTimeout(timeout);
   }, [copied]);
+
+  useEffect(() => {
+    if (closeOpen) closeDialogTitleRef.current?.focus();
+  }, [closeOpen]);
+
+  const dismissClose = () => {
+    setCloseOpen(false);
+    window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+  };
 
   const copy = async (label: string, value: string) => {
     try {
@@ -115,14 +126,15 @@ export function HiveWorkspaceSummary({
 
   return (
     <div className="mb-4 rounded-xl border border-[#BFD4FF] bg-[#EEF5FF] p-3 text-xs text-[#29466F] shadow-sm">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col items-stretch gap-3 min-[1400px]:flex-row min-[1400px]:items-center min-[1400px]:justify-between">
         <div className="flex items-center gap-2 font-bold text-[#10233F]">
           <GitBranch size={14} /> Isolated repository workspace
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => setCloseOpen(true)}
+            ref={closeButtonRef}
             className="flex items-center gap-1.5 rounded-md border border-[#C7D4E5] bg-white px-2.5 py-1.5 text-[10px] font-bold text-[#526178] hover:border-[#8491A4] hover:text-[#10233F]"
           >
             <Archive size={12} /> {cleanupPending ? "Retry cleanup" : "Close"}
@@ -140,7 +152,7 @@ export function HiveWorkspaceSummary({
       <div className="mt-1.5 font-semibold">
         {discussion.owner}/{discussion.repository}
       </div>
-      <dl className="mt-2 grid gap-1.5 sm:grid-cols-3">
+      <dl className="mt-2 grid gap-1.5 min-[1400px]:grid-cols-3">
         {values.map(([label, value]) => (
           <div
             key={label}
@@ -178,10 +190,20 @@ export function HiveWorkspaceSummary({
       )}
       {closeOpen && (
         <div
+          aria-labelledby="close-discussion-title"
           className="mt-3 rounded-lg border border-[#F3C7BC] bg-[#FFF8F5] p-3"
           data-testid="close-discussion-panel"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !closing) dismissClose();
+          }}
+          role="dialog"
         >
-          <div className="font-bold text-[#10233F]">
+          <div
+            className="font-bold text-[#10233F] outline-none"
+            id="close-discussion-title"
+            ref={closeDialogTitleRef}
+            tabIndex={-1}
+          >
             {cleanupPending
               ? "Retry the pending Git workspace cleanup?"
               : "Close discussion and clean its Git workspace?"}
@@ -209,11 +231,11 @@ export function HiveWorkspaceSummary({
               {closeError}
             </p>
           )}
-          <div className="mt-3 flex justify-end gap-2">
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
             <button
               className="rounded-md border border-[#D8DEE8] bg-white px-3 py-2 font-bold text-[#526178] hover:bg-[#F7FAFC]"
               disabled={closing}
-              onClick={() => setCloseOpen(false)}
+              onClick={dismissClose}
               type="button"
             >
               Keep open

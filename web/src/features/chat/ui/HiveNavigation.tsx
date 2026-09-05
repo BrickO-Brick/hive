@@ -9,8 +9,6 @@ import {
   PanelLeftClose,
   Plus,
   Search,
-  Wifi,
-  WifiOff,
   X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -454,16 +452,8 @@ export function HiveNavigation({
             </div>
           </section>
           <div className="shrink-0 border-t border-[#E2E8F0] bg-[#FBFCFE] p-3">
-            <div className="flex items-center gap-2 text-[11px] font-semibold text-[#42526B]">
-              {connected ? (
-                <Wifi size={13} className="text-[#1FA971]" />
-              ) : (
-                <WifiOff size={13} className="text-[#D9861C]" />
-              )}
-              <span>{connected ? "Chat connected" : "Chat reconnecting"}</span>
-              <span className="ml-auto max-w-28 truncate text-[10px] font-normal text-[#607086]">
-                {identityEmail}
-              </span>
+            <div className="truncate text-[10px] font-normal text-[#607086]">
+              {identityEmail}
             </div>
           </div>
         </div>
