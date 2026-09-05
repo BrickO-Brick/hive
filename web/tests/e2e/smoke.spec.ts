@@ -634,6 +634,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .update(workspaceContent)
     .digest("hex");
   let workspaceDirty = false;
+  let remainingAdjustment = false;
+  let approvalCount = 0;
   let catalogRequestCount = 0;
   await page.route("**/api/onebrick/channels/*/participants", async (route) => {
     expect(nip98Pubkey(route.request().headers().authorization)).toBe(
@@ -668,6 +670,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
       );
       const url = request.url();
+      if (url.endsWith("/proposal.bundle")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/x-git-bundle",
+          body: "mock git bundle",
+        });
+        return;
+      }
       if (url.endsWith("/files/search")) {
         const input = request.postDataJSON() as { query: string };
         expect(input.query).toBe("retry");
@@ -718,26 +728,41 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         return;
       }
       if (url.endsWith("/diff")) {
+        const timeoutDiff = [
+          "diff --git a/src/timeout.ts b/src/timeout.ts",
+          "--- a/src/timeout.ts",
+          "+++ b/src/timeout.ts",
+          "@@ -5,3 +5,3 @@",
+          " export function withTimeout(options: TimeoutOptions) {",
+          `-  return \`Operation timed out after ${timeoutValue}ms\`;`,
+          `+  return \`Timed out safely after ${timeoutValue}ms\`;`,
+          " }",
+        ].join("\n");
+        const releaseNotesDiff = [
+          'diff --git "a/docs/Release notes.md" "b/docs/Release notes.md"',
+          "--- /dev/null",
+          '+++ "b/docs/Release notes.md"',
+          "@@ -0,0 +1 @@",
+          "+Document the rollout guard.",
+        ].join("\n");
         await route.fulfill({
           status: 200,
           contentType: "application/json",
           body: JSON.stringify({
             currentHeadSha: "ab".repeat(20),
             diff: workspaceDirty
-              ? [
-                  "diff --git a/src/timeout.ts b/src/timeout.ts",
-                  "--- a/src/timeout.ts",
-                  "+++ b/src/timeout.ts",
-                  "@@ -5,3 +5,3 @@",
-                  " export function withTimeout(options: TimeoutOptions) {",
-                  `-  return \`Operation timed out after ${timeoutValue}ms\`;`,
-                  `+  return \`Timed out safely after ${timeoutValue}ms\`;`,
-                  " }",
-                ].join("\n")
+              ? remainingAdjustment
+                ? releaseNotesDiff
+                : `${timeoutDiff}\n${releaseNotesDiff}`
               : "",
-            additions: workspaceDirty ? 1 : 0,
-            deletions: workspaceDirty ? 1 : 0,
-            changedFiles: workspaceDirty ? 1 : 0,
+            paths: workspaceDirty
+              ? remainingAdjustment
+                ? ["docs/Release notes.md"]
+                : ["src/timeout.ts", "docs/Release notes.md"]
+              : [],
+            additions: workspaceDirty ? (remainingAdjustment ? 1 : 2) : 0,
+            deletions: workspaceDirty && !remainingAdjustment ? 1 : 0,
+            changedFiles: workspaceDirty ? (remainingAdjustment ? 1 : 2) : 0,
           }),
         });
         return;
@@ -746,14 +771,28 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         const input = request.postDataJSON() as {
           expectedHeadSha: string;
           message: string;
+          selectedPaths: string[];
+          testEvidence: string[];
         };
-        expect(input.expectedHeadSha).toBe("ab".repeat(20));
         expect(input.message).toContain("deployment safety");
-        workspaceDirty = false;
+        expect(input.testEvidence).toEqual(["pnpm test -- timeout"]);
+        approvalCount += 1;
+        const revision =
+          approvalCount === 1 ? "cd".repeat(20) : "ef".repeat(20);
+        expect(input.expectedHeadSha).toBe(
+          approvalCount === 1 ? "ab".repeat(20) : "cd".repeat(20),
+        );
+        expect(input.selectedPaths).toEqual(
+          approvalCount === 1 ? ["src/timeout.ts"] : ["docs/Release notes.md"],
+        );
+        remainingAdjustment = approvalCount === 1;
+        workspaceDirty = remainingAdjustment;
         repositoryDiscussions[0] = {
           ...repositoryDiscussions[0],
-          currentHeadSha: "cd".repeat(20),
-          proposalRevision: "cd".repeat(20),
+          currentHeadSha: revision,
+          proposalRevision: revision,
+          approvedPaths: input.selectedPaths,
+          testEvidence: input.testEvidence,
         };
         await route.fulfill({
           status: 200,
@@ -769,21 +808,36 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         contentType: "application/json",
         body: JSON.stringify({
           discussionId: "11111111-2222-4333-8444-555555555555",
-          currentHeadSha: workspaceDirty ? "ab".repeat(20) : "ab".repeat(20),
+          currentHeadSha:
+            approvalCount === 0
+              ? "ab".repeat(20)
+              : approvalCount === 1
+                ? "cd".repeat(20)
+                : "ef".repeat(20),
           dirty: workspaceDirty,
           files: [
             {
               path: "src/timeout.ts",
-              status: workspaceDirty ? "M" : null,
+              status: workspaceDirty && !remainingAdjustment ? "M" : null,
             },
             { path: "src/retry.ts", status: null },
+            {
+              path: "docs/Release notes.md",
+              status: workspaceDirty ? "??" : null,
+            },
             { path: "README.md", status: null },
           ],
           changes: workspaceDirty
-            ? [{ path: "src/timeout.ts", status: "M" }]
+            ? remainingAdjustment
+              ? [{ path: "docs/Release notes.md", status: "??" }]
+              : [
+                  { path: "src/timeout.ts", status: "M" },
+                  { path: "docs/Release notes.md", status: "??" },
+                ]
             : [],
           totalFiles: 5023,
           hasMoreFiles: true,
+          canApprove: true,
         }),
       });
     },
@@ -798,7 +852,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
         completionEvidence: string;
         expectedHeadSha: string;
       };
-      expect(input.expectedHeadSha).toBe("cd".repeat(20));
+      expect(input.expectedHeadSha).toBe("ef".repeat(20));
       expect(input.completionEvidence).toBe(
         "https://github.com/BrickO-Brick/mantul-be/pull/123",
       );
@@ -1589,7 +1643,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByText("TypeScript", { exact: true })).toBeVisible();
   await expect(
     page.getByText(
-      "Showing 3 of 5,023 files. Search checks the full repository.",
+      "Showing 4 of 5,023 files. Search checks the full repository.",
     ),
   ).toBeVisible();
   const fileSearch = page.getByRole("searchbox", {
@@ -1634,15 +1688,48 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     path: testInfo.outputPath("guide-11-review-changes-live.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Approve suggestion" }).click();
   await expect(
-    page.getByText(/Suggestion approved as local commit cdcdcdcdcdcd/),
+    page.getByRole("checkbox", {
+      name: "Include src/timeout.ts in approval",
+    }),
+  ).toBeChecked();
+  const releaseNotesApproval = page.getByRole("checkbox", {
+    name: "Include docs/Release notes.md in approval",
+  });
+  await expect(releaseNotesApproval).toBeChecked();
+  await releaseNotesApproval.uncheck();
+  await page
+    .getByRole("textbox", { name: "Test evidence, one item per line" })
+    .fill("pnpm test -- timeout");
+  await page.getByRole("button", { name: "Approve 1 selected" }).click();
+  await expect(
+    page.getByText(
+      /1 selected file\(s\) approved as cdcdcdcdcdcd\. 1 file\(s\) still need review/,
+    ),
   ).toBeVisible();
+  await expect(page.getByTestId("simple-ide-diff")).toContainText(
+    "Document the rollout guard.",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("guide-11a-partial-approval.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Request adjustment" }).click();
+  await expect(page.locator("#hive-message-composer")).toHaveValue(
+    /@BrickO please adjust.*cdcdcdcdcdcd.*docs\/Release notes\.md/,
+  );
+  await page.getByRole("button", { name: "Review code" }).click();
+  await page.getByRole("button", { name: "Approve 1 selected" }).click();
   await page.setViewportSize({ width: 1155, height: 720 });
   await expect(
-    page.getByRole("button", { name: "Copy cherry-pick command" }),
+    page.getByRole("button", { name: "Copy apply command" }),
   ).toBeVisible();
-  await expect(page.getByText(/git cherry-pick cdcdcdcdcdcd/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Download Git bundle" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/git fetch .*git cherry-pick .*\.\.efefefefefef/),
+  ).toBeVisible();
   const reviewBounds = await page.getByTestId("simple-ide").boundingBox();
   expect(reviewBounds).not.toBeNull();
   expect(
@@ -1652,7 +1739,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .getByRole("button", { name: "Request another adjustment" })
     .click();
   await expect(page.locator("#hive-message-composer")).toHaveValue(
-    /@BrickO please adjust the code suggestion from cdcdcdcdcdcd:/,
+    /@BrickO please adjust the code suggestion from efefefefefef:/,
   );
   const workspaceCard = page
     .getByText("Isolated repository workspace")

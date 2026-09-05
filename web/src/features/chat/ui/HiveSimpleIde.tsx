@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  Download,
   FileCode2,
   FileText,
   Folder,
@@ -19,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   commitDiscussionWorkspace,
+  downloadDiscussionProposalBundle,
   type DiscussionWorkspace,
   type DiscussionWorkspaceDiff,
   type DiscussionWorkspaceFile,
@@ -29,6 +31,7 @@ import {
   searchDiscussionWorkspaceFiles,
   writeDiscussionWorkspaceFile,
 } from "@/features/repos/repository-discussions-api";
+import { HiveReviewDiff } from "./HiveReviewDiff";
 
 type Props = {
   discussion: RepositoryDiscussion;
@@ -89,7 +92,17 @@ function errorMessage(error: unknown) {
     file_changed: "Someone changed this file. Reload it before saving again.",
     file_not_editable: "This file cannot be edited safely.",
     file_too_large: "This file is too large for the code review workspace.",
+    invalid_selected_path:
+      "The selected files changed. Reload the review and try again.",
+    invalid_test_evidence:
+      "Test evidence must contain at most 10 non-empty entries of 500 characters each.",
+    repository_approval_required:
+      "Only a workspace owner or admin can approve code suggestions.",
+    proposal_bundle_too_large:
+      "This proposal is too large to download as a Git bundle.",
     workspace_has_no_changes: "There are no saved changes to commit.",
+    workspace_has_too_many_changes:
+      "This review contains more than 300 changed files. Split it into smaller suggestions.",
     workspace_head_changed: "The branch changed. Refresh before committing.",
   };
   return friendly[message] ?? "The workspace could not complete that action.";
@@ -99,56 +112,6 @@ function statusTone(status: string | null) {
   if (status?.includes("?")) return "bg-[#DDF7E9] text-[#137A4D]";
   if (status) return "bg-[#FFF0D7] text-[#9A5B05]";
   return "bg-[#EEF3F8] text-[#607086]";
-}
-
-function DiffView({ diff }: { diff: DiscussionWorkspaceDiff }) {
-  if (!diff.diff.trim()) {
-    return (
-      <div className="grid min-h-80 place-items-center px-6 text-center">
-        <div>
-          <Check className="mx-auto text-[#18A66A]" size={28} />
-          <div className="mt-3 text-sm font-bold text-[#10233F]">
-            No uncommitted changes
-          </div>
-          <p className="mt-1 text-xs text-[#607086]">
-            Edit and save a file before creating a commit.
-          </p>
-        </div>
-      </div>
-    );
-  }
-  const occurrences = new Map<string, number>();
-  const lines = diff.diff.split("\n").map((line) => {
-    const occurrence = (occurrences.get(line) ?? 0) + 1;
-    occurrences.set(line, occurrence);
-    return { key: `${line}:${occurrence}`, line };
-  });
-  return (
-    <pre
-      className="min-h-0 flex-1 overflow-auto bg-[#FBFCFE] p-0 font-mono text-[12px] leading-6 text-[#243B5A]"
-      data-testid="simple-ide-diff"
-    >
-      {lines.map(({ key, line }, index) => {
-        const tone = line.startsWith("+")
-          ? "bg-[#E7F8EE] text-[#086A3E]"
-          : line.startsWith("-")
-            ? "bg-[#FFF0F0] text-[#B9383E]"
-            : line.startsWith("@@")
-              ? "bg-[#EEF5FF] text-[#365B8D]"
-              : line.startsWith("diff --git")
-                ? "bg-white font-bold text-[#10233F]"
-                : "";
-        return (
-          <div className={`min-w-max px-4 ${tone}`} key={key}>
-            <span className="mr-4 inline-block w-9 select-none text-right text-[#9AA7B8]">
-              {index + 1}
-            </span>
-            {line || " "}
-          </div>
-        );
-      })}
-    </pre>
-  );
 }
 
 export function HiveSimpleIde({
@@ -167,8 +130,13 @@ export function HiveSimpleIde({
     discussion.proposalRevision,
   );
   const [copiedCommand, setCopiedCommand] = useState(false);
+  const [downloadingBundle, setDownloadingBundle] = useState(false);
+  const [selectedReviewPaths, setSelectedReviewPaths] = useState<string[]>([]);
   const [commitMessage, setCommitMessage] = useState(
     `Update ${discussion.title.toLowerCase()}`,
+  );
+  const [testEvidenceDraft, setTestEvidenceDraft] = useState(
+    discussion.testEvidence.join("\n"),
   );
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -233,6 +201,13 @@ export function HiveSimpleIde({
     try {
       const next = await fetchDiscussionWorkspace(discussion.id);
       setWorkspace(next);
+      setSelectedReviewPaths((current) => {
+        const available = new Set(next.changes.map((item) => item.path));
+        const retained = current.filter((path) => available.has(path));
+        return retained.length > 0
+          ? retained
+          : next.changes.map((item) => item.path);
+      });
       setSelectedPath((current) => {
         if (current) return current;
         return (
@@ -410,6 +385,11 @@ export function HiveSimpleIde({
       const updated = await commitDiscussionWorkspace(discussion.id, {
         message: commitMessage,
         expectedHeadSha: workspace.currentHeadSha,
+        selectedPaths: selectedReviewPaths,
+        testEvidence: testEvidenceDraft
+          .split("\n")
+          .map((value) => value.trim())
+          .filter(Boolean),
       });
       onCommitted(updated);
       for (const item of workspace.files) {
@@ -421,18 +401,41 @@ export function HiveSimpleIde({
         `Suggestion approved as local commit ${updated.currentHeadSha.slice(0, 12)}.`,
       );
       setApprovedRevision(updated.currentHeadSha);
-      setDiff({
-        currentHeadSha: updated.currentHeadSha,
-        diff: "",
-        additions: 0,
-        deletions: 0,
-        changedFiles: 0,
-      });
-      await loadWorkspace();
+      setSelectedReviewPaths([]);
+      const nextWorkspace = await loadWorkspace();
+      const nextDiff = await fetchDiscussionWorkspaceDiff(discussion.id);
+      setDiff(nextDiff);
+      if (nextWorkspace?.dirty) {
+        setNotice(
+          `${updated.approvedPaths?.length ?? selectedReviewPaths.length} selected file(s) approved as ${updated.currentHeadSha.slice(0, 12)}. ${nextWorkspace.changes.length} file(s) still need review.`,
+        );
+      }
     } catch (nextError) {
       setError(errorMessage(nextError));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const downloadBundle = async () => {
+    if (!approvedRevision) return;
+    setDownloadingBundle(true);
+    setError("");
+    try {
+      const bundle = await downloadDiscussionProposalBundle(discussion.id);
+      const url = URL.createObjectURL(bundle);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `hive-${discussion.id}-${approvedRevision.slice(0, 12)}.bundle`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setNotice(
+        "Git bundle downloaded. Fetch it before cherry-picking the approved revision.",
+      );
+    } catch (nextError) {
+      setError(errorMessage(nextError));
+    } finally {
+      setDownloadingBundle(false);
     }
   };
 
@@ -441,7 +444,6 @@ export function HiveSimpleIde({
       fileQuery.trim() ? (fileSearch?.files ?? []) : (workspace?.files ?? []),
     [fileQuery, fileSearch, workspace],
   );
-
   const visibleFiles = useMemo(
     () => displayedFiles.slice(0, visibleFileLimit),
     [displayedFiles, visibleFileLimit],
@@ -760,7 +762,11 @@ export function HiveSimpleIde({
                   </button>
                 </div>
                 {diff?.diff.trim() ? (
-                  <DiffView diff={diff} />
+                  <HiveReviewDiff
+                    diff={diff}
+                    selectedPaths={selectedReviewPaths}
+                    onSelectedPathsChange={setSelectedReviewPaths}
+                  />
                 ) : (
                   <div className="grid min-h-80 flex-1 place-items-center px-6 text-center">
                     <div className="max-w-sm">
@@ -794,7 +800,7 @@ export function HiveSimpleIde({
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-[#607086]">
                       {diff?.diff.trim()
-                        ? "Approve the complete suggestion, request an adjustment, or edit it manually."
+                        ? "Choose the files to approve, request an adjustment, or edit the proposal manually."
                         : approvedRevision
                           ? "Copy the command to apply this exact approved commit elsewhere."
                           : "Describe the change you want and let BrickO prepare the proposal."}
@@ -809,6 +815,42 @@ export function HiveSimpleIde({
                     Approval creates only an isolated local commit. Nothing is
                     pushed, merged, or deployed.
                   </p>
+                </div>
+                <div className="mt-3 rounded-lg border border-[#D8DEE8] bg-[#FBFCFE] p-3 text-[10px] leading-4 text-[#526178]">
+                  <div className="font-bold text-[#243B5A]">Test evidence</div>
+                  {diff?.diff.trim() ? (
+                    <>
+                      <textarea
+                        value={testEvidenceDraft}
+                        onChange={(event) =>
+                          setTestEvidenceDraft(event.currentTarget.value)
+                        }
+                        aria-label="Test evidence, one item per line"
+                        maxLength={5_000}
+                        rows={3}
+                        placeholder="One command or result per line"
+                        className="mt-2 w-full resize-y rounded-md border border-[#D8DEE8] bg-white px-2.5 py-2 text-[10px] leading-4 text-[#243B5A] outline-none focus:border-[#2F6FED] focus:ring-2 focus:ring-[#2F6FED]/10"
+                      />
+                      <p className="mt-1 text-[9px] text-[#8491A4]">
+                        Optional. Up to 10 entries; secrets are not allowed.
+                      </p>
+                    </>
+                  ) : testEvidenceDraft.trim() ? (
+                    <ul className="mt-1 list-disc space-y-1 pl-4">
+                      {testEvidenceDraft
+                        .split("\n")
+                        .filter(Boolean)
+                        .map((evidence) => (
+                          <li className="break-words" key={evidence}>
+                            {evidence}
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1">
+                      No test evidence has been attached yet.
+                    </p>
+                  )}
                 </div>
                 {diff?.diff.trim() ? (
                   <>
@@ -828,7 +870,12 @@ export function HiveSimpleIde({
                     <button
                       type="button"
                       onClick={() => void createCommit()}
-                      disabled={busy || !commitMessage.trim()}
+                      disabled={
+                        busy ||
+                        !commitMessage.trim() ||
+                        selectedReviewPaths.length === 0 ||
+                        !workspace?.canApprove
+                      }
                       className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-[#FF6547] px-3 py-2.5 text-xs font-bold text-white shadow-[0_8px_18px_rgba(255,101,71,0.22)] hover:bg-[#E8563B] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {busy ? (
@@ -836,20 +883,39 @@ export function HiveSimpleIde({
                       ) : (
                         <GitCommitHorizontal size={14} />
                       )}
-                      Approve suggestion
+                      {workspace?.canApprove
+                        ? `Approve ${selectedReviewPaths.length} selected`
+                        : "Owner or admin approval required"}
                     </button>
                   </>
                 ) : approvedRevision ? (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => void downloadBundle()}
+                      disabled={downloadingBundle}
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#2F6FED] px-3 py-2.5 text-xs font-bold text-white hover:bg-[#255BC5] disabled:opacity-50"
+                    >
+                      {downloadingBundle ? (
+                        <LoaderCircle className="animate-spin" size={14} />
+                      ) : (
+                        <Download size={14} />
+                      )}
+                      Download Git bundle
+                    </button>
                     <code className="mt-4 block break-all rounded-md bg-[#10233F] px-3 py-2.5 text-[11px] leading-5 text-white">
-                      git cherry-pick {approvedRevision}
+                      git fetch ~/Downloads/hive-{discussion.id}-
+                      {approvedRevision.slice(0, 12)}.bundle{" "}
+                      {discussion.branchRef}
+                      {" && "}git cherry-pick {discussion.baseSha}..
+                      {approvedRevision}
                     </code>
                     <button
                       type="button"
                       onClick={async () => {
                         try {
                           await navigator.clipboard.writeText(
-                            `git cherry-pick ${approvedRevision}`,
+                            `git fetch ~/Downloads/hive-${discussion.id}-${approvedRevision.slice(0, 12)}.bundle ${discussion.branchRef} && git cherry-pick ${discussion.baseSha}..${approvedRevision}`,
                           );
                           setCopiedCommand(true);
                         } catch {
@@ -861,9 +927,7 @@ export function HiveSimpleIde({
                       className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-[#BFD4FF] bg-[#EEF5FF] px-3 py-2.5 text-xs font-bold text-[#1F55C5] hover:bg-[#E2ECFF]"
                     >
                       {copiedCommand ? <Check size={14} /> : <Copy size={14} />}
-                      {copiedCommand
-                        ? "Command copied"
-                        : "Copy cherry-pick command"}
+                      {copiedCommand ? "Command copied" : "Copy apply command"}
                     </button>
                   </>
                 ) : null}
@@ -872,7 +936,7 @@ export function HiveSimpleIde({
                   onClick={() => {
                     onRequestAdjustment(
                       approvedRevision
-                        ? `@BrickO please adjust the code suggestion from ${approvedRevision.slice(0, 12)}: `
+                        ? `@BrickO please adjust the code suggestion from ${approvedRevision.slice(0, 12)}${diff?.paths?.length ? ` for ${diff.paths.join(", ")}` : ""}: `
                         : "@BrickO please prepare a code suggestion for this discussion: ",
                     );
                     onClose();

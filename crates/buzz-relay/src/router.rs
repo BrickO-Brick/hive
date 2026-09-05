@@ -166,6 +166,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/onebrick/repository-discussions/{id}/workspace/commit",
             post(api::onebrick_discussions::commit),
         )
+        .route(
+            "/api/onebrick/repository-discussions/{id}/workspace/proposal.bundle",
+            get(api::onebrick_discussions::proposal_bundle),
+        )
         // Moderation queue reads (NIP-98 auth + mod-authz gate, L6)
         .route("/moderation/reports", get(api::bridge::moderation_reports))
         .route("/moderation/audit", get(api::bridge::moderation_audit))

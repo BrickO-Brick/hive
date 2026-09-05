@@ -17,6 +17,9 @@ export type RepositoryDiscussion = {
   proposalRevision: string | null;
   proposalDigest: string | null;
   testEvidence: string[];
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  approvedPaths?: string[];
   createdBy: string;
   createdAt: string;
   status: "active" | "cleanup_pending" | "closed";
@@ -40,6 +43,7 @@ export type DiscussionWorkspace = {
   changes: WorkspaceFileSummary[];
   totalFiles: number;
   hasMoreFiles: boolean;
+  canApprove: boolean;
 };
 
 export type DiscussionWorkspaceFileSearch = {
@@ -57,6 +61,7 @@ export type DiscussionWorkspaceFile = {
 export type DiscussionWorkspaceDiff = {
   currentHeadSha: string;
   diff: string;
+  paths?: string[];
   additions: number;
   deletions: number;
   changedFiles: number;
@@ -195,9 +200,29 @@ export function fetchDiscussionWorkspaceDiff(
 
 export function commitDiscussionWorkspace(
   discussionId: string,
-  input: { message: string; expectedHeadSha: string },
+  input: {
+    message: string;
+    expectedHeadSha: string;
+    selectedPaths: string[];
+    testEvidence: string[];
+  },
 ): Promise<RepositoryDiscussion> {
   return signedPost(workspaceEndpoint(discussionId, "/commit"), input);
+}
+
+export async function downloadDiscussionProposalBundle(
+  discussionId: string,
+): Promise<Blob> {
+  const url = workspaceEndpoint(discussionId, "/proposal.bundle");
+  const authorization = await makeNip98AuthHeader(url, "GET");
+  const response = await fetch(url, {
+    headers: { Authorization: authorization },
+    signal: AbortSignal.timeout(130_000),
+  });
+  if (!response.ok) {
+    await parseResponse<unknown>(response);
+  }
+  return response.blob();
 }
 
 export function closeRepositoryDiscussion(

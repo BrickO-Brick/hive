@@ -1,7 +1,7 @@
 //! Durable OneBrick repository discussions backed by isolated Git worktrees.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, OnceLock},
@@ -9,10 +9,10 @@ use std::{
 };
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{Path as AxumPath, State},
-    http::{HeaderMap, StatusCode},
-    response::Json,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::{Json, Response},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -42,6 +42,8 @@ const MAX_WORKSPACE_FILE_QUERY_BYTES: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_EDITABLE_FILE_BYTES: u64 = 512 * 1024;
 const MAX_WORKSPACE_LOCKS: usize = 1_024;
+const MAX_COMMIT_PATHS: usize = 300;
+const MAX_PROPOSAL_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
 
 const HIDDEN_WORKSPACE_SEGMENTS: &[&str] = &[
     ".agents",
@@ -85,7 +87,14 @@ pub(crate) struct RepositoryDiscussion {
     current_head_sha: String,
     proposal_revision: Option<String>,
     proposal_digest: Option<String>,
+    #[serde(default)]
     test_evidence: Vec<String>,
+    #[serde(default)]
+    approved_by: Option<String>,
+    #[serde(default)]
+    approved_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    approved_paths: Vec<String>,
     created_by: String,
     created_at: DateTime<Utc>,
     #[serde(default)]
@@ -128,6 +137,10 @@ struct CommitRecovery {
     revision: Option<String>,
     requested_by: String,
     message_digest: String,
+    #[serde(default)]
+    selected_paths: Vec<String>,
+    #[serde(default)]
+    test_evidence: Vec<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -161,6 +174,10 @@ pub(crate) struct WorkspaceFileSearchRequest {
 pub(crate) struct WorkspaceCommitRequest {
     message: String,
     expected_head_sha: String,
+    #[serde(default)]
+    selected_paths: Vec<String>,
+    #[serde(default)]
+    test_evidence: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +204,7 @@ pub(crate) struct WorkspaceState {
     changes: Vec<WorkspaceFileSummary>,
     total_files: usize,
     has_more_files: bool,
+    can_approve: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,6 +228,7 @@ pub(crate) struct WorkspaceFile {
 pub(crate) struct WorkspaceDiff {
     current_head_sha: String,
     diff: String,
+    paths: Vec<String>,
     additions: usize,
     deletions: usize,
     changed_files: usize,
@@ -578,6 +597,30 @@ async fn authenticated_post_member(
     Ok((tenant, pubkey.to_hex()))
 }
 
+fn authorize_repository_approver(
+    member_role: Option<&str>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    matches!(member_role, Some("owner" | "admin"))
+        .then_some(())
+        .ok_or_else(|| api_error(StatusCode::FORBIDDEN, "repository_approval_required"))
+}
+
+async fn authenticated_post_approver(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    path: &str,
+    body: &[u8],
+) -> Result<(buzz_core::TenantContext, String), (StatusCode, Json<Value>)> {
+    let (tenant, pubkey) = super::invites::authenticate(state, headers, path, body).await?;
+    let member = state
+        .db
+        .get_relay_member(tenant.community(), &pubkey.to_hex())
+        .await
+        .map_err(|error| internal_error(&format!("read Hive membership: {error}")))?;
+    authorize_repository_approver(member.as_ref().map(|member| member.role.as_str()))?;
+    Ok((tenant, pubkey.to_hex()))
+}
+
 async fn editable_file_path(
     worktree: &Path,
     requested: &str,
@@ -757,6 +800,9 @@ async fn create_workspace(
         proposal_revision: None,
         proposal_digest: None,
         test_evidence: Vec::new(),
+        approved_by: None,
+        approved_at: None,
+        approved_paths: Vec::new(),
         created_by: creator,
         created_at: Utc::now(),
         status: DiscussionStatus::Active,
@@ -909,11 +955,7 @@ fn workspace_file_summaries(
         .map(str::to_lowercase);
     let mut matches = paths
         .iter()
-        .filter(|path| {
-            !path
-                .split('/')
-                .any(|segment| HIDDEN_WORKSPACE_SEGMENTS.contains(&segment))
-        })
+        .filter(|path| workspace_path_is_visible(path))
         .filter(|path| {
             normalized_query
                 .as_ref()
@@ -935,6 +977,220 @@ fn workspace_file_summaries(
         total_matches,
         total_matches > MAX_WORKSPACE_FILE_RESULTS,
     )
+}
+
+fn workspace_path_is_visible(path: &str) -> bool {
+    valid_workspace_path(path)
+        && !path
+            .split('/')
+            .any(|segment| HIDDEN_WORKSPACE_SEGMENTS.contains(&segment))
+}
+
+fn selected_commit_paths(
+    requested: &[String],
+    statuses: &HashMap<String, String>,
+) -> Result<Vec<String>, (StatusCode, Json<Value>)> {
+    if requested.len() > MAX_COMMIT_PATHS {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "too_many_selected_paths",
+        ));
+    }
+    let candidates = if requested.is_empty() {
+        statuses.keys().cloned().collect::<Vec<_>>()
+    } else {
+        requested.to_vec()
+    };
+    if candidates.len() > MAX_COMMIT_PATHS {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "too_many_selected_paths",
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut selected = Vec::with_capacity(candidates.len());
+    for path in candidates {
+        if !workspace_path_is_visible(&path)
+            || !statuses.contains_key(&path)
+            || !seen.insert(path.clone())
+        {
+            return Err(api_error(StatusCode::BAD_REQUEST, "invalid_selected_path"));
+        }
+        selected.push(path);
+    }
+    selected.sort_unstable();
+    Ok(selected)
+}
+
+fn validated_test_evidence(values: &[String]) -> Result<Vec<String>, (StatusCode, Json<Value>)> {
+    if values.len() > 10 {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_test_evidence"));
+    }
+    values
+        .iter()
+        .map(|value| value.trim())
+        .map(|value| {
+            if value.is_empty() || value.chars().count() > 500 || value.contains('\0') {
+                Err(api_error(StatusCode::BAD_REQUEST, "invalid_test_evidence"))
+            } else {
+                Ok(value.to_string())
+            }
+        })
+        .collect()
+}
+
+async fn stage_selected_paths(
+    worktree: &str,
+    selected_paths: &[String],
+) -> Result<(), (StatusCode, Json<Value>)> {
+    git_status(
+        &["-C", worktree, "reset", "--mixed", "--quiet", "HEAD", "--"],
+        None,
+    )
+    .await
+    .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    let mut add_args = vec![
+        "-C".to_string(),
+        worktree.to_string(),
+        "add".to_string(),
+        "--".to_string(),
+    ];
+    add_args.extend(selected_paths.iter().cloned());
+    let add_arg_refs = add_args.iter().map(String::as_str).collect::<Vec<_>>();
+    git_status(&add_arg_refs, None)
+        .await
+        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))
+}
+
+async fn workspace_diff_output(
+    worktree: &str,
+    statuses: &HashMap<String, String>,
+) -> Result<(String, Vec<String>), (StatusCode, Json<Value>)> {
+    let tracked_output = git_output(
+        &["-C", worktree, "diff", "--name-only", "-z", "HEAD", "--"],
+        MAX_GIT_OUTPUT_BYTES,
+    )
+    .await
+    .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    if !tracked_output.status.success() {
+        return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
+    }
+    let mut paths = tracked_output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .filter_map(|path| String::from_utf8(path.to_vec()).ok())
+        .filter(|path| workspace_path_is_visible(path))
+        .collect::<Vec<_>>();
+    if paths.len() > MAX_COMMIT_PATHS {
+        return Err(api_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "workspace_has_too_many_changes",
+        ));
+    }
+    let mut bytes = Vec::new();
+    if !paths.is_empty() {
+        let mut args = vec![
+            "-C".to_string(),
+            worktree.to_string(),
+            "diff".to_string(),
+            "--no-ext-diff".to_string(),
+            "--no-color".to_string(),
+            "--unified=3".to_string(),
+            "HEAD".to_string(),
+            "--".to_string(),
+        ];
+        args.extend(paths.iter().cloned());
+        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = git_output(&arg_refs, MAX_GIT_OUTPUT_BYTES)
+            .await
+            .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+        if !output.status.success() {
+            return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
+        }
+        bytes = output.stdout;
+    }
+    let mut untracked = statuses
+        .iter()
+        .filter(|(path, status)| status.as_str() == "??" && workspace_path_is_visible(path))
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    untracked.sort_unstable();
+    for path in untracked {
+        if paths.len() >= MAX_COMMIT_PATHS {
+            return Err(api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "workspace_has_too_many_changes",
+            ));
+        }
+        let remaining = MAX_GIT_OUTPUT_BYTES.saturating_sub(bytes.len());
+        if remaining == 0 {
+            return Err(api_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "workspace_diff_too_large",
+            ));
+        }
+        let next = git_output(
+            &[
+                "-C",
+                worktree,
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                "--no-index",
+                "--",
+                "/dev/null",
+                &path,
+            ],
+            remaining,
+        )
+        .await
+        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+        if next.status.code() != Some(1) {
+            return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
+        }
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(&next.stdout);
+        paths.push(path);
+    }
+    let diff = String::from_utf8(bytes)
+        .map_err(|_| api_error(StatusCode::BAD_GATEWAY, "git returned invalid output"))?;
+    Ok((diff, paths))
+}
+
+async fn create_proposal_bundle(
+    worktree: &str,
+    branch_ref: &str,
+    base_sha: &str,
+) -> Result<Vec<u8>, (StatusCode, Json<Value>)> {
+    let exclude_base = format!("^{base_sha}");
+    let output = git_output(
+        &[
+            "-C",
+            worktree,
+            "bundle",
+            "create",
+            "-",
+            branch_ref,
+            &exclude_base,
+        ],
+        MAX_PROPOSAL_BUNDLE_BYTES as usize,
+    )
+    .await
+    .map_err(|message| {
+        if message == "git output exceeded its size limit" {
+            api_error(StatusCode::PAYLOAD_TOO_LARGE, "proposal_bundle_too_large")
+        } else {
+            api_error(StatusCode::BAD_GATEWAY, message)
+        }
+    })?;
+    if !output.status.success() {
+        return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
+    }
+    Ok(output.stdout)
 }
 
 async fn workspace_catalog(
@@ -990,22 +1246,33 @@ pub(crate) async fn workspace(
 ) -> Result<Json<WorkspaceState>, (StatusCode, Json<Value>)> {
     let path = workspace_api_path(id, "");
     let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let member = state
+        .db
+        .get_relay_member(tenant.community(), &pubkey.to_hex())
+        .await
+        .map_err(|error| internal_error(&format!("read Hive membership: {error}")))?;
+    let can_approve =
+        authorize_repository_approver(member.as_ref().map(|member| member.role.as_str())).is_ok();
     let manifest =
         load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
             .await?;
     let worktree = manifest.worktree_path.to_string_lossy();
     let (catalog, statuses) = workspace_catalog(&worktree).await?;
     let (files, total_files, has_more_files) = workspace_file_summaries(&catalog, &statuses, None);
-    let mut changed_paths = statuses.keys().cloned().collect::<Vec<_>>();
+    let mut changed_paths = statuses
+        .keys()
+        .filter(|path| workspace_path_is_visible(path))
+        .cloned()
+        .collect::<Vec<_>>();
     changed_paths.sort_unstable();
-    let changes = changed_paths
+    let changes: Vec<WorkspaceFileSummary> = changed_paths
         .into_iter()
         .map(|path| WorkspaceFileSummary {
             status: statuses.get(&path).cloned(),
             path,
         })
         .collect();
-    let dirty = !statuses.is_empty();
+    let dirty = !changes.is_empty();
     let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
         .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
@@ -1017,6 +1284,7 @@ pub(crate) async fn workspace(
         changes,
         total_files,
         has_more_files,
+        can_approve,
     }))
 }
 
@@ -1177,30 +1445,14 @@ pub(crate) async fn diff(
 ) -> Result<Json<WorkspaceDiff>, (StatusCode, Json<Value>)> {
     let path = workspace_api_path(id, "/diff");
     let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let workspace_lock = git_workspace_lock(format!("discussion:{id}")).await?;
+    let _guard = workspace_lock.lock().await;
     let manifest =
         load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
             .await?;
     let worktree = manifest.worktree_path.to_string_lossy();
-    let output = git_output(
-        &[
-            "-C",
-            &worktree,
-            "diff",
-            "--no-ext-diff",
-            "--no-color",
-            "--unified=3",
-            "HEAD",
-            "--",
-        ],
-        MAX_GIT_OUTPUT_BYTES,
-    )
-    .await
-    .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
-    if !output.status.success() {
-        return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
-    }
-    let diff = String::from_utf8(output.stdout)
-        .map_err(|_| api_error(StatusCode::BAD_GATEWAY, "git returned invalid output"))?;
+    let (_, statuses) = workspace_catalog(&worktree).await?;
+    let (diff, paths) = workspace_diff_output(&worktree, &statuses).await?;
     let (additions, deletions, changed_files) = diff_counts(&diff);
     let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
@@ -1208,6 +1460,7 @@ pub(crate) async fn diff(
     Ok(Json(WorkspaceDiff {
         current_head_sha,
         diff,
+        paths,
         additions,
         deletions,
         changed_files,
@@ -1565,7 +1818,7 @@ pub(crate) async fn commit(
     body: Bytes,
 ) -> Result<Json<RepositoryDiscussion>, (StatusCode, Json<Value>)> {
     let api_path = workspace_api_path(id, "/commit");
-    let (tenant, author) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let (tenant, author) = authenticated_post_approver(&state, &headers, &api_path, &body).await?;
     let request: WorkspaceCommitRequest = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_commit_request"))?;
     let message = request.message.trim();
@@ -1580,13 +1833,32 @@ pub(crate) async fn commit(
     let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
         .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
-    let message_digest = hex::encode(Sha256::digest(message.as_bytes()));
+    let mut requested_paths = request.selected_paths.clone();
+    requested_paths.sort_unstable();
+    if requested_paths.len() > MAX_COMMIT_PATHS
+        || requested_paths.windows(2).any(|paths| paths[0] == paths[1])
+        || requested_paths
+            .iter()
+            .any(|path| !workspace_path_is_visible(path))
+    {
+        return Err(api_error(StatusCode::BAD_REQUEST, "invalid_selected_path"));
+    }
+    let test_evidence = validated_test_evidence(&request.test_evidence)?;
+    let request_digest = serde_json::to_vec(&(message, &requested_paths, &test_evidence))
+        .map_err(|error| internal_error(&format!("serialize commit request: {error}")))?;
+    let message_digest = hex::encode(Sha256::digest(request_digest));
+    let legacy_message_digest = hex::encode(Sha256::digest(message.as_bytes()));
     if let Some(recovery) = load_commit_recovery(&state, id).await? {
         if current_head_sha == recovery.previous_head_sha {
             remove_commit_recovery(&state, id).await;
         } else if recovery.previous_head_sha == request.expected_head_sha
             && recovery.requested_by == author
-            && recovery.message_digest == message_digest
+            && (recovery.message_digest == message_digest
+                || (recovery.selected_paths.is_empty()
+                    && recovery.test_evidence.is_empty()
+                    && requested_paths.is_empty()
+                    && test_evidence.is_empty()
+                    && recovery.message_digest == legacy_message_digest))
         {
             let recovered_revision = recovery
                 .revision
@@ -1605,6 +1877,10 @@ pub(crate) async fn commit(
             manifest.discussion.proposal_revision = Some(current_head_sha.clone());
             manifest.discussion.proposal_digest =
                 Some(hex::encode(Sha256::digest(current_head_sha.as_bytes())));
+            manifest.discussion.test_evidence = recovery.test_evidence.clone();
+            manifest.discussion.approved_by = Some(author.clone());
+            manifest.discussion.approved_at = Some(recovery.created_at);
+            manifest.discussion.approved_paths = recovery.selected_paths.clone();
             persist_manifest(&state, &manifest).await?;
             remove_commit_recovery(&state, id).await;
             return Ok(Json(manifest.discussion));
@@ -1618,9 +1894,12 @@ pub(crate) async fn commit(
     if current_head_sha != request.expected_head_sha {
         return Err(api_error(StatusCode::CONFLICT, "workspace_head_changed"));
     }
-    git_status(&["-C", &worktree, "add", "--update"], None)
-        .await
-        .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    let (_, statuses) = workspace_catalog(&worktree).await?;
+    let selected_paths = selected_commit_paths(&requested_paths, &statuses)?;
+    if selected_paths.is_empty() {
+        return Err(api_error(StatusCode::CONFLICT, "workspace_has_no_changes"));
+    }
+    stage_selected_paths(&worktree, &selected_paths).await?;
     let status = git_output(
         &["-C", &worktree, "diff", "--cached", "--quiet", "--"],
         8 * 1024,
@@ -1639,6 +1918,8 @@ pub(crate) async fn commit(
         revision: None,
         requested_by: author.clone(),
         message_digest,
+        selected_paths: selected_paths.clone(),
+        test_evidence: test_evidence.clone(),
         created_at: Utc::now(),
     };
     persist_commit_recovery(&state, &recovery).await?;
@@ -1661,6 +1942,11 @@ pub(crate) async fn commit(
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "git operation timed out"))?
         .map_err(|_| api_error(StatusCode::BAD_GATEWAY, "git could not be started"))?;
     if !commit_status.success() {
+        let _ = git_status(
+            &["-C", &worktree, "reset", "--mixed", "--quiet", "HEAD", "--"],
+            None,
+        )
+        .await;
         remove_commit_recovery(&state, id).await;
         return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
     }
@@ -1672,6 +1958,10 @@ pub(crate) async fn commit(
     manifest.discussion.current_head_sha = revision.clone();
     manifest.discussion.proposal_revision = Some(revision.clone());
     manifest.discussion.proposal_digest = Some(hex::encode(Sha256::digest(revision.as_bytes())));
+    manifest.discussion.test_evidence = test_evidence;
+    manifest.discussion.approved_by = Some(author);
+    manifest.discussion.approved_at = Some(recovery.created_at);
+    manifest.discussion.approved_paths = selected_paths;
     if let Err(error) = persist_manifest(&state, &manifest).await {
         if git_status(
             &["-C", &worktree, "reset", "--soft", &current_head_sha],
@@ -1688,6 +1978,53 @@ pub(crate) async fn commit(
     }
     remove_commit_recovery(&state, id).await;
     Ok(Json(manifest.discussion))
+}
+
+pub(crate) async fn proposal_bundle(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, (StatusCode, Json<Value>)> {
+    let path = workspace_api_path(id, "/proposal.bundle");
+    let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let workspace_lock = git_workspace_lock(format!("discussion:{id}")).await?;
+    let _guard = workspace_lock.lock().await;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
+            .await?;
+    let revision = manifest
+        .discussion
+        .proposal_revision
+        .as_deref()
+        .ok_or_else(|| api_error(StatusCode::CONFLICT, "proposal_not_approved"))?;
+    if revision != manifest.discussion.current_head_sha {
+        return Err(api_error(StatusCode::CONFLICT, "proposal_revision_changed"));
+    }
+
+    let worktree = manifest.worktree_path.to_string_lossy();
+    let bytes = create_proposal_bundle(
+        &worktree,
+        &manifest.discussion.branch_ref,
+        &manifest.discussion.base_sha,
+    )
+    .await?;
+
+    let short_revision = revision.chars().take(12).collect::<String>();
+    let filename = format!("hive-{id}-{short_revision}.bundle");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-git-bundle")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
+        .header(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        )
+        .body(Body::from(bytes))
+        .map_err(|error| internal_error(&format!("build proposal bundle response: {error}")))
 }
 
 #[cfg(test)]
@@ -1714,6 +2051,18 @@ mod tests {
 
         let (status, _) = authorize_discussion_creator(None).expect_err("non-member must fail");
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn only_repository_approvers_can_commit_suggestions() {
+        for role in ["owner", "admin"] {
+            assert!(authorize_repository_approver(Some(role)).is_ok());
+        }
+        for role in [Some("member"), Some("bot"), Some("guest"), None] {
+            let (status, _) =
+                authorize_repository_approver(role).expect_err("non-approver must fail");
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
     }
 
     #[test]
@@ -1775,6 +2124,71 @@ mod tests {
     fn diff_summary_ignores_headers() {
         let diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n-old\n+new\n";
         assert_eq!(diff_counts(diff), (1, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn selected_staging_includes_new_files_and_excludes_other_changes() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let worktree = temporary.path();
+        let run_git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(worktree)
+                .env("GIT_AUTHOR_NAME", "Hive Test")
+                .env("GIT_AUTHOR_EMAIL", "hive-test@example.test")
+                .env("GIT_COMMITTER_NAME", "Hive Test")
+                .env("GIT_COMMITTER_EMAIL", "hive-test@example.test")
+                .status()
+                .expect("git must start");
+            assert!(status.success(), "git {args:?} must succeed");
+        };
+        run_git(&["init", "-b", "main"]);
+        std::fs::write(worktree.join("tracked.txt"), "before\n").expect("tracked fixture");
+        run_git(&["add", "tracked.txt"]);
+        run_git(&["commit", "-m", "Initial fixture"]);
+        let worktree_arg = worktree.to_str().expect("UTF-8 worktree");
+        let base_sha = git_value(&["-C", worktree_arg, "rev-parse", "HEAD"])
+            .await
+            .expect("base revision");
+        std::fs::write(worktree.join("tracked.txt"), "after\n").expect("tracked edit");
+        std::fs::write(worktree.join("new file.txt"), "new file\n").expect("new fixture");
+
+        let (_, statuses) = workspace_catalog(worktree_arg)
+            .await
+            .expect("workspace catalog");
+        let (rendered, diff_paths) = workspace_diff_output(worktree_arg, &statuses)
+            .await
+            .expect("workspace diff");
+        assert!(rendered.contains("new file.txt"));
+        assert!(rendered.contains("+new file"));
+        assert_eq!(diff_paths, vec!["tracked.txt", "new file.txt"]);
+
+        let selected =
+            selected_commit_paths(&["new file.txt".into()], &statuses).expect("select new file");
+        stage_selected_paths(worktree_arg, &selected)
+            .await
+            .expect("stage selected path");
+        let staged = git_output(
+            &["-C", worktree_arg, "diff", "--cached", "--name-only"],
+            1024,
+        )
+        .await
+        .expect("read staged names");
+        assert_eq!(
+            String::from_utf8(staged.stdout).expect("UTF-8"),
+            "new file.txt\n"
+        );
+        run_git(&["commit", "-m", "Approved suggestion"]);
+        let bundle = create_proposal_bundle(worktree_arg, "refs/heads/main", &base_sha)
+            .await
+            .expect("proposal bundle");
+        let bundle_path = worktree.join("proposal.bundle");
+        std::fs::write(&bundle_path, bundle).expect("bundle fixture");
+        run_git(&[
+            "bundle",
+            "verify",
+            bundle_path.to_str().expect("bundle path"),
+        ]);
     }
 
     #[test]
@@ -1892,6 +2306,9 @@ mod tests {
                 proposal_revision: None,
                 proposal_digest: None,
                 test_evidence: Vec::new(),
+                approved_by: None,
+                approved_at: None,
+                approved_paths: Vec::new(),
                 created_by: "test-user".into(),
                 created_at: Utc::now(),
                 status: DiscussionStatus::CleanupPending,
@@ -1948,6 +2365,9 @@ mod tests {
                 proposal_revision: None,
                 proposal_digest: None,
                 test_evidence: Vec::new(),
+                approved_by: None,
+                approved_at: None,
+                approved_paths: Vec::new(),
                 created_by: keys.public_key().to_hex(),
                 created_at: Utc::now(),
                 status: DiscussionStatus::Active,
