@@ -1392,20 +1392,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByTestId("github-repository-BrickI-Brick-dummy"),
   ).toBeVisible();
   await expect(
-    page.getByTestId("github-owner-toggle-BrickI-Brick"),
-  ).toHaveAttribute("aria-expanded", "true");
-  const brickOOwnerToggle = page.getByTestId(
-    "github-owner-toggle-BrickO-Brick",
-  );
-  await brickOOwnerToggle.click();
-  await expect(brickOOwnerToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(
-    page.getByTestId("github-repository-BrickO-Brick-hive"),
-  ).toBeHidden();
-  await brickOOwnerToggle.click();
-  await expect(brickOOwnerToggle).toHaveAttribute("aria-expanded", "true");
-  await expect(
-    page.getByTestId("github-repository-BrickO-Brick-hive"),
+    page.getByText("2 organizations · 3 repositories", { exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("guide-05-repositories.png"),

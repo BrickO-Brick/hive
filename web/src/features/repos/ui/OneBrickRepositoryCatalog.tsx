@@ -2,8 +2,6 @@ import {
   Archive,
   BookOpen,
   Boxes,
-  ChevronDown,
-  ChevronRight,
   ExternalLink,
   GitBranch,
   LoaderCircle,
@@ -39,7 +37,6 @@ const CATEGORIES: RepositoryCategory[] = [
   "Product",
 ];
 const EMPTY_REPOSITORIES: OneBrickGitHubRepository[] = [];
-const REPOSITORIES_PER_OWNER_PAGE = 8;
 
 function categoryFor(repository: OneBrickGitHubRepository): RepositoryCategory {
   const name = repository.name.toLowerCase();
@@ -127,12 +124,6 @@ export function OneBrickRepositoryCatalog({
   const catalog = useOneBrickGitHubCatalog();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<RepositoryCategory>("All");
-  const [visiblePerOwner, setVisiblePerOwner] = useState(
-    REPOSITORIES_PER_OWNER_PAGE,
-  );
-  const [collapsedOwners, setCollapsedOwners] = useState<Set<string>>(
-    () => new Set(),
-  );
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const repositories = catalog.data?.repositories ?? EMPTY_REPOSITORIES;
   const categorized = useMemo(
@@ -157,7 +148,7 @@ export function OneBrickRepositoryCatalog({
       }),
     [categorized, category, deferredQuery],
   );
-  const visibleByOwner = useMemo(() => {
+  const repositoriesByOwner = useMemo(() => {
     const groups = new Map<
       string,
       Array<{
@@ -172,22 +163,9 @@ export function OneBrickRepositoryCatalog({
     }
     return [...groups.entries()].map(([owner, ownerRepositories]) => ({
       owner,
-      repositories: ownerRepositories.slice(0, visiblePerOwner),
-      total: ownerRepositories.length,
+      repositories: ownerRepositories,
     }));
-  }, [filtered, visiblePerOwner]);
-  const visibleRepositoryCount = visibleByOwner.reduce(
-    (total, owner) => total + owner.repositories.length,
-    0,
-  );
-  const ownerNames = visibleByOwner.map(({ owner }) => owner);
-  const allOwnersCollapsed =
-    ownerNames.length > 0 &&
-    ownerNames.every((owner) => collapsedOwners.has(owner));
-
-  function setAllOwnersCollapsed(collapsed: boolean) {
-    setCollapsedOwners(collapsed ? new Set(ownerNames) : new Set());
-  }
+  }, [filtered]);
 
   if (catalog.isLoading) {
     return (
@@ -233,8 +211,6 @@ export function OneBrickRepositoryCatalog({
             className="h-10 w-full rounded-md border border-[#D8DEE8] bg-white pl-9 pr-3 text-sm outline-none focus:border-[#FF6F52]/70 focus:ring-4 focus:ring-[#FF6F52]/10"
             onChange={(event) => {
               setQuery(event.currentTarget.value);
-              setVisiblePerOwner(REPOSITORIES_PER_OWNER_PAGE);
-              setCollapsedOwners(new Set());
             }}
             placeholder="Search repositories…"
             value={query}
@@ -255,8 +231,6 @@ export function OneBrickRepositoryCatalog({
             key={item}
             onClick={() => {
               setCategory(item);
-              setVisiblePerOwner(REPOSITORIES_PER_OWNER_PAGE);
-              setCollapsedOwners(new Set());
             }}
             type="button"
           >
@@ -270,88 +244,51 @@ export function OneBrickRepositoryCatalog({
           No repositories match these filters.
         </div>
       ) : (
-        <div className="mt-5 space-y-7">
+        <div className="mt-5 space-y-4">
           <div className="flex items-center justify-between border-b border-[#E2E8F0] pb-3">
             <p className="text-xs text-[#607086]">
-              {visibleByOwner.length} organizations · {filtered.length}{" "}
+              {repositoriesByOwner.length} organizations · {filtered.length}{" "}
               repositories
             </p>
-            <button
-              className="text-xs font-bold text-[#526178] hover:text-[#D95336]"
-              onClick={() => setAllOwnersCollapsed(!allOwnersCollapsed)}
-              type="button"
-            >
-              {allOwnersCollapsed ? "Expand all" : "Collapse all"}
-            </button>
           </div>
-          {visibleByOwner.map(
-            ({ owner, repositories: ownerRepositories, total }) => (
+          {repositoriesByOwner.map(
+            ({ owner, repositories: ownerRepositories }) => (
               <section
                 key={owner}
                 aria-labelledby={`repository-owner-${owner}`}
               >
-                <h3
-                  id={`repository-owner-${owner}`}
-                  className="mb-3 text-sm font-extrabold text-[#10233F]"
-                >
-                  <button
-                    aria-controls={`repository-list-${owner}`}
-                    aria-expanded={!collapsedOwners.has(owner)}
-                    className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:bg-[#F7F9FC]"
-                    data-testid={`github-owner-toggle-${owner}`}
-                    onClick={() => {
-                      setCollapsedOwners((current) => {
-                        const next = new Set(current);
-                        if (next.has(owner)) next.delete(owner);
-                        else next.add(owner);
-                        return next;
-                      });
-                    }}
-                    type="button"
+                <div className="mb-2 flex items-center gap-2 pt-2">
+                  <h3
+                    id={`repository-owner-${owner}`}
+                    className="text-sm font-extrabold text-[#10233F]"
                   >
-                    {collapsedOwners.has(owner) ? (
-                      <ChevronRight
-                        aria-hidden
-                        size={16}
-                        className="text-[#607086]"
-                      />
-                    ) : (
-                      <ChevronDown
-                        aria-hidden
-                        size={16}
-                        className="text-[#607086]"
-                      />
-                    )}
-                    <span>{owner}</span>
-                    <span className="rounded-full bg-[#EEF3F8] px-2 py-0.5 text-[10px] font-bold text-[#607086]">
-                      {total}
-                    </span>
-                  </button>
-                </h3>
-                <div
-                  className={`grid gap-3 lg:grid-cols-2 2xl:grid-cols-3 ${collapsedOwners.has(owner) ? "hidden" : ""}`}
-                  id={`repository-list-${owner}`}
-                >
+                    {owner}
+                  </h3>
+                  <span className="rounded-full bg-[#EEF3F8] px-2 py-0.5 text-[10px] font-bold text-[#607086]">
+                    {ownerRepositories.length}
+                  </span>
+                </div>
+                <div className="overflow-hidden rounded-xl border border-[#D8DEE8] bg-white shadow-sm">
                   {ownerRepositories.map(
                     ({ repository, category: repositoryCategory }) => (
                       <article
-                        className="flex min-h-48 flex-col rounded-xl border border-[#D8DEE8] bg-white p-4 shadow-sm"
+                        className="flex min-w-0 items-center gap-3 border-b border-[#E2E8F0] p-2.5 last:border-b-0 sm:px-3"
                         data-testid={`github-repository-${repository.owner}-${repository.name}`}
                         key={`${repository.owner}/${repository.name}`}
                       >
-                        <div className="flex items-start gap-3">
-                          <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#EEF5FF] text-[#2F6FED]">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#EEF5FF] text-[#2F6FED]">
                             {repository.archived ? (
                               <Archive size={17} />
                             ) : (
                               <GitBranch size={17} />
                             )}
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <h4 className="truncate text-sm font-bold text-[#10233F]">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <h4 className="shrink-0 truncate text-sm font-bold text-[#10233F]">
                               {repository.name}
                             </h4>
-                            <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#607086]">
+                            <div className="flex shrink-0 gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#607086]">
                               <span>{repositoryCategory}</span>
                               <span>·</span>
                               <span>{repository.visibility}</span>
@@ -362,51 +299,56 @@ export function OneBrickRepositoryCatalog({
                                 </>
                               ) : null}
                             </div>
+                            {repository.description && (
+                              <span className="min-w-0 flex-1 truncate text-xs text-[#607086]">
+                                {repository.description}
+                              </span>
+                            )}
                           </div>
                         </div>
-                        {repository.description && (
-                          <p className="mt-3 line-clamp-3 flex-1 text-xs leading-5 text-[#607086]">
-                            {repository.description}
-                          </p>
-                        )}
-                        <div className="mt-auto flex items-center justify-between border-t border-[#E2E8F0] pt-3 text-[10px] text-[#8491A4]">
-                          <span className="flex items-center gap-1">
-                            <BookOpen size={11} /> {repository.default_branch}
-                          </span>
-                          <span>
-                            Updated {formatUpdatedAt(repository.updated_at)}
-                          </span>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <button
-                            className="flex items-center justify-center gap-1.5 rounded-md bg-[#FF6F52] px-2 py-2 text-xs font-bold text-white hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#607086]"
-                            disabled={repository.archived}
-                            onClick={() => onDiscuss(repository)}
-                            type="button"
-                            aria-label={
-                              repository.archived
-                                ? `${repository.owner}/${repository.name} is archived`
-                                : `Start discussion in ${repository.owner}/${repository.name}`
-                            }
-                          >
-                            {repository.archived ? (
-                              <Archive size={13} />
-                            ) : (
-                              <MessageCircle size={13} />
-                            )}{" "}
-                            {repository.archived
-                              ? "Archived"
-                              : "Start discussion"}
-                          </button>
-                          <a
-                            className="flex items-center justify-center gap-1.5 rounded-md border border-[#D8DEE8] px-2 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
-                            href={repository.url}
-                            rel="noreferrer"
-                            target="_blank"
-                            aria-label={`Open ${repository.owner}/${repository.name} on GitHub`}
-                          >
-                            GitHub <ExternalLink size={12} />
-                          </a>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <div className="flex items-center gap-3 text-[10px] text-[#8491A4]">
+                            <span className="flex items-center gap-1">
+                              <BookOpen size={11} /> {repository.default_branch}
+                            </span>
+                            <span>
+                              Updated {formatUpdatedAt(repository.updated_at)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              className="grid size-8 place-items-center rounded-md bg-[#FF6F52] text-white hover:bg-[#E35E43] disabled:cursor-not-allowed disabled:bg-[#E2E8F0] disabled:text-[#607086]"
+                              disabled={repository.archived}
+                              onClick={() => onDiscuss(repository)}
+                              type="button"
+                              title={
+                                repository.archived
+                                  ? "Archived repository"
+                                  : "Start discussion"
+                              }
+                              aria-label={
+                                repository.archived
+                                  ? `${repository.owner}/${repository.name} is archived`
+                                  : `Start discussion in ${repository.owner}/${repository.name}`
+                              }
+                            >
+                              {repository.archived ? (
+                                <Archive size={13} />
+                              ) : (
+                                <MessageCircle size={13} />
+                              )}
+                            </button>
+                            <a
+                              className="grid size-8 place-items-center rounded-md border border-[#D8DEE8] text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
+                              href={repository.url}
+                              rel="noreferrer"
+                              target="_blank"
+                              title="Open on GitHub"
+                              aria-label={`Open ${repository.owner}/${repository.name} on GitHub`}
+                            >
+                              <ExternalLink size={13} />
+                            </a>
+                          </div>
                         </div>
                       </article>
                     ),
@@ -414,20 +356,6 @@ export function OneBrickRepositoryCatalog({
                 </div>
               </section>
             ),
-          )}
-          {visibleRepositoryCount < filtered.length && (
-            <button
-              type="button"
-              className="mx-auto flex items-center rounded-md border border-[#D8DEE8] bg-white px-4 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
-              onClick={() =>
-                setVisiblePerOwner(
-                  (current) => current + REPOSITORIES_PER_OWNER_PAGE,
-                )
-              }
-            >
-              Show more repositories ({filtered.length - visibleRepositoryCount}{" "}
-              remaining)
-            </button>
           )}
         </div>
       )}
