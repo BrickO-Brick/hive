@@ -2,6 +2,7 @@ import { CheckCircle2, RotateCcw, Reply } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { NostrEvent } from "@/shared/lib/nostr-client";
+import { agentFailureDisplayContent } from "./agentFailure";
 import { BrickOPet } from "./BrickOPet";
 import { participantInitials } from "./useHiveParticipantDirectory";
 
@@ -33,6 +34,9 @@ export function HiveMessage({
   onRestoreRequest,
   showDay,
 }: Props) {
+  const displayContent = fromBrickO
+    ? agentFailureDisplayContent(message.content)
+    : message.content;
   return (
     <div>
       {showDay && (
@@ -85,7 +89,7 @@ export function HiveMessage({
               className={`prose prose-sm max-w-none break-words prose-p:my-0 prose-p:leading-6 prose-pre:bg-[#10213F] prose-pre:text-white ${mine ? "prose-a:text-[#9D321F]" : "prose-a:text-[#E35E43]"}`}
             >
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
+                {displayContent}
               </ReactMarkdown>
             </div>
           </div>

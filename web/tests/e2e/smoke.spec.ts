@@ -633,6 +633,30 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     .update(workspaceContent)
     .digest("hex");
   let workspaceDirty = false;
+  await page.route("**/api/onebrick/channels/*/participants", async (route) => {
+    expect(nip98Pubkey(route.request().headers().authorization)).toBe(
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    );
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        participants: [
+          {
+            pubkey:
+              "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            displayName: "Ari Pratama",
+            role: "owner",
+          },
+          {
+            pubkey: "33".repeat(32),
+            displayName: "Dewi Lestari",
+            role: "member",
+          },
+        ],
+      }),
+    });
+  });
   await page.route(
     "**/api/onebrick/repository-discussions/*/workspace**",
     async (route) => {
@@ -1089,16 +1113,23 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(teammateMessage.getByText("Sanny Gaddafi")).toBeVisible();
   await expect(teammateMessage.getByText("BrickO")).toHaveCount(0);
 
-  const initialComposer = page.getByRole("textbox", { name: "Message BrickO" });
+  const initialComposer = page.getByRole("combobox", {
+    name: "Message BrickO",
+  });
   await initialComposer.fill("@");
   const mentionPicker = page.getByRole("listbox", { name: "Mention someone" });
   await expect(mentionPicker).toBeVisible();
   await expect(
-    mentionPicker.getByRole("option", { name: /BrickO.*Agent.*Online/ }),
+    mentionPicker.getByRole("option", { name: /BrickO.*AI teammate.*Agent/ }),
   ).toBeVisible();
   await expect(
     mentionPicker.getByRole("option", {
-      name: /Sanny Gaddafi.*member.*Online/,
+      name: /Sanny Gaddafi.*member.*Available/,
+    }),
+  ).toBeVisible();
+  await expect(
+    mentionPicker.getByRole("option", {
+      name: /Dewi Lestari.*member.*Available/,
     }),
   ).toBeVisible();
   await page.screenshot({
@@ -1110,6 +1141,11 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await initialComposer.fill("");
 
   await page.getByRole("button", { name: "New chat" }).click();
+  const newChatDialog = page.getByRole("dialog", {
+    name: "Start a group conversation",
+  });
+  await expect(newChatDialog).toBeVisible();
+  await expect(page.getByTestId("conversation-title-input")).toBeFocused();
   await expect(page.getByText("Start a group conversation")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("guide-03-new-chat.png"),
@@ -1167,7 +1203,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toBeVisible();
   await page
     .getByTestId("github-repository-BrickO-Brick-mantul-be")
-    .getByRole("button", { name: "Start discussion" })
+    .getByRole("button", {
+      name: "Start discussion in BrickO-Brick/mantul-be",
+    })
     .click();
   await expect(page.getByText("New repository discussion")).toBeVisible();
   await page.screenshot({
@@ -1192,7 +1230,14 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByRole("button", { name: "Open Simple IDE" }).click();
   await expect(page.getByTestId("simple-ide")).toBeVisible();
-  const editor = page.getByRole("textbox", { name: "Editing src/timeout.ts" });
+  const fileSearch = page.getByRole("searchbox", {
+    name: "Search workspace files",
+  });
+  await fileSearch.fill("retry");
+  await expect(page.getByRole("button", { name: "retry.ts" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "README.md" })).toHaveCount(0);
+  await fileSearch.fill("");
+  let editor = page.getByRole("textbox", { name: "Editing src/timeout.ts" });
   await expect(editor).toBeVisible();
   await editor.fill(
     workspaceContent.replace(
@@ -1200,7 +1245,16 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       "Timed out safely after",
     ),
   );
-  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(editor).toContainText("Timed out safely after");
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.reload();
+  await page.getByRole("button", { name: "Open Simple IDE" }).click();
+  editor = page.getByRole("textbox", { name: "Editing src/timeout.ts" });
+  await expect(
+    page.getByText("Recovered an unsaved browser draft."),
+  ).toBeVisible();
+  await expect(editor).toContainText("Timed out safely after");
+  await editor.press("Control+s");
   await expect(
     page.getByText("Draft saved in the isolated workspace."),
   ).toBeVisible();
@@ -1315,7 +1369,9 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   const composer = page.getByPlaceholder("Message BrickO about mantul-be…");
   await expect(
-    page.getByRole("textbox", { name: "Message BrickO about mantul-be" }),
+    page.getByRole("combobox", {
+      name: "Message BrickO about mantul-be",
+    }),
   ).toBeVisible();
   await composer.fill("Tolong cek status Hive sekarang");
   await composer.press("Enter");
@@ -1328,11 +1384,22 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   await expect(page.getByText(/Replying to You:/)).toBeVisible();
   await page.getByRole("button", { name: "Open threads" }).click();
   await expect(page.getByRole("heading", { name: "Threads" })).toBeVisible();
+  const threadPanel = page.getByRole("complementary", {
+    name: "Conversation threads",
+  });
+  await expect(
+    threadPanel.getByText("2 threads in this conversation"),
+  ).toBeVisible();
+  await expect(
+    threadPanel.getByRole("region", {
+      name: "Thread: Second top-level question",
+    }),
+  ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("guide-08-reply-thread.png"),
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Close threads" }).click();
+  await threadPanel.getByRole("button", { name: "Close threads" }).click();
   await page.getByRole("button", { name: "Cancel reply" }).click();
   await expect(page.getByText("Preparing a response…").first()).toBeVisible();
   const statusPet = page.getByTestId("bricko-status-pet");
@@ -1529,10 +1596,26 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toHaveCount(0);
 
   const desktopNavigation = page.getByTestId("desktop-navigation");
-  await expect(desktopNavigation).toHaveCSS("width", "352px");
+  await expect(desktopNavigation).toHaveCSS("width", "300px");
   await expect(
     desktopNavigation.getByRole("img", { name: "Hive" }),
   ).toBeVisible();
+  const resizeHandle = page.getByTestId("navigation-resize-handle");
+  await expect(resizeHandle).toHaveAttribute("aria-valuenow", "300");
+  const resizeBox = await resizeHandle.boundingBox();
+  expect(resizeBox).not.toBeNull();
+  if (resizeBox) {
+    await page.mouse.move(resizeBox.x + 2, resizeBox.y + resizeBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(resizeBox.x + 42, resizeBox.y + resizeBox.height / 2);
+    await page.mouse.up();
+  }
+  await expect(desktopNavigation).toHaveCSS("width", "340px");
+  await page.reload();
+  await expect(desktopNavigation).toHaveCSS("width", "340px");
+  await resizeHandle.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(desktopNavigation).toHaveCSS("width", "324px");
   await page.screenshot({
     path: testInfo.outputPath("01-desktop-navigation-expanded.png"),
     fullPage: true,
@@ -1558,8 +1641,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.setViewportSize({ width: 820, height: 1024 });
   await page.evaluate(
-    (storageKey) => localStorage.removeItem(storageKey),
-    "hive.navigation.collapsed.v1",
+    (storageKeys) => {
+      storageKeys.forEach((key) => {
+        localStorage.removeItem(key);
+      });
+    },
+    ["hive.navigation.collapsed.v1", "hive.navigation.width.v1"],
   );
   await page.reload();
   await expect(desktopNavigation).toHaveCSS("width", "68px");
@@ -1569,7 +1656,7 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   });
 
   await page.getByTestId("sidebar-toggle").click();
-  await expect(desktopNavigation).toHaveCSS("width", "352px");
+  await expect(desktopNavigation).toHaveCSS("width", "300px");
   await page.screenshot({
     path: testInfo.outputPath("04-tablet-navigation-expanded.png"),
     fullPage: true,

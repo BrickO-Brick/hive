@@ -131,6 +131,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(api::onebrick_github::repositories),
         )
         .route(
+            "/api/onebrick/channels/{channel_id}/participants",
+            get(api::onebrick_people::participants),
+        )
+        .route(
             api::onebrick_discussions::DISCUSSIONS_PATH,
             get(api::onebrick_discussions::list).post(api::onebrick_discussions::create),
         )

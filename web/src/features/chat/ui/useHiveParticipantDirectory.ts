@@ -6,6 +6,7 @@ import {
 } from "@/shared/lib/nostr-client";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayWsUrl } from "@/shared/lib/relay-url";
+import { useOneBrickParticipants } from "../onebrick-participants-api";
 
 type HiveIdentity = {
   channelId: string;
@@ -92,10 +93,11 @@ export function useHiveParticipantDirectory(
   identity: HiveIdentity | null,
   messages: NostrEvent[],
 ) {
-  const [roles, setRoles] = useState<Record<string, string>>({});
-  const [profiles, setProfiles] = useState<Record<string, ParticipantProfile>>(
-    {},
-  );
+  const directory = useOneBrickParticipants(identity?.channelId ?? null);
+  const [eventRoles, setEventRoles] = useState<Record<string, string>>({});
+  const [nostrProfiles, setNostrProfiles] = useState<
+    Record<string, ParticipantProfile>
+  >({});
 
   useEffect(() => {
     if (!identity) return;
@@ -104,7 +106,7 @@ export function useHiveParticipantDirectory(
     const apply = (event: NostrEvent) => {
       if (!active || event.created_at < newestRosterAt) return;
       newestRosterAt = event.created_at;
-      setRoles(memberRoles(event));
+      setEventRoles(memberRoles(event));
     };
     void queryEvents(relayWsUrl(), {
       kinds: [39002],
@@ -137,12 +139,15 @@ export function useHiveParticipantDirectory(
     const pubkeys = new Set(
       messages.map(({ pubkey }) => normalizePubkey(pubkey)),
     );
-    for (const pubkey of Object.keys(roles)) {
+    for (const pubkey of Object.keys(eventRoles)) {
       pubkeys.add(pubkey);
+    }
+    for (const participant of directory.data ?? []) {
+      pubkeys.add(normalizePubkey(participant.pubkey));
     }
     if (identity) pubkeys.add(normalizePubkey(identity.pubkey));
     return [...pubkeys].filter(Boolean).sort().join(",");
-  }, [identity, messages, roles]);
+  }, [directory.data, eventRoles, identity, messages]);
 
   useEffect(() => {
     const authors = requestedPubkeys.split(",").filter(Boolean);
@@ -152,7 +157,7 @@ export function useHiveParticipantDirectory(
       const next = profile(event);
       if (!active || !next) return;
       const pubkey = normalizePubkey(event.pubkey);
-      setProfiles((current) =>
+      setNostrProfiles((current) =>
         (current[pubkey]?.createdAt ?? -1) > next.createdAt
           ? current
           : { ...current, [pubkey]: next },
@@ -177,6 +182,30 @@ export function useHiveParticipantDirectory(
       unsubscribe();
     };
   }, [requestedPubkeys]);
+
+  const roles = useMemo(() => {
+    const serverRoles = Object.fromEntries(
+      (directory.data ?? []).map((participant) => [
+        normalizePubkey(participant.pubkey),
+        participant.role,
+      ]),
+    );
+    return { ...serverRoles, ...eventRoles };
+  }, [directory.data, eventRoles]);
+
+  const profiles = useMemo(() => {
+    const serverProfiles = Object.fromEntries(
+      (directory.data ?? []).map((participant) => [
+        normalizePubkey(participant.pubkey),
+        {
+          createdAt: 0,
+          displayName: participant.displayName,
+          nip05: null,
+        } satisfies ParticipantProfile,
+      ]),
+    );
+    return { ...serverProfiles, ...nostrProfiles };
+  }, [directory.data, nostrProfiles]);
 
   const agentPubkey = useMemo(() => {
     const bots = Object.entries(roles)

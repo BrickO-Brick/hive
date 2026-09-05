@@ -60,11 +60,16 @@ import {
   HiveNewDiscussionDialog,
 } from "./HiveCreateDialogs";
 import { HiveNavigation } from "./HiveNavigation";
+import { HiveResizableNavigation } from "./HiveResizableNavigation";
 import { HiveMessage } from "./HiveMessage";
 import { HiveSimpleIde } from "./HiveSimpleIde";
 import { HiveWorkspaceSummary } from "./HiveWorkspaceSummary";
 import { hiveUserFacingError } from "./hiveErrors";
-import { HiveHeaderCollaboration, HiveThreadPanel } from "./HiveThreadPanel";
+import {
+  groupConversationThreads,
+  HiveHeaderCollaboration,
+  HiveThreadPanel,
+} from "./HiveThreadPanel";
 import {
   normalizePubkey,
   participantPresentation,
@@ -81,7 +86,6 @@ import {
 
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
-const SIDEBAR_STATE_STORAGE_KEY = "hive.navigation.collapsed.v1";
 const OneBrickRepositoryCatalog = lazy(() =>
   import("@/features/repos/ui/OneBrickRepositoryCatalog").then((module) => ({
     default: module.OneBrickRepositoryCatalog,
@@ -131,17 +135,14 @@ export function HiveChatPage() {
       ? "repositories"
       : "chat",
   );
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const stored = window.localStorage.getItem(SIDEBAR_STATE_STORAGE_KEY);
-    if (stored !== null) return stored === "true";
-    return window.innerWidth >= 768 && window.innerWidth < 1024;
-  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const selectSurface = useCallback((next: "chat" | "repositories") => {
     setSurface(next);
-    if (next === "repositories") setSimpleIdeOpen(false);
+    if (next === "repositories") {
+      setSimpleIdeOpen(false);
+      setThreadPanelOpen(false);
+    }
     setMobileNavigationOpen(false);
     const url = new URL(window.location.href);
     if (next === "repositories") url.searchParams.set("view", "repositories");
@@ -165,6 +166,7 @@ export function HiveChatPage() {
       setActiveDiscussionId(discussion.id);
       setActiveConversationId(null);
       setReplyTo(null);
+      setThreadPanelOpen(false);
       selectSurface("chat");
       const url = new URL(window.location.href);
       url.searchParams.set("discussion", discussion.id);
@@ -182,6 +184,7 @@ export function HiveChatPage() {
     setActiveDiscussionId(null);
     setActiveConversationId(null);
     setReplyTo(null);
+    setThreadPanelOpen(false);
     selectSurface("chat");
     const url = new URL(window.location.href);
     url.searchParams.delete("discussion");
@@ -198,6 +201,7 @@ export function HiveChatPage() {
       setActiveDiscussionId(null);
       setActiveConversationId(conversation.id);
       setReplyTo(null);
+      setThreadPanelOpen(false);
       selectSurface("chat");
       const url = new URL(window.location.href);
       url.searchParams.delete("discussion");
@@ -364,12 +368,6 @@ export function HiveChatPage() {
     }
   }, [identity]);
   useEffect(() => {
-    window.localStorage.setItem(
-      SIDEBAR_STATE_STORAGE_KEY,
-      String(sidebarCollapsed),
-    );
-  }, [sidebarCollapsed]);
-  useEffect(() => {
     if (!mobileNavigationOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") setMobileNavigationOpen(false);
@@ -377,6 +375,14 @@ export function HiveChatPage() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [mobileNavigationOpen]);
+  useEffect(() => {
+    if (!threadPanelOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setThreadPanelOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [threadPanelOpen]);
   const discussionList = discussions.data ?? [];
   const conversationList = useMemo(
     () => conversationsFromMessages(messages),
@@ -618,34 +624,25 @@ export function HiveChatPage() {
 
   return (
     <div className="flex h-dvh overflow-hidden bg-white text-[#172033] selection:bg-[#FF6F52]/20">
-      <aside
-        data-testid="desktop-navigation"
-        className={`relative hidden shrink-0 flex-col border-r border-[#D8DEE8] bg-white transition-[width] duration-150 md:flex ${
-          sidebarCollapsed ? "w-[68px]" : "w-[352px]"
-        }`}
-      >
-        <HiveNavigation
-          activeConversationId={activeConversationId}
-          activeDiscussionId={activeDiscussionId}
-          agentState={agentState}
-          collapsed={sidebarCollapsed}
-          connected={connected}
-          conversations={conversationList}
-          discussions={discussionList}
-          identityEmail={identity.email}
-          onConversation={openConversation}
-          onDiscussion={openDiscussion}
-          onGeneral={openGeneralConversation}
-          onNewConversation={() => {
-            setNewConversationTitle("");
-            setNewConversationOpen(true);
-          }}
-          onRepositories={() => selectSurface("repositories")}
-          onToggle={() => setSidebarCollapsed((current) => !current)}
-          surface={surface}
-          toneClasses={toneClasses}
-        />
-      </aside>
+      <HiveResizableNavigation
+        activeConversationId={activeConversationId}
+        activeDiscussionId={activeDiscussionId}
+        agentState={agentState}
+        connected={connected}
+        conversations={conversationList}
+        discussions={discussionList}
+        identityEmail={identity.email}
+        onConversation={openConversation}
+        onDiscussion={openDiscussion}
+        onGeneral={openGeneralConversation}
+        onNewConversation={() => {
+          setNewConversationTitle("");
+          setNewConversationOpen(true);
+        }}
+        onRepositories={() => selectSurface("repositories")}
+        surface={surface}
+        toneClasses={toneClasses}
+      />
 
       {mobileNavigationOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
@@ -687,9 +684,9 @@ export function HiveChatPage() {
         </div>
       )}
 
-      <main className="flex min-w-0 flex-1 flex-col bg-white">
-        <header className="z-10 flex h-14 shrink-0 items-center justify-between border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-3">
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
+        <header className="z-10 flex h-14 shrink-0 items-center justify-between gap-2 overflow-hidden border-b border-[#D8DEE8] bg-white px-3 sm:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <button
               type="button"
               data-testid="mobile-navigation-open"
@@ -702,9 +699,9 @@ export function HiveChatPage() {
             <span className="text-base font-extrabold tracking-[-0.03em] text-[#10233F] md:hidden">
               Hive
             </span>
-            <div className="hidden min-w-0 sm:block">
-              <div className="flex items-center gap-2">
-                <h1 className="truncate text-[15px] font-bold text-[#10233F]">
+            <div className="hidden min-w-0 flex-1 overflow-hidden sm:block">
+              <div className="flex min-w-0 items-center gap-2">
+                <h1 className="min-w-0 truncate text-[15px] font-bold text-[#10233F]">
                   {surface === "repositories"
                     ? "Repositories"
                     : (activeDiscussion?.title ??
@@ -718,7 +715,7 @@ export function HiveChatPage() {
                   {agentState.label}
                 </span>
               </div>
-              <p className="mt-0.5 flex items-center gap-1.5 text-[10px] text-[#607086]">
+              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[10px] text-[#607086]">
                 {surface === "repositories" ? (
                   <>
                     <GitBranch size={10} /> BrickO-Brick
@@ -728,7 +725,7 @@ export function HiveChatPage() {
                     <GitBranch size={10} /> {activeDiscussion.owner}/
                     {activeDiscussion.repository}
                     <span className="text-[#B6C0CE]">•</span>
-                    <span>
+                    <span className="truncate">
                       {activeDiscussion.branchRef.replace("refs/heads/", "")}
                     </span>
                   </>
@@ -746,20 +743,13 @@ export function HiveChatPage() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2 lg:gap-3">
             {surface === "chat" && (
               <HiveHeaderCollaboration
                 onThreads={() => setThreadPanelOpen((current) => !current)}
                 participants={participants}
-                threadCount={
-                  visibleMessages.filter((message) =>
-                    message.tags.some(
-                      (tag) =>
-                        tag[0] === "e" &&
-                        (tag[3] === "root" || tag[3] === "reply"),
-                    ),
-                  ).length
-                }
+                threadCount={groupConversationThreads(visibleMessages).length}
+                threadsOpen={threadPanelOpen}
               />
             )}
             <div className="flex items-center overflow-hidden rounded border border-[#D8DEE8] bg-white">
@@ -856,7 +846,10 @@ export function HiveChatPage() {
                   <HiveWorkspaceSummary
                     discussion={activeDiscussion}
                     hasRoot={Boolean(activeRoot)}
-                    onOpenEditor={() => setSimpleIdeOpen(true)}
+                    onOpenEditor={() => {
+                      setThreadPanelOpen(false);
+                      setSimpleIdeOpen(true);
+                    }}
                   />
                 )}
                 {visibleMessages.length === 0 &&

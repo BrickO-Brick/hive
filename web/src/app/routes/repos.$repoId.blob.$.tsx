@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { RepoBlobPage } from "@/features/repos/ui/RepoBlobViewer";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/repos/$repoId/blob/$")({
-  component: RepoBlobPage,
+  component: lazyRouteComponent(
+    () => import("@/features/repos/ui/RepoBlobViewer"),
+    "RepoBlobPage",
+  ),
 });

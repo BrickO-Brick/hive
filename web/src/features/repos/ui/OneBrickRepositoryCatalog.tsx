@@ -37,6 +37,7 @@ const CATEGORIES: RepositoryCategory[] = [
   "Product",
 ];
 const EMPTY_REPOSITORIES: OneBrickGitHubRepository[] = [];
+const REPOSITORIES_PAGE_SIZE = 24;
 
 function categoryFor(repository: OneBrickGitHubRepository): RepositoryCategory {
   const name = repository.name.toLowerCase();
@@ -124,6 +125,7 @@ export function OneBrickRepositoryCatalog({
   const catalog = useOneBrickGitHubCatalog();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<RepositoryCategory>("All");
+  const [visibleCount, setVisibleCount] = useState(REPOSITORIES_PAGE_SIZE);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const repositories = catalog.data?.repositories ?? EMPTY_REPOSITORIES;
   const categorized = useMemo(
@@ -148,6 +150,21 @@ export function OneBrickRepositoryCatalog({
       }),
     [categorized, category, deferredQuery],
   );
+  const visibleByOwner = useMemo(() => {
+    const groups = new Map<
+      string,
+      Array<{
+        repository: OneBrickGitHubRepository;
+        category: RepositoryCategory;
+      }>
+    >();
+    for (const item of filtered.slice(0, visibleCount)) {
+      const repositoriesForOwner = groups.get(item.repository.owner) ?? [];
+      repositoriesForOwner.push(item);
+      groups.set(item.repository.owner, repositoriesForOwner);
+    }
+    return [...groups.entries()];
+  }, [filtered, visibleCount]);
 
   if (catalog.isLoading) {
     return (
@@ -191,7 +208,10 @@ export function OneBrickRepositoryCatalog({
           <input
             aria-label="Search repositories"
             className="h-10 w-full rounded-md border border-[#D8DEE8] bg-white pl-9 pr-3 text-sm outline-none focus:border-[#FF6F52]/70 focus:ring-4 focus:ring-[#FF6F52]/10"
-            onChange={(event) => setQuery(event.currentTarget.value)}
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              setVisibleCount(REPOSITORIES_PAGE_SIZE);
+            }}
             placeholder="Search repositories…"
             value={query}
           />
@@ -209,7 +229,10 @@ export function OneBrickRepositoryCatalog({
                 : "border-[#D8DEE8] bg-white text-[#526178] hover:border-[#FF6F52]/50"
             }`}
             key={item}
-            onClick={() => setCategory(item)}
+            onClick={() => {
+              setCategory(item);
+              setVisibleCount(REPOSITORIES_PAGE_SIZE);
+            }}
             type="button"
           >
             {item}
@@ -222,66 +245,103 @@ export function OneBrickRepositoryCatalog({
           No repositories match these filters.
         </div>
       ) : (
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map(({ repository, category: repositoryCategory }) => (
-            <article
-              className="flex min-h-52 flex-col rounded-xl border border-[#D8DEE8] bg-white p-4 shadow-sm"
-              data-testid={`github-repository-${repository.owner}-${repository.name}`}
-              key={`${repository.owner}/${repository.name}`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#EEF5FF] text-[#2F6FED]">
-                  {repository.archived ? (
-                    <Archive size={17} />
-                  ) : (
-                    <GitBranch size={17} />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-bold text-[#10233F]">
-                    {repository.owner}/{repository.name}
-                  </h3>
-                  <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#607086]">
-                    <span>{repositoryCategory}</span>
-                    <span>·</span>
-                    <span>{repository.visibility}</span>
-                    {repository.language ? (
-                      <>
-                        <span>·</span>
-                        <span>{repository.language}</span>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-              <p className="mt-3 line-clamp-3 flex-1 text-xs leading-5 text-[#607086]">
-                {repository.description || "No repository description yet."}
-              </p>
-              <div className="mt-3 flex items-center justify-between border-t border-[#E2E8F0] pt-3 text-[10px] text-[#8491A4]">
-                <span className="flex items-center gap-1">
-                  <BookOpen size={11} /> {repository.default_branch}
+        <div className="mt-5 space-y-7">
+          {visibleByOwner.map(([owner, ownerRepositories]) => (
+            <section key={owner} aria-labelledby={`repository-owner-${owner}`}>
+              <div className="mb-3 flex items-center gap-2">
+                <h3
+                  id={`repository-owner-${owner}`}
+                  className="text-sm font-extrabold text-[#10233F]"
+                >
+                  {owner}
+                </h3>
+                <span className="rounded-full bg-[#EEF3F8] px-2 py-0.5 text-[10px] font-bold text-[#607086]">
+                  {ownerRepositories.length}
                 </span>
-                <span>Updated {formatUpdatedAt(repository.updated_at)}</span>
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  className="flex items-center justify-center gap-1.5 rounded-md bg-[#FF6F52] px-2 py-2 text-xs font-bold text-white hover:bg-[#E35E43]"
-                  onClick={() => onDiscuss(repository)}
-                  type="button"
-                >
-                  <MessageCircle size={13} /> Start discussion
-                </button>
-                <a
-                  className="flex items-center justify-center gap-1.5 rounded-md border border-[#D8DEE8] px-2 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
-                  href={repository.url}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  GitHub <ExternalLink size={12} />
-                </a>
+              <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                {ownerRepositories.map(
+                  ({ repository, category: repositoryCategory }) => (
+                    <article
+                      className="flex min-h-48 flex-col rounded-xl border border-[#D8DEE8] bg-white p-4 shadow-sm"
+                      data-testid={`github-repository-${repository.owner}-${repository.name}`}
+                      key={`${repository.owner}/${repository.name}`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-[#EEF5FF] text-[#2F6FED]">
+                          {repository.archived ? (
+                            <Archive size={17} />
+                          ) : (
+                            <GitBranch size={17} />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="truncate text-sm font-bold text-[#10233F]">
+                            {repository.name}
+                          </h4>
+                          <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#607086]">
+                            <span>{repositoryCategory}</span>
+                            <span>·</span>
+                            <span>{repository.visibility}</span>
+                            {repository.language ? (
+                              <>
+                                <span>·</span>
+                                <span>{repository.language}</span>
+                              </>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                      {repository.description && (
+                        <p className="mt-3 line-clamp-3 flex-1 text-xs leading-5 text-[#607086]">
+                          {repository.description}
+                        </p>
+                      )}
+                      <div className="mt-auto flex items-center justify-between border-t border-[#E2E8F0] pt-3 text-[10px] text-[#8491A4]">
+                        <span className="flex items-center gap-1">
+                          <BookOpen size={11} /> {repository.default_branch}
+                        </span>
+                        <span>
+                          Updated {formatUpdatedAt(repository.updated_at)}
+                        </span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button
+                          className="flex items-center justify-center gap-1.5 rounded-md bg-[#FF6F52] px-2 py-2 text-xs font-bold text-white hover:bg-[#E35E43]"
+                          onClick={() => onDiscuss(repository)}
+                          type="button"
+                          aria-label={`Start discussion in ${repository.owner}/${repository.name}`}
+                        >
+                          <MessageCircle size={13} /> Start discussion
+                        </button>
+                        <a
+                          className="flex items-center justify-center gap-1.5 rounded-md border border-[#D8DEE8] px-2 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
+                          href={repository.url}
+                          rel="noreferrer"
+                          target="_blank"
+                          aria-label={`Open ${repository.owner}/${repository.name} on GitHub`}
+                        >
+                          GitHub <ExternalLink size={12} />
+                        </a>
+                      </div>
+                    </article>
+                  ),
+                )}
               </div>
-            </article>
+            </section>
           ))}
+          {visibleCount < filtered.length && (
+            <button
+              type="button"
+              className="mx-auto flex items-center rounded-md border border-[#D8DEE8] bg-white px-4 py-2 text-xs font-bold text-[#42526B] hover:border-[#FF6F52]/50 hover:text-[#E35E43]"
+              onClick={() =>
+                setVisibleCount((current) => current + REPOSITORIES_PAGE_SIZE)
+              }
+            >
+              Show more repositories ({filtered.length - visibleCount}{" "}
+              remaining)
+            </button>
+          )}
         </div>
       )}
     </div>

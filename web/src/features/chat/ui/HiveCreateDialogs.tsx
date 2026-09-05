@@ -1,5 +1,11 @@
 import { Plus, RefreshCw, X } from "lucide-react";
-import type { FormEvent, ReactNode } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+} from "react";
 import type { OneBrickGitHubRepository } from "@/features/repos/onebrick-github-api";
 
 function DialogFrame({
@@ -17,15 +23,65 @@ function DialogFrame({
   onSubmit: (event: FormEvent) => void;
   title: ReactNode;
 }) {
+  const dialogRef = useRef<HTMLFormElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      const initialFocus =
+        dialog?.querySelector<HTMLElement>(
+          "input:not([disabled]), textarea:not([disabled]), select:not([disabled])",
+        ) ??
+        dialog?.querySelector<HTMLElement>(
+          "input:not([disabled]), button:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        );
+      initialFocus?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      previousFocusRef.current?.focus();
+    };
+  }, []);
+
+  const keepFocusInside = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [
+      ...event.currentTarget.querySelectorAll<HTMLElement>(
+        "input:not([disabled]), button:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      ),
+    ];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-[#10213F]/40 p-4 backdrop-blur-[1px]"
       role="presentation"
     >
       <form
+        ref={dialogRef}
         onSubmit={onSubmit}
+        onKeyDown={keepFocusInside}
         className="w-full max-w-lg rounded-2xl border border-[#D8DEE8] bg-white p-5 shadow-[0_24px_80px_rgba(16,35,63,0.25)]"
         aria-labelledby={labelId}
+        aria-modal="true"
+        role="dialog"
       >
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -124,8 +180,8 @@ export function HiveNewConversationDialog({
       title="Start a group conversation"
     >
       <p className="mt-3 text-sm leading-6 text-[#607086]">
-        Group chats live outside repositories. Once created, anyone in this Hive
-        channel can join the conversation and reply in threads.
+        Chats live outside repositories and are visible to every member of this
+        Hive workspace. Members can join the conversation and reply in threads.
       </p>
       <label
         className="mt-4 block text-xs font-bold text-[#42526B]"

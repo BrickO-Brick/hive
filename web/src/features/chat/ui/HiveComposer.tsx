@@ -168,6 +168,7 @@ export function HiveComposer({
         <div className="relative flex items-end gap-2 rounded-lg border border-[#D8DEE8] bg-white p-2 shadow-[0_8px_24px_rgba(16,35,63,0.08)] transition focus-within:border-[#2F6FED]/60 focus-within:ring-4 focus-within:ring-[#2F6FED]/10">
           {mentionOpen && (
             <div
+              id="hive-mention-picker"
               className="absolute bottom-[calc(100%+0.5rem)] left-0 z-30 w-[min(25rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-[#C7D2E3] bg-white shadow-[0_18px_50px_rgba(16,35,63,0.18)]"
               role="listbox"
               aria-label="Mention someone"
@@ -181,6 +182,7 @@ export function HiveComposer({
                   const selected = index === selectedMention;
                   return (
                     <button
+                      id={`hive-mention-option-${participant.pubkey}`}
                       type="button"
                       role="option"
                       aria-selected={selected}
@@ -213,7 +215,9 @@ export function HiveComposer({
                         <span
                           className={`block truncate text-[11px] ${selected ? "text-white/75" : "text-[#607086]"}`}
                         >
-                          {participant.role}
+                          {participant.isAgent
+                            ? "AI teammate"
+                            : participant.role}
                         </span>
                       </span>
                       {participant.isAgent && (
@@ -227,9 +231,8 @@ export function HiveComposer({
                           Agent
                         </span>
                       )}
-                      <span className="flex items-center gap-1 text-[10px] font-semibold">
-                        <span className="size-2 rounded-full bg-[#1FA971] ring-2 ring-white/60" />
-                        Online
+                      <span className="text-[10px] font-semibold opacity-75">
+                        Available
                       </span>
                     </button>
                   );
@@ -242,6 +245,7 @@ export function HiveComposer({
           )}
           <textarea
             id="hive-message-composer"
+            role="combobox"
             ref={composerRef}
             value={text}
             onChange={(event) => {
@@ -254,6 +258,15 @@ export function HiveComposer({
             onKeyDown={handleKeyDown}
             maxLength={65_536}
             rows={1}
+            aria-autocomplete="list"
+            aria-expanded={mentionOpen}
+            aria-controls={mentionOpen ? "hive-mention-picker" : undefined}
+            aria-activedescendant={
+              mentionOpen && mentionOptions[selectedMention]
+                ? `hive-mention-option-${mentionOptions[selectedMention].pubkey}`
+                : undefined
+            }
+            aria-haspopup="listbox"
             aria-describedby="hive-composer-help hive-composer-connection"
             placeholder={`${accessibleName}…`}
             className="max-h-36 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-[#172033] outline-none placeholder:text-[#8491A4]"

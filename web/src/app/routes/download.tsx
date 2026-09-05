@@ -1,4 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { DownloadPage } from "@/features/download/ui/DownloadPage";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/download")({ component: DownloadPage });
+export const Route = createFileRoute("/download")({
+  component: lazyRouteComponent(
+    () => import("@/features/download/ui/DownloadPage"),
+    "DownloadPage",
+  ),
+});

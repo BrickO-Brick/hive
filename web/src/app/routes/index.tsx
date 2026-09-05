@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { ReposPage } from "@/features/repos/ui/ReposPage";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/")({
-  component: ReposPage,
+  component: lazyRouteComponent(
+    () => import("@/features/repos/ui/ReposPage"),
+    "ReposPage",
+  ),
 });

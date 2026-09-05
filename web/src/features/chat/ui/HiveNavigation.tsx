@@ -24,7 +24,7 @@ import type { HiveConversation } from "./discussionMessages";
 
 export type HiveAgentState = { detail: string; label: string };
 
-type Props = {
+export type HiveNavigationProps = {
   activeConversationId: string | null;
   activeDiscussionId: string | null;
   agentState: HiveAgentState;
@@ -123,7 +123,7 @@ export function HiveNavigation({
   onToggle,
   surface,
   toneClasses,
-}: Props) {
+}: HiveNavigationProps) {
   const groups = useMemo(() => groupDiscussions(discussions), [discussions]);
   const [query, setQuery] = useState("");
   const activeRepository = discussions.find(

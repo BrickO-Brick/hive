@@ -34,12 +34,15 @@ use super::{api_error, internal_error, onebrick_github};
 pub(crate) const DISCUSSIONS_PATH: &str = "/api/onebrick/repository-discussions";
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_DISCUSSIONS: usize = 500;
+const MAX_MANIFEST_SCAN: usize = 5_000;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_WORKSPACE_FILES: usize = 2_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_EDITABLE_FILE_BYTES: u64 = 512 * 1024;
+const MAX_WORKSPACE_LOCKS: usize = 1_024;
 
-static GIT_WORKSPACE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static GIT_WORKSPACE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static LEGACY_MANIFEST_CLAIM_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateDiscussionRequest {
@@ -94,8 +97,20 @@ pub(crate) enum DiscussionStatus {
 struct DiscussionManifest {
     #[serde(flatten)]
     discussion: RepositoryDiscussion,
+    #[serde(default)]
+    community_id: Option<Uuid>,
     mirror_path: PathBuf,
     worktree_path: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CommitRecovery {
+    discussion_id: Uuid,
+    previous_head_sha: String,
+    revision: Option<String>,
+    requested_by: String,
+    message_digest: String,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +331,28 @@ fn valid_workspace_path(path: &str) -> bool {
         })
 }
 
+async fn git_workspace_lock(key: String) -> Result<Arc<Mutex<()>>, (StatusCode, Json<Value>)> {
+    let mut locks = GIT_WORKSPACE_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .await;
+    if let Some(lock) = locks.get(&key) {
+        return Ok(Arc::clone(lock));
+    }
+    if locks.len() >= MAX_WORKSPACE_LOCKS {
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+    if locks.len() >= MAX_WORKSPACE_LOCKS {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workspace_is_busy",
+        ));
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::clone(&lock));
+    Ok(lock)
+}
+
 async fn read_manifest(
     state: &AppState,
     id: Uuid,
@@ -343,11 +380,10 @@ async fn read_manifest(
         .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))
 }
 
-async fn load_manifest(
+async fn validate_active_workspace(
     state: &AppState,
-    id: Uuid,
+    manifest: DiscussionManifest,
 ) -> Result<DiscussionManifest, (StatusCode, Json<Value>)> {
-    let manifest = read_manifest(state, id).await?;
     if manifest.discussion.status != DiscussionStatus::Active {
         return Err(api_error(StatusCode::CONFLICT, "discussion_closed"));
     }
@@ -363,12 +399,60 @@ async fn load_manifest(
     Ok(manifest)
 }
 
+fn community_scope_matches(stored: Option<Uuid>, requested: Uuid) -> bool {
+    stored == Some(requested)
+}
+
+fn manifest_belongs_to_community(manifest: &DiscussionManifest, community_id: Uuid) -> bool {
+    community_scope_matches(manifest.community_id, community_id)
+}
+
+async fn load_authorized_manifest(
+    state: &AppState,
+    id: Uuid,
+    community_id: Uuid,
+    pubkey: &str,
+) -> Result<DiscussionManifest, (StatusCode, Json<Value>)> {
+    let manifest = read_authorized_manifest(state, id, community_id, pubkey).await?;
+    validate_active_workspace(state, manifest).await
+}
+
+async fn read_authorized_manifest(
+    state: &AppState,
+    id: Uuid,
+    community_id: Uuid,
+    pubkey: &str,
+) -> Result<DiscussionManifest, (StatusCode, Json<Value>)> {
+    let mut manifest = read_manifest(state, id).await?;
+    if manifest_belongs_to_community(&manifest, community_id) {
+        return Ok(manifest);
+    }
+    if manifest.community_id.is_some() || manifest.discussion.created_by != pubkey {
+        return Err(api_error(StatusCode::NOT_FOUND, "discussion_not_found"));
+    }
+
+    let _claim_guard = LEGACY_MANIFEST_CLAIM_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await;
+    manifest = read_manifest(state, id).await?;
+    if manifest_belongs_to_community(&manifest, community_id) {
+        return Ok(manifest);
+    }
+    if manifest.community_id.is_some() || manifest.discussion.created_by != pubkey {
+        return Err(api_error(StatusCode::NOT_FOUND, "discussion_not_found"));
+    }
+    manifest.community_id = Some(community_id);
+    persist_manifest(state, &manifest).await?;
+    Ok(manifest)
+}
+
 async fn authenticated_post_member(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     path: &str,
     body: &[u8],
-) -> Result<String, (StatusCode, Json<Value>)> {
+) -> Result<(buzz_core::TenantContext, String), (StatusCode, Json<Value>)> {
     let (tenant, pubkey) = super::invites::authenticate(state, headers, path, body).await?;
     let member = state
         .db
@@ -376,7 +460,7 @@ async fn authenticated_post_member(
         .await
         .map_err(|error| internal_error(&format!("read Hive membership: {error}")))?;
     authorize_discussion_creator(member.as_ref().map(|member| member.role.as_str()))?;
-    Ok(pubkey.to_hex())
+    Ok((tenant, pubkey.to_hex()))
 }
 
 async fn editable_file_path(
@@ -440,6 +524,7 @@ async fn create_workspace(
     state: &AppState,
     request: CreateDiscussionRequest,
     creator: String,
+    community_id: Uuid,
 ) -> Result<RepositoryDiscussion, (StatusCode, Json<Value>)> {
     let title = request.title.trim();
     if !valid_name(&request.owner, 39)
@@ -454,7 +539,7 @@ async fn create_workspace(
         .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "repository_owner_not_configured"))?;
     let id = Uuid::new_v4();
     let canonical = format!(
-        "{}/{}",
+        "{community_id}:{}/{}",
         request.owner.to_ascii_lowercase(),
         request.repository.to_ascii_lowercase()
     );
@@ -479,10 +564,8 @@ async fn create_workspace(
         .await
         .map_err(|error| internal_error(&format!("create manifest directory: {error}")))?;
 
-    let _guard = GIT_WORKSPACE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await;
+    let workspace_lock = git_workspace_lock(format!("mirror:{mirror_id}")).await?;
+    let _guard = workspace_lock.lock().await;
     let git_url = format!(
         "https://github.com/{}/{}.git",
         request.owner, request.repository
@@ -570,25 +653,13 @@ async fn create_workspace(
     };
     let manifest = DiscussionManifest {
         discussion: discussion.clone(),
+        community_id: Some(community_id),
         mirror_path: mirror.clone(),
         worktree_path: worktree.clone(),
     };
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| internal_error(&format!("serialize discussion: {error}")))?;
-    let temporary_manifest = manifests.join(format!(".{}.tmp", discussion.id));
-    let final_manifest = manifests.join(format!("{}.json", discussion.id));
-    if let Err(error) = tokio::fs::write(&temporary_manifest, bytes).await {
+    if let Err(error) = persist_manifest(state, &manifest).await {
         cleanup_worktree(&mirror, &worktree, &discussion.branch_ref).await;
-        return Err(internal_error(&format!(
-            "write discussion manifest: {error}"
-        )));
-    }
-    if let Err(error) = tokio::fs::rename(&temporary_manifest, &final_manifest).await {
-        let _ = tokio::fs::remove_file(&temporary_manifest).await;
-        cleanup_worktree(&mirror, &worktree, &discussion.branch_ref).await;
-        return Err(internal_error(&format!(
-            "publish discussion manifest: {error}"
-        )));
+        return Err(error);
     }
     Ok(discussion)
 }
@@ -608,7 +679,13 @@ pub(crate) async fn create(
     authorize_discussion_creator(member.as_ref().map(|member| member.role.as_str()))?;
     let request = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_discussion"))?;
-    let discussion = create_workspace(&state, request, pubkey.to_hex()).await?;
+    let discussion = create_workspace(
+        &state,
+        request,
+        pubkey.to_hex(),
+        *tenant.community().as_uuid(),
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(discussion)))
 }
 
@@ -616,7 +693,10 @@ pub(crate) async fn list(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<DiscussionList>, (StatusCode, Json<Value>)> {
-    onebrick_github::authenticated_member(&state, &headers, DISCUSSIONS_PATH).await?;
+    let (tenant, pubkey) =
+        onebrick_github::authenticated_member(&state, &headers, DISCUSSIONS_PATH).await?;
+    let community_id = *tenant.community().as_uuid();
+    let pubkey = pubkey.to_hex();
     let manifests = workspace_root(&state).join("manifests");
     let mut entries = match tokio::fs::read_dir(&manifests).await {
         Ok(entries) => entries,
@@ -628,15 +708,21 @@ pub(crate) async fn list(
         Err(error) => return Err(internal_error(&format!("read discussions: {error}"))),
     };
     let mut discussions = Vec::new();
+    let mut scanned = 0usize;
     while let Some(entry) = entries
         .next_entry()
         .await
         .map_err(|error| internal_error(&format!("read discussion entry: {error}")))?
     {
-        if discussions.len() >= MAX_DISCUSSIONS
-            || entry.path().extension().and_then(|v| v.to_str()) != Some("json")
-        {
+        if entry.path().extension().and_then(|v| v.to_str()) != Some("json") {
             continue;
+        }
+        scanned += 1;
+        if scanned > MAX_MANIFEST_SCAN {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "discussion_catalog_requires_pagination",
+            ));
         }
         let metadata = entry
             .metadata()
@@ -652,9 +738,20 @@ pub(crate) async fn list(
             .map_err(|error| internal_error(&format!("read discussion manifest: {error}")))?;
         let manifest: DiscussionManifest = serde_json::from_slice(&bytes)
             .map_err(|error| internal_error(&format!("parse discussion manifest: {error}")))?;
+        if manifest.community_id.is_some()
+            && !manifest_belongs_to_community(&manifest, community_id)
+        {
+            continue;
+        }
+        if manifest.community_id.is_none() && manifest.discussion.created_by != pubkey {
+            continue;
+        }
+        let manifest =
+            read_authorized_manifest(&state, manifest.discussion.id, community_id, &pubkey).await?;
         discussions.push(manifest.discussion);
     }
     discussions.sort_by_key(|discussion| std::cmp::Reverse(discussion.created_at));
+    discussions.truncate(MAX_DISCUSSIONS);
     Ok(Json(DiscussionList { discussions }))
 }
 
@@ -682,8 +779,10 @@ pub(crate) async fn workspace(
     headers: HeaderMap,
 ) -> Result<Json<WorkspaceState>, (StatusCode, Json<Value>)> {
     let path = workspace_api_path(id, "");
-    onebrick_github::authenticated_member(&state, &headers, &path).await?;
-    let manifest = load_manifest(&state, id).await?;
+    let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
+            .await?;
     let worktree = manifest.worktree_path.to_string_lossy();
     let file_output = git_output(
         &["-C", &worktree, "ls-files", "-z", "--cached"],
@@ -749,10 +848,11 @@ pub(crate) async fn read_file(
     body: Bytes,
 ) -> Result<Json<WorkspaceFile>, (StatusCode, Json<Value>)> {
     let api_path = workspace_api_path(id, "/file/read");
-    authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let (tenant, pubkey) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
     let request: WorkspaceFileRequest = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_file_request"))?;
-    let manifest = load_manifest(&state, id).await?;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey).await?;
     let path = editable_file_path(&manifest.worktree_path, &request.path).await?;
     let bytes = tokio::fs::read(&path)
         .await
@@ -777,7 +877,7 @@ pub(crate) async fn write_file(
     body: Bytes,
 ) -> Result<Json<WorkspaceFile>, (StatusCode, Json<Value>)> {
     let api_path = workspace_api_path(id, "/file/write");
-    authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let (tenant, pubkey) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
     let request: WorkspaceFileWriteRequest = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_file_request"))?;
     if request.content.len() as u64 > MAX_EDITABLE_FILE_BYTES || request.content.contains('\0') {
@@ -791,11 +891,10 @@ pub(crate) async fn write_file(
     {
         return Err(api_error(StatusCode::BAD_REQUEST, "invalid_file_digest"));
     }
-    let _guard = GIT_WORKSPACE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await;
-    let manifest = load_manifest(&state, id).await?;
+    let workspace_lock = git_workspace_lock(format!("discussion:{id}")).await?;
+    let _guard = workspace_lock.lock().await;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey).await?;
     let path = editable_file_path(&manifest.worktree_path, &request.path).await?;
     let current = tokio::fs::read(&path)
         .await
@@ -824,9 +923,14 @@ pub(crate) async fn write_file(
             .open(&temporary)
             .await?;
         file.write_all(request.content.as_bytes()).await?;
-        file.sync_all().await?;
         tokio::fs::set_permissions(&temporary, metadata.permissions()).await?;
-        tokio::fs::rename(&temporary, &path).await
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&temporary, &path).await?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("workspace file has no parent"))?;
+        tokio::fs::File::open(parent).await?.sync_all().await
     }
     .await;
     if let Err(error) = write_result {
@@ -863,8 +967,10 @@ pub(crate) async fn diff(
     headers: HeaderMap,
 ) -> Result<Json<WorkspaceDiff>, (StatusCode, Json<Value>)> {
     let path = workspace_api_path(id, "/diff");
-    onebrick_github::authenticated_member(&state, &headers, &path).await?;
-    let manifest = load_manifest(&state, id).await?;
+    let (tenant, pubkey) = onebrick_github::authenticated_member(&state, &headers, &path).await?;
+    let manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &pubkey.to_hex())
+            .await?;
     let worktree = manifest.worktree_path.to_string_lossy();
     let output = git_output(
         &[
@@ -912,15 +1018,34 @@ async fn persist_manifest(
         Uuid::new_v4()
     ));
     let final_path = directory.join(format!("{}.json", manifest.discussion.id));
-    tokio::fs::write(&temporary, bytes)
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
         .await
         .map_err(|error| internal_error(&format!("write discussion manifest: {error}")))?;
+    file.write_all(&bytes)
+        .await
+        .map_err(|error| internal_error(&format!("write discussion manifest: {error}")))?;
+    file.sync_all()
+        .await
+        .map_err(|error| internal_error(&format!("sync discussion manifest: {error}")))?;
+    drop(file);
     tokio::fs::rename(&temporary, final_path)
         .await
         .map_err(|error| {
             let _ = std::fs::remove_file(&temporary);
             internal_error(&format!("publish discussion manifest: {error}"))
         })?;
+    let directory_handle = tokio::fs::File::open(&directory)
+        .await
+        .map_err(|error| internal_error(&format!("sync discussion directory: {error}")))?;
+    directory_handle
+        .sync_all()
+        .await
+        .map_err(|error| internal_error(&format!("sync discussion directory: {error}")))?;
     Ok(())
 }
 
@@ -956,7 +1081,7 @@ async fn mirror_has_other_open_discussions(
             continue;
         }
         manifest_count = manifest_count.saturating_add(1);
-        if manifest_count > MAX_DISCUSSIONS {
+        if manifest_count > MAX_MANIFEST_SCAN {
             return Err(internal_error("discussion manifest limit exceeded"));
         }
         let metadata = entry
@@ -1063,15 +1188,19 @@ pub(crate) async fn close(
     body: Bytes,
 ) -> Result<Json<RepositoryDiscussion>, (StatusCode, Json<Value>)> {
     let api_path = close_api_path(id);
-    let actor = authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let (tenant, actor) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
     let request: CloseDiscussionRequest = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_close_request"))?;
     let evidence = completion_evidence(request.completion_evidence)?;
-    let _guard = GIT_WORKSPACE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await;
-    let mut manifest = read_manifest(&state, id).await?;
+    let preliminary =
+        read_authorized_manifest(&state, id, *tenant.community().as_uuid(), &actor).await?;
+    let mirror_lock =
+        git_workspace_lock(format!("mirror:{}", preliminary.discussion.mirror_id)).await?;
+    let _mirror_guard = mirror_lock.lock().await;
+    let discussion_lock = git_workspace_lock(format!("discussion:{id}")).await?;
+    let _discussion_guard = discussion_lock.lock().await;
+    let mut manifest =
+        read_authorized_manifest(&state, id, *tenant.community().as_uuid(), &actor).await?;
     if request.expected_head_sha != manifest.discussion.current_head_sha {
         return Err(api_error(StatusCode::CONFLICT, "workspace_head_changed"));
     }
@@ -1080,6 +1209,7 @@ pub(crate) async fn close(
     }
 
     if manifest.discussion.status == DiscussionStatus::Active {
+        manifest = validate_active_workspace(&state, manifest).await?;
         let worktree = manifest.worktree_path.to_string_lossy();
         let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
             .await
@@ -1128,6 +1258,97 @@ pub(crate) async fn close(
     Ok(Json(manifest.discussion))
 }
 
+fn commit_recovery_path(state: &AppState, id: Uuid) -> PathBuf {
+    workspace_root(state)
+        .join("recovery")
+        .join(format!("{id}.json"))
+}
+
+async fn persist_commit_recovery(
+    state: &AppState,
+    recovery: &CommitRecovery,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let directory = workspace_root(state).join("recovery");
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| internal_error(&format!("create commit recovery directory: {error}")))?;
+    let bytes = serde_json::to_vec_pretty(recovery)
+        .map_err(|error| internal_error(&format!("serialize commit recovery: {error}")))?;
+    let temporary = directory.join(format!(
+        ".{}-{}.tmp",
+        recovery.discussion_id,
+        Uuid::new_v4()
+    ));
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .await
+        .map_err(|error| internal_error(&format!("write commit recovery: {error}")))?;
+    file.write_all(&bytes)
+        .await
+        .map_err(|error| internal_error(&format!("write commit recovery: {error}")))?;
+    file.sync_all()
+        .await
+        .map_err(|error| internal_error(&format!("sync commit recovery: {error}")))?;
+    drop(file);
+    tokio::fs::rename(
+        &temporary,
+        commit_recovery_path(state, recovery.discussion_id),
+    )
+    .await
+    .map_err(|error| internal_error(&format!("publish commit recovery: {error}")))?;
+    let directory_handle = tokio::fs::File::open(&directory)
+        .await
+        .map_err(|error| internal_error(&format!("sync commit recovery directory: {error}")))?;
+    directory_handle
+        .sync_all()
+        .await
+        .map_err(|error| internal_error(&format!("sync commit recovery directory: {error}")))?;
+    Ok(())
+}
+
+async fn remove_commit_recovery(state: &AppState, id: Uuid) {
+    let path = commit_recovery_path(state, id);
+    if let Err(error) = tokio::fs::remove_file(&path).await {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%id, %error, "failed to remove completed commit recovery record");
+        }
+        return;
+    }
+    if let Some(directory) = path.parent() {
+        match tokio::fs::File::open(directory).await {
+            Ok(handle) => {
+                if let Err(error) = handle.sync_all().await {
+                    tracing::warn!(%id, %error, "failed to sync commit recovery removal");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%id, %error, "failed to open commit recovery directory for sync");
+            }
+        }
+    }
+}
+
+async fn load_commit_recovery(
+    state: &AppState,
+    id: Uuid,
+) -> Result<Option<CommitRecovery>, (StatusCode, Json<Value>)> {
+    let path = commit_recovery_path(state, id);
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(internal_error(&format!("read commit recovery: {error}"))),
+    };
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(internal_error("commit recovery exceeded its size limit"));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| internal_error(&format!("parse commit recovery: {error}")))
+}
+
 pub(crate) async fn commit(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<Uuid>,
@@ -1135,22 +1356,56 @@ pub(crate) async fn commit(
     body: Bytes,
 ) -> Result<Json<RepositoryDiscussion>, (StatusCode, Json<Value>)> {
     let api_path = workspace_api_path(id, "/commit");
-    let author = authenticated_post_member(&state, &headers, &api_path, &body).await?;
+    let (tenant, author) = authenticated_post_member(&state, &headers, &api_path, &body).await?;
     let request: WorkspaceCommitRequest = serde_json::from_slice(&body)
         .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid_commit_request"))?;
     let message = request.message.trim();
     if message.is_empty() || message.chars().count() > 160 {
         return Err(api_error(StatusCode::BAD_REQUEST, "invalid_commit_message"));
     }
-    let _guard = GIT_WORKSPACE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await;
-    let mut manifest = load_manifest(&state, id).await?;
+    let workspace_lock = git_workspace_lock(format!("discussion:{id}")).await?;
+    let _guard = workspace_lock.lock().await;
+    let mut manifest =
+        load_authorized_manifest(&state, id, *tenant.community().as_uuid(), &author).await?;
     let worktree = manifest.worktree_path.to_string_lossy();
     let current_head_sha = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
         .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    let message_digest = hex::encode(Sha256::digest(message.as_bytes()));
+    if let Some(recovery) = load_commit_recovery(&state, id).await? {
+        if current_head_sha == recovery.previous_head_sha {
+            remove_commit_recovery(&state, id).await;
+        } else if recovery.previous_head_sha == request.expected_head_sha
+            && recovery.requested_by == author
+            && recovery.message_digest == message_digest
+        {
+            let recovered_revision = recovery
+                .revision
+                .unwrap_or_else(|| current_head_sha.clone());
+            let direct_parent = git_value(&["-C", &worktree, "rev-parse", "HEAD^"])
+                .await
+                .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+            if recovered_revision != current_head_sha || direct_parent != recovery.previous_head_sha
+            {
+                return Err(api_error(
+                    StatusCode::CONFLICT,
+                    "commit_recovery_requires_operator",
+                ));
+            }
+            manifest.discussion.current_head_sha = current_head_sha.clone();
+            manifest.discussion.proposal_revision = Some(current_head_sha.clone());
+            manifest.discussion.proposal_digest =
+                Some(hex::encode(Sha256::digest(current_head_sha.as_bytes())));
+            persist_manifest(&state, &manifest).await?;
+            remove_commit_recovery(&state, id).await;
+            return Ok(Json(manifest.discussion));
+        } else {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "commit_recovery_requires_operator",
+            ));
+        }
+    }
     if current_head_sha != request.expected_head_sha {
         return Err(api_error(StatusCode::CONFLICT, "workspace_head_changed"));
     }
@@ -1169,13 +1424,25 @@ pub(crate) async fn commit(
     if status.status.code() != Some(1) {
         return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
     }
+    let mut recovery = CommitRecovery {
+        discussion_id: id,
+        previous_head_sha: current_head_sha.clone(),
+        revision: None,
+        requested_by: author.clone(),
+        message_digest,
+        created_at: Utc::now(),
+    };
+    persist_commit_recovery(&state, &recovery).await?;
+    let short_author = author.chars().take(12).collect::<String>();
+    let author_name = format!("Hive Member {short_author}");
+    let author_email = format!("{author}@hive.local");
     let mut command = Command::new("git");
     command
-        .args(["-C", &worktree, "commit", "-m", message])
-        .env("GIT_AUTHOR_NAME", "Hive Member")
-        .env("GIT_AUTHOR_EMAIL", format!("{author}@hive.local"))
-        .env("GIT_COMMITTER_NAME", "Hive")
-        .env("GIT_COMMITTER_EMAIL", "hive@onebrick.io")
+        .args(["-C", &worktree, "commit", "--signoff", "-m", message])
+        .env("GIT_AUTHOR_NAME", &author_name)
+        .env("GIT_AUTHOR_EMAIL", &author_email)
+        .env("GIT_COMMITTER_NAME", &author_name)
+        .env("GIT_COMMITTER_EMAIL", &author_email)
         .env("GIT_TERMINAL_PROMPT", "0")
         .kill_on_drop(true)
         .stdout(Stdio::null())
@@ -1185,15 +1452,32 @@ pub(crate) async fn commit(
         .map_err(|_| api_error(StatusCode::GATEWAY_TIMEOUT, "git operation timed out"))?
         .map_err(|_| api_error(StatusCode::BAD_GATEWAY, "git could not be started"))?;
     if !commit_status.success() {
+        remove_commit_recovery(&state, id).await;
         return Err(api_error(StatusCode::BAD_GATEWAY, "git operation failed"));
     }
     let revision = git_value(&["-C", &worktree, "rev-parse", "HEAD"])
         .await
         .map_err(|message| api_error(StatusCode::BAD_GATEWAY, message))?;
+    recovery.revision = Some(revision.clone());
+    persist_commit_recovery(&state, &recovery).await?;
     manifest.discussion.current_head_sha = revision.clone();
     manifest.discussion.proposal_revision = Some(revision.clone());
     manifest.discussion.proposal_digest = Some(hex::encode(Sha256::digest(revision.as_bytes())));
-    persist_manifest(&state, &manifest).await?;
+    if let Err(error) = persist_manifest(&state, &manifest).await {
+        if git_status(
+            &["-C", &worktree, "reset", "--soft", &current_head_sha],
+            None,
+        )
+        .await
+        .is_ok()
+        {
+            remove_commit_recovery(&state, id).await;
+        } else {
+            tracing::error!(%id, revision, "commit manifest failed and Git rollback did not complete; recovery record retained");
+        }
+        return Err(error);
+    }
+    remove_commit_recovery(&state, id).await;
     Ok(Json(manifest.discussion))
 }
 
@@ -1369,6 +1653,7 @@ mod tests {
                 workspace_cleaned_at: None,
                 mirror_cleaned: false,
             },
+            community_id: Some(Uuid::from_u128(1)),
             mirror_path: mirror.clone(),
             worktree_path: worktree.clone(),
         };
@@ -1383,5 +1668,30 @@ mod tests {
             .expect("cleanup must succeed"));
         assert!(!worktree.exists(), "worktree must be deleted");
         assert!(!mirror.exists(), "unused mirror must be deleted");
+    }
+
+    #[test]
+    fn discussion_scope_rejects_foreign_and_unbound_communities() {
+        let community_a = Uuid::from_u128(1);
+        let community_b = Uuid::from_u128(2);
+        assert!(community_scope_matches(Some(community_a), community_a));
+        assert!(!community_scope_matches(Some(community_a), community_b));
+        assert!(!community_scope_matches(None, community_a));
+    }
+
+    #[tokio::test]
+    async fn workspace_locks_are_scoped_by_resource() {
+        let suffix = Uuid::new_v4();
+        let first = git_workspace_lock(format!("test:first:{suffix}"))
+            .await
+            .expect("first lock");
+        let same = git_workspace_lock(format!("test:first:{suffix}"))
+            .await
+            .expect("same lock");
+        let different = git_workspace_lock(format!("test:second:{suffix}"))
+            .await
+            .expect("different lock");
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &different));
     }
 }

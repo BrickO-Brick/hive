@@ -1,4 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { HiveChatPage } from "@/features/chat/ui/HiveChatPage";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
-export const Route = createFileRoute("/app")({ component: HiveChatPage });
+export const Route = createFileRoute("/app")({
+  component: lazyRouteComponent(
+    () => import("@/features/chat/ui/HiveChatPage"),
+    "HiveChatPage",
+  ),
+});

@@ -1,5 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { InvitePage } from "@/features/invite/ui/InvitePage";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
+
+const InvitePage = lazyRouteComponent(
+  () => import("@/features/invite/ui/InvitePage"),
+  "InvitePage",
+);
 
 export const Route = createFileRoute("/invite/$code")({
   component: InvitePageRoute,

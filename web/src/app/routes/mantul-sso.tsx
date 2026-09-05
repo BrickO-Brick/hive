@@ -1,6 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { MantapSsoPage } from "@/features/mantap-sso/ui/MantapSsoPage";
+import { createFileRoute, lazyRouteComponent } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/mantul-sso")({
-  component: MantapSsoPage,
+  component: lazyRouteComponent(
+    () => import("@/features/mantap-sso/ui/MantapSsoPage"),
+    "MantapSsoPage",
+  ),
 });

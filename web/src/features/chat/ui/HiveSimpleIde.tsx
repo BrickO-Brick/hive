@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Save,
+  Search,
   ShieldCheck,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -33,6 +34,15 @@ type Props = {
 };
 
 type ViewMode = "edit" | "review";
+
+type BrowserDraft = {
+  content: string;
+  digest: string;
+};
+
+function browserDraftKey(discussionId: string, path: string): string {
+  return `hive.simple-ide.draft.v1:${discussionId}:${path}`;
+}
 
 function fileLabel(path: string) {
   const parts = path.split("/");
@@ -122,8 +132,17 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [fileQuery, setFileQuery] = useState("");
 
   const changed = Boolean(file && content !== file.content);
+  const confirmDiscard = useCallback(() => {
+    if (!changed) return true;
+    if (!window.confirm("Discard unsaved edits?")) return false;
+    if (file) {
+      window.localStorage.removeItem(browserDraftKey(discussion.id, file.path));
+    }
+    return true;
+  }, [changed, discussion.id, file]);
 
   useEffect(() => {
     if (!changed) return;
@@ -136,7 +155,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
         target instanceof Element &&
         !target.closest("[data-testid='simple-ide']") &&
         target.closest("button,a,[role='button']") &&
-        !window.confirm("Discard unsaved edits?")
+        !confirmDiscard()
       ) {
         event.preventDefault();
         event.stopPropagation();
@@ -148,10 +167,7 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       window.removeEventListener("beforeunload", warnBeforeUnload);
       document.removeEventListener("click", guardExternalNavigation, true);
     };
-  }, [changed]);
-
-  const confirmDiscard = () =>
-    !changed || window.confirm("Discard unsaved edits?");
+  }, [changed, confirmDiscard]);
 
   const selectFile = (path: string) => {
     if (path === selectedPath || !confirmDiscard()) return;
@@ -199,6 +215,26 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       .then((next) => {
         if (!current) return;
         setFile(next);
+        const stored = window.localStorage.getItem(
+          browserDraftKey(discussion.id, selectedPath),
+        );
+        try {
+          const draft = stored ? (JSON.parse(stored) as BrowserDraft) : null;
+          if (
+            draft &&
+            draft.digest === next.digest &&
+            typeof draft.content === "string" &&
+            draft.content !== next.content
+          ) {
+            setContent(draft.content);
+            setNotice("Recovered an unsaved browser draft.");
+            return;
+          }
+        } catch {
+          window.localStorage.removeItem(
+            browserDraftKey(discussion.id, selectedPath),
+          );
+        }
         setContent(next.content);
       })
       .catch((nextError) => {
@@ -211,6 +247,14 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       current = false;
     };
   }, [discussion.id, selectedPath]);
+
+  useEffect(() => {
+    if (!file || !changed) return;
+    window.localStorage.setItem(
+      browserDraftKey(discussion.id, file.path),
+      JSON.stringify({ content, digest: file.digest } satisfies BrowserDraft),
+    );
+  }, [changed, content, discussion.id, file]);
 
   const save = async () => {
     if (!file || !changed) return file;
@@ -225,6 +269,9 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
       });
       setFile(saved);
       setContent(saved.content);
+      window.localStorage.removeItem(
+        browserDraftKey(discussion.id, saved.path),
+      );
       setNotice("Draft saved in the isolated workspace.");
       await loadWorkspace();
       return saved;
@@ -261,6 +308,11 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
         expectedHeadSha: workspace.currentHeadSha,
       });
       onCommitted(updated);
+      for (const item of workspace.files) {
+        window.localStorage.removeItem(
+          browserDraftKey(discussion.id, item.path),
+        );
+      }
       setNotice(
         `Commit ${updated.currentHeadSha.slice(0, 12)} created locally.`,
       );
@@ -274,16 +326,24 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
     }
   };
 
+  const filteredFiles = useMemo(() => {
+    const normalizedQuery = fileQuery.trim().toLowerCase();
+    if (!normalizedQuery) return workspace?.files ?? [];
+    return (workspace?.files ?? []).filter((item) =>
+      item.path.toLowerCase().includes(normalizedQuery),
+    );
+  }, [fileQuery, workspace]);
+
   const directories = useMemo(() => {
     const values = new Set<string>();
-    for (const item of workspace?.files ?? []) {
+    for (const item of filteredFiles) {
       const directory = item.path.includes("/")
         ? item.path.split("/")[0]
         : "Root";
       values.add(directory);
     }
     return [...values];
-  }, [workspace]);
+  }, [filteredFiles]);
 
   return (
     <section
@@ -350,15 +410,29 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
           {mode === "edit" ? (
             <>
               <aside className="hidden w-56 shrink-0 overflow-y-auto border-r border-[#D8DEE8] bg-[#FBFCFE] p-3 sm:block">
-                <div className="mb-2 text-[10px] font-extrabold uppercase tracking-[0.12em] text-[#607086]">
-                  Files
-                </div>
+                <label className="relative mb-3 block">
+                  <span className="sr-only">Search workspace files</span>
+                  <Search
+                    aria-hidden="true"
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8491A4]"
+                    size={13}
+                  />
+                  <input
+                    type="search"
+                    value={fileQuery}
+                    onChange={(event) =>
+                      setFileQuery(event.currentTarget.value)
+                    }
+                    placeholder="Find file"
+                    className="h-8 w-full rounded-md border border-[#D8DEE8] bg-white pl-8 pr-2 text-xs outline-none focus:border-[#2F6FED]"
+                  />
+                </label>
                 {directories.map((directory) => (
                   <div className="mb-2" key={directory}>
                     <div className="flex items-center gap-1.5 px-1 py-1 text-xs font-bold text-[#42526B]">
                       <Folder size={13} /> {directory}
                     </div>
-                    {(workspace?.files ?? [])
+                    {filteredFiles
                       .filter((item) =>
                         directory === "Root"
                           ? !item.path.includes("/")
@@ -391,6 +465,11 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                       ))}
                   </div>
                 ))}
+                {filteredFiles.length === 0 && (
+                  <p className="px-2 py-4 text-center text-xs text-[#607086]">
+                    No files match “{fileQuery}”.
+                  </p>
+                )}
               </aside>
 
               <div className="flex min-w-0 flex-1 flex-col">
@@ -429,6 +508,15 @@ export function HiveSimpleIde({ discussion, onClose, onCommitted }: Props) {
                     <textarea
                       value={content}
                       onChange={(event) => setContent(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          (event.metaKey || event.ctrlKey) &&
+                          event.key.toLowerCase() === "s"
+                        ) {
+                          event.preventDefault();
+                          void save();
+                        }
+                      }}
                       spellCheck={false}
                       aria-label={`Editing ${file.path}`}
                       className="h-full min-h-80 w-full resize-none bg-transparent p-4 font-mono text-[13px] leading-6 text-[#132D4F] outline-none sm:p-5"

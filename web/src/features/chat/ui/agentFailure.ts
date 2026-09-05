@@ -8,3 +8,8 @@ export function isAgentFailureMessage(content: string): boolean {
     content.trimStart().startsWith(prefix),
   );
 }
+
+export function agentFailureDisplayContent(content: string): string {
+  if (!isAgentFailureMessage(content)) return content;
+  return "⚠️ BrickO could not complete this request. Your original request is still available—restore it below and try again.";
+}
