@@ -35,6 +35,7 @@ pub(crate) const DISCUSSIONS_PATH: &str = "/api/onebrick/repository-discussions"
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_DISCUSSIONS: usize = 500;
 const MAX_MANIFEST_SCAN: usize = 5_000;
+const MAX_LEGACY_MANIFEST_CLAIMS_PER_LIST: usize = 64;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_WORKSPACE_FILES: usize = 2_000;
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -407,6 +408,82 @@ fn manifest_belongs_to_community(manifest: &DiscussionManifest, community_id: Uu
     community_scope_matches(manifest.community_id, community_id)
 }
 
+fn tag_value<'a>(event: &'a nostr::Event, name: &str) -> Option<&'a str> {
+    event.tags.iter().find_map(|tag| {
+        let values = tag.as_slice();
+        if values.first().map(String::as_str) == Some(name) {
+            values.get(1).map(String::as_str)
+        } else {
+            None
+        }
+    })
+}
+
+fn event_proves_legacy_manifest(event: &nostr::Event, manifest: &DiscussionManifest) -> bool {
+    let discussion_id = manifest.discussion.id.to_string();
+    let repository = format!(
+        "{}/{}",
+        manifest.discussion.owner, manifest.discussion.repository
+    );
+    event.pubkey.to_hex() == manifest.discussion.created_by
+        && tag_value(event, "discussion") == Some(discussion_id.as_str())
+        && tag_value(event, "repo") == Some(repository.as_str())
+        && tag_value(event, "worktree") == Some(&manifest.discussion.worktree_id)
+        && tag_value(event, "branch") == Some(&manifest.discussion.branch_ref)
+}
+
+/// Bind a pre-community manifest only when its original signed discussion root
+/// exists in this tenant and the requesting member can read that root's
+/// channel. This lets teams recover shared legacy discussions without letting
+/// an unrelated tenant claim a filesystem manifest by guessing its UUID.
+async fn legacy_manifest_belongs_to_request(
+    state: &AppState,
+    manifest: &DiscussionManifest,
+    community_id: Uuid,
+    requester: &str,
+) -> Result<bool, (StatusCode, Json<Value>)> {
+    let creator = match hex::decode(&manifest.discussion.created_by) {
+        Ok(value) if value.len() == 32 => value,
+        _ => return Ok(false),
+    };
+    let requester = match hex::decode(requester) {
+        Ok(value) if value.len() == 32 => value,
+        _ => return Ok(false),
+    };
+    let tenant = buzz_core::CommunityId::from_uuid(community_id);
+    let events = state
+        .db
+        .query_events(&buzz_db::EventQuery {
+            kinds: Some(vec![9]),
+            pubkey: Some(creator),
+            custom_tag: Some(("discussion".into(), manifest.discussion.id.to_string())),
+            limit: Some(4),
+            ..buzz_db::EventQuery::for_community(tenant)
+        })
+        .await
+        .map_err(|error| internal_error(&format!("resolve legacy discussion tenant: {error}")))?;
+
+    for stored in events {
+        if !event_proves_legacy_manifest(&stored.event, manifest) {
+            continue;
+        }
+        let Some(channel_id) = stored.channel_id else {
+            continue;
+        };
+        let is_member = state
+            .db
+            .is_member(tenant, channel_id, &requester)
+            .await
+            .map_err(|error| {
+                internal_error(&format!("authorize legacy discussion channel: {error}"))
+            })?;
+        if is_member {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn load_authorized_manifest(
     state: &AppState,
     id: Uuid,
@@ -427,7 +504,9 @@ async fn read_authorized_manifest(
     if manifest_belongs_to_community(&manifest, community_id) {
         return Ok(manifest);
     }
-    if manifest.community_id.is_some() || manifest.discussion.created_by != pubkey {
+    if manifest.community_id.is_some()
+        || !legacy_manifest_belongs_to_request(state, &manifest, community_id, pubkey).await?
+    {
         return Err(api_error(StatusCode::NOT_FOUND, "discussion_not_found"));
     }
 
@@ -439,7 +518,9 @@ async fn read_authorized_manifest(
     if manifest_belongs_to_community(&manifest, community_id) {
         return Ok(manifest);
     }
-    if manifest.community_id.is_some() || manifest.discussion.created_by != pubkey {
+    if manifest.community_id.is_some()
+        || !legacy_manifest_belongs_to_request(state, &manifest, community_id, pubkey).await?
+    {
         return Err(api_error(StatusCode::NOT_FOUND, "discussion_not_found"));
     }
     manifest.community_id = Some(community_id);
@@ -709,6 +790,7 @@ pub(crate) async fn list(
     };
     let mut discussions = Vec::new();
     let mut scanned = 0usize;
+    let mut legacy_claims = 0usize;
     while let Some(entry) = entries
         .next_entry()
         .await
@@ -743,12 +825,21 @@ pub(crate) async fn list(
         {
             continue;
         }
-        if manifest.community_id.is_none() && manifest.discussion.created_by != pubkey {
-            continue;
+        if manifest.community_id.is_none() {
+            legacy_claims += 1;
+            if legacy_claims > MAX_LEGACY_MANIFEST_CLAIMS_PER_LIST {
+                return Err(api_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "legacy_discussion_catalog_requires_migration",
+                ));
+            }
         }
-        let manifest =
-            read_authorized_manifest(&state, manifest.discussion.id, community_id, &pubkey).await?;
-        discussions.push(manifest.discussion);
+        match read_authorized_manifest(&state, manifest.discussion.id, community_id, &pubkey).await
+        {
+            Ok(manifest) => discussions.push(manifest.discussion),
+            Err((StatusCode::NOT_FOUND, _)) => continue,
+            Err(error) => return Err(error),
+        }
     }
     discussions.sort_by_key(|discussion| std::cmp::Reverse(discussion.created_at));
     discussions.truncate(MAX_DISCUSSIONS);
@@ -1677,6 +1768,94 @@ mod tests {
         assert!(community_scope_matches(Some(community_a), community_a));
         assert!(!community_scope_matches(Some(community_a), community_b));
         assert!(!community_scope_matches(None, community_a));
+    }
+
+    #[test]
+    fn legacy_manifest_binding_requires_the_original_signed_root_metadata() {
+        let keys = nostr::Keys::generate();
+        let id =
+            Uuid::parse_str("11111111-2222-4333-8444-555555555555").expect("valid discussion id");
+        let discussion_id = id.to_string();
+        let manifest = DiscussionManifest {
+            discussion: RepositoryDiscussion {
+                id,
+                owner: "BrickO-Brick".into(),
+                repository: "hive".into(),
+                title: "Legacy discussion".into(),
+                mirror_id: "mirror".into(),
+                worktree_id: "worktree".into(),
+                branch_ref: "refs/heads/codex/hive-discussion-test".into(),
+                base_ref: "refs/heads/main".into(),
+                base_sha: "aa".repeat(20),
+                current_head_sha: "aa".repeat(20),
+                proposal_revision: None,
+                proposal_digest: None,
+                test_evidence: Vec::new(),
+                created_by: keys.public_key().to_hex(),
+                created_at: Utc::now(),
+                status: DiscussionStatus::Active,
+                completion_evidence: None,
+                closed_by: None,
+                closed_at: None,
+                workspace_cleaned_at: None,
+                mirror_cleaned: false,
+            },
+            community_id: None,
+            mirror_path: PathBuf::from("/tmp/mirror"),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+        };
+        let event = nostr::EventBuilder::new(nostr::Kind::Custom(9), "")
+            .tags(
+                [
+                    ["discussion", discussion_id.as_str()],
+                    ["repo", "BrickO-Brick/hive"],
+                    ["worktree", "worktree"],
+                    ["branch", "refs/heads/codex/hive-discussion-test"],
+                ]
+                .into_iter()
+                .map(nostr::Tag::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("valid tags"),
+            )
+            .sign_with_keys(&keys)
+            .expect("signed event");
+
+        assert!(event_proves_legacy_manifest(&event, &manifest));
+
+        let wrong_repository = nostr::EventBuilder::new(nostr::Kind::Custom(9), "")
+            .tags(
+                [
+                    ["discussion", discussion_id.as_str()],
+                    ["repo", "BrickO-Brick/other"],
+                    ["worktree", "worktree"],
+                    ["branch", "refs/heads/codex/hive-discussion-test"],
+                ]
+                .into_iter()
+                .map(nostr::Tag::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("valid tags"),
+            )
+            .sign_with_keys(&keys)
+            .expect("signed event");
+        assert!(!event_proves_legacy_manifest(&wrong_repository, &manifest));
+
+        let wrong_signer = nostr::Keys::generate();
+        let forged_event = nostr::EventBuilder::new(nostr::Kind::Custom(9), "")
+            .tags(
+                [
+                    ["discussion", discussion_id.as_str()],
+                    ["repo", "BrickO-Brick/hive"],
+                    ["worktree", "worktree"],
+                    ["branch", "refs/heads/codex/hive-discussion-test"],
+                ]
+                .into_iter()
+                .map(nostr::Tag::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("valid tags"),
+            )
+            .sign_with_keys(&wrong_signer)
+            .expect("signed event");
+        assert!(!event_proves_legacy_manifest(&forged_event, &manifest));
     }
 
     #[tokio::test]

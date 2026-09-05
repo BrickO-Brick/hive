@@ -79,7 +79,7 @@ export function HiveHeaderCollaboration({
             <span
               key={participant.pubkey}
               className="grid size-8 place-items-center rounded-full border-2 border-white bg-[#FFF1EB]"
-              title={participant.displayName}
+              title={`${participant.displayName} · ${participant.identityHint}`}
             >
               <BrickOPet mode="still" size="sm" />
             </span>
@@ -87,7 +87,7 @@ export function HiveHeaderCollaboration({
             <span
               key={participant.pubkey}
               className="grid size-8 place-items-center rounded-full border-2 border-white bg-[#10213F] text-[9px] font-extrabold text-white"
-              title={participant.displayName}
+              title={`${participant.displayName} · ${participant.identityHint}`}
             >
               {participantInitials(participant.displayName)}
             </span>

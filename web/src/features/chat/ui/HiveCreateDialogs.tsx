@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, X } from "lucide-react";
+import { Bot, Check, Plus, RefreshCw, UserRound, X } from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -7,6 +7,7 @@ import {
   useRef,
 } from "react";
 import type { OneBrickGitHubRepository } from "@/features/repos/onebrick-github-api";
+import type { HiveParticipant } from "./useHiveParticipantDirectory";
 
 function DialogFrame({
   children,
@@ -161,14 +162,20 @@ export function HiveNewConversationDialog({
   error,
   onChange,
   onClose,
+  onToggleParticipant,
   onSubmit,
+  participants,
+  selectedPubkeys,
   title,
 }: {
   busy: boolean;
   error: string;
   onChange: (value: string) => void;
   onClose: () => void;
+  onToggleParticipant: (pubkey: string) => void;
   onSubmit: (event: FormEvent) => void;
+  participants: HiveParticipant[];
+  selectedPubkeys: Set<string>;
   title: string;
 }) {
   return (
@@ -177,11 +184,11 @@ export function HiveNewConversationDialog({
       labelId="new-conversation-title"
       onClose={onClose}
       onSubmit={onSubmit}
-      title="Start a group conversation"
+      title="Start a private chat"
     >
       <p className="mt-3 text-sm leading-6 text-[#607086]">
-        Chats live outside repositories and are visible to every member of this
-        Hive workspace. Members can join the conversation and reply in threads.
+        Choose up to eight teammates. Only the selected people and you can see
+        this chat or its threads.
       </p>
       <label
         className="mt-4 block text-xs font-bold text-[#42526B]"
@@ -199,11 +206,78 @@ export function HiveNewConversationDialog({
         placeholder="e.g. Engineering"
         className="mt-1.5 h-11 w-full rounded-md border border-[#D8DEE8] px-3 text-sm outline-none focus:border-[#2F6FED]/70 focus:ring-4 focus:ring-[#2F6FED]/10"
       />
+      <fieldset className="mt-4">
+        <legend className="text-xs font-bold text-[#42526B]">
+          People ({selectedPubkeys.size}/8)
+        </legend>
+        <div
+          className="mt-1.5 max-h-56 overflow-y-auto rounded-lg border border-[#D8DEE8] p-1.5"
+          data-testid="conversation-participants"
+        >
+          {participants
+            .filter((participant) => !participant.isCurrentUser)
+            .map((participant) => {
+              const selected = selectedPubkeys.has(participant.pubkey);
+              const disabled = !selected && selectedPubkeys.size >= 8;
+              return (
+                <label
+                  key={participant.pubkey}
+                  className={`relative flex min-h-11 items-center gap-3 rounded-md px-2.5 py-2 text-left transition ${
+                    disabled
+                      ? "cursor-not-allowed opacity-45"
+                      : "cursor-pointer hover:bg-[#F7FAFC]"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    className="absolute inset-0 z-10 cursor-pointer opacity-0 disabled:cursor-not-allowed"
+                    checked={selected}
+                    disabled={disabled}
+                    onChange={() => onToggleParticipant(participant.pubkey)}
+                  />
+                  <span
+                    className={`grid size-8 shrink-0 place-items-center rounded-full ${
+                      participant.isAgent
+                        ? "bg-[#EEEAFE] text-[#6741D9]"
+                        : "bg-[#EEF5FF] text-[#1F55C5]"
+                    }`}
+                  >
+                    {participant.isAgent ? (
+                      <Bot size={15} />
+                    ) : (
+                      <UserRound size={15} />
+                    )}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold text-[#172033]">
+                      {participant.displayName}
+                    </span>
+                    <span className="block truncate text-xs text-[#607086]">
+                      {participant.isAgent
+                        ? "AI teammate"
+                        : `${participant.role} · ${participant.identityHint}`}
+                    </span>
+                  </span>
+                  <span
+                    className={`grid size-5 shrink-0 place-items-center rounded border ${
+                      selected
+                        ? "border-[#2F6FED] bg-[#2F6FED] text-white"
+                        : "border-[#C8D1DE] bg-white text-transparent"
+                    }`}
+                    aria-hidden="true"
+                  >
+                    <Check size={13} />
+                  </span>
+                </label>
+              );
+            })}
+        </div>
+      </fieldset>
       <DialogError error={error} />
       <DialogActions
         busy={busy}
         busyLabel="Creating…"
-        disabled={!title.trim()}
+        disabled={!title.trim() || selectedPubkeys.size === 0}
         onClose={onClose}
         submitLabel="Create chat"
       />

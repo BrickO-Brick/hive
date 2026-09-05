@@ -3,6 +3,7 @@ import type { NostrEvent } from "@/shared/lib/nostr-client";
 export type HiveConversation = {
   createdAt: number;
   id: string;
+  participantPubkeys: string[];
   title: string;
 };
 
@@ -19,23 +20,49 @@ function threadAnchor(event: NostrEvent): string | undefined {
   );
 }
 
-export function conversationsFromMessages(
-  messages: NostrEvent[],
+function isDmCreatedSystemMessage(event: NostrEvent): boolean {
+  try {
+    const content = JSON.parse(event.content) as { type?: unknown };
+    return content.type === "dm_created";
+  } catch {
+    return false;
+  }
+}
+
+export function conversationsFromMetadata(
+  events: NostrEvent[],
+  currentPubkey: string,
 ): HiveConversation[] {
   const byId = new Map<string, HiveConversation>();
-  for (const message of messages) {
-    const id = eventTag(message, "conversation");
-    const title = eventTag(message, "title")?.trim();
-    if (!id || !title || eventTag(message, "conversation-meta") !== "1") {
+  for (const event of events) {
+    const id = eventTag(event, "d");
+    const title = eventTag(event, "name")?.trim();
+    const participantPubkeys = event.tags
+      .filter((tag) => tag[0] === "p" && tag[1])
+      .map((tag) => tag[1].toLowerCase());
+    if (
+      event.kind !== 39000 ||
+      eventTag(event, "t") !== "dm" ||
+      eventTag(event, "archived") === "true" ||
+      !id ||
+      !title ||
+      !participantPubkeys.includes(currentPubkey.toLowerCase())
+    ) {
       continue;
     }
     const current = byId.get(id);
-    if (!current || current.createdAt < message.created_at) {
-      byId.set(id, { createdAt: message.created_at, id, title });
+    if (!current || current.createdAt < event.created_at) {
+      byId.set(id, {
+        createdAt: event.created_at,
+        id,
+        participantPubkeys,
+        title,
+      });
     }
   }
-  return [...byId.values()].sort((left, right) =>
-    left.title.localeCompare(right.title),
+  return [...byId.values()].sort(
+    (left, right) =>
+      right.createdAt - left.createdAt || left.title.localeCompare(right.title),
   );
 }
 
@@ -49,19 +76,10 @@ export function selectDiscussionMessages(
   );
 
   if (!activeDiscussionId && activeConversationId) {
-    const conversationMessages = messages.filter(
-      (message) =>
-        eventTag(message, "conversation") === activeConversationId &&
-        eventTag(message, "conversation-meta") !== "1",
-    );
-    const roots = new Set(conversationMessages.map((message) => message.id));
     return {
       activeRoot: null,
       visibleMessages: messages.filter(
-        (message) =>
-          (eventTag(message, "conversation") === activeConversationId &&
-            eventTag(message, "conversation-meta") !== "1") ||
-          roots.has(threadAnchor(message) ?? ""),
+        (message) => !isDmCreatedSystemMessage(message),
       ),
     };
   }

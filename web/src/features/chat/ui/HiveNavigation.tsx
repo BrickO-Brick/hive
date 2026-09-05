@@ -1,8 +1,6 @@
 import {
-  Bell,
   ChevronDown,
   ChevronRight,
-  CircleHelp,
   GitBranch,
   Hash,
   Menu,
@@ -11,7 +9,6 @@ import {
   PanelLeftClose,
   Plus,
   Search,
-  Users,
   Wifi,
   WifiOff,
   X,
@@ -198,16 +195,7 @@ export function HiveNavigation({
             >
               <GitBranch size={19} />
             </RailButton>
-            <RailButton label="People">
-              <Users size={19} />
-            </RailButton>
-            <RailButton label="Notifications">
-              <Bell size={19} />
-            </RailButton>
           </div>
-          <RailButton label="Help">
-            <CircleHelp size={19} />
-          </RailButton>
           <div className="relative mt-3 grid size-9 place-items-center rounded-full bg-[#10213F] text-[10px] font-extrabold text-white">
             {identityEmail.slice(0, 2).toUpperCase()}
             <span className="absolute bottom-0 right-0 size-2.5 rounded-full border-2 border-white bg-[#1FA971]" />

@@ -1,4 +1,5 @@
 import {
+  CircleAlert,
   GitBranch,
   Hash,
   LogOut,
@@ -32,7 +33,7 @@ import {
 import {
   type NostrSubscriptionState,
   publishEvent,
-  queryEvents,
+  queryEventsHttp,
   subscribeEvents,
   type NostrEvent,
 } from "@/shared/lib/nostr-client";
@@ -42,28 +43,29 @@ import {
   signNostrEvent,
 } from "@/shared/lib/nostr-signer";
 import { relayWsUrl } from "@/shared/lib/relay-url";
-import {
-  BrickOPet,
-  type BrickOCelebration,
-  type BrickOPetMode,
-} from "./BrickOPet";
-import {
-  conversationsFromMessages,
-  type HiveConversation,
-  selectDiscussionMessages,
-} from "./discussionMessages";
+import type { BrickOCelebration } from "./BrickOPet";
+import { deriveBrickOStatus } from "./brickOStatus";
+import type { HiveConversation } from "./discussionMessages";
 import { isAgentFailureMessage } from "./agentFailure";
 import { HiveComposer } from "./HiveComposer";
 import { HiveChatEmptyState } from "./HiveChatEmptyState";
+import { HiveBrickOStatusBanner } from "./HiveBrickOStatusBanner";
 import {
   HiveNewConversationDialog,
   HiveNewDiscussionDialog,
 } from "./HiveCreateDialogs";
 import { HiveNavigation } from "./HiveNavigation";
 import { HiveResizableNavigation } from "./HiveResizableNavigation";
+import { HiveHistoryPagination } from "./HiveHistoryPagination";
 import { HiveMessage } from "./HiveMessage";
 import { HiveSimpleIde } from "./HiveSimpleIde";
+import { HiveUnavailableConversation } from "./HiveUnavailableConversation";
 import { HiveWorkspaceSummary } from "./HiveWorkspaceSummary";
+import {
+  createPrivateChat,
+  loadPrivateChats,
+  togglePrivateChatParticipant,
+} from "./hivePrivateChats";
 import { hiveUserFacingError } from "./hiveErrors";
 import {
   groupConversationThreads,
@@ -72,7 +74,10 @@ import {
 } from "./HiveThreadPanel";
 import {
   normalizePubkey,
+  messageAuthorLabel,
   participantPresentation,
+  participantsInPrivateChat,
+  privateChatIncludes,
   useHiveParticipantDirectory,
 } from "./useHiveParticipantDirectory";
 import {
@@ -83,6 +88,9 @@ import {
   normalizePresence,
   threadRootId,
 } from "./hiveMessageUtils";
+import { useHiveChatHistory } from "./useHiveChatHistory";
+import { useCloseOnEscape } from "./useCloseOnEscape";
+import { useHiveVisibleMessages } from "./useHiveVisibleMessages";
 
 const TYPING_VISIBLE_MS = 7_000;
 const PET_CELEBRATION_MS = 2_400;
@@ -94,11 +102,6 @@ const OneBrickRepositoryCatalog = lazy(() =>
 
 export function HiveChatPage() {
   const identity = useMemo(loadHiveIdentity, []);
-  const [messages, setMessages] = useState<NostrEvent[]>([]);
-  const { agentPubkey, participants, profiles } = useHiveParticipantDirectory(
-    identity,
-    messages,
-  );
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -124,6 +127,12 @@ export function HiveChatPage() {
   >(() => new URLSearchParams(window.location.search).get("conversation"));
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [newConversationTitle, setNewConversationTitle] = useState("");
+  const [newConversationParticipants, setNewConversationParticipants] =
+    useState<Set<string>>(() => new Set());
+  const [conversationList, setConversationList] = useState<HiveConversation[]>(
+    [],
+  );
+  const [conversationsLoading, setConversationsLoading] = useState(true);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [newDiscussionRepository, setNewDiscussionRepository] =
     useState<OneBrickGitHubRepository | null>(null);
@@ -137,6 +146,39 @@ export function HiveChatPage() {
   );
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const discussionList = discussions.data ?? [];
+  const activeDiscussion =
+    discussionList.find((item) => item.id === activeDiscussionId) ?? null;
+  const activeConversation =
+    conversationList.find((item) => item.id === activeConversationId) ?? null;
+  const discussionRouteUnresolved = Boolean(
+    activeDiscussionId && !activeDiscussion,
+  );
+  const conversationRouteUnresolved = Boolean(
+    activeConversationId && !activeConversation,
+  );
+  const activeChannelId = activeConversationId
+    ? (activeConversation?.id ?? null)
+    : (identity?.channelId ?? null);
+  const {
+    hasOlder: historyHasOlder,
+    lastLiveEvent,
+    loadOlder: loadOlderMessages,
+    loading: historyLoading,
+    loadingOlder: historyLoadingOlder,
+    mergeMessage,
+    messages,
+    refresh,
+  } = useHiveChatHistory({
+    activeChannelId,
+    messagesEndRef,
+    setConnection,
+    setError,
+  });
+  const { agentPubkey, participants, profiles } = useHiveParticipantDirectory(
+    identity,
+    messages,
+  );
   const selectSurface = useCallback((next: "chat" | "repositories") => {
     setSurface(next);
     if (next === "repositories") {
@@ -166,6 +208,7 @@ export function HiveChatPage() {
       setActiveDiscussionId(discussion.id);
       setActiveConversationId(null);
       setReplyTo(null);
+      setTypingAt(0);
       setThreadPanelOpen(false);
       selectSurface("chat");
       const url = new URL(window.location.href);
@@ -184,6 +227,7 @@ export function HiveChatPage() {
     setActiveDiscussionId(null);
     setActiveConversationId(null);
     setReplyTo(null);
+    setTypingAt(0);
     setThreadPanelOpen(false);
     selectSurface("chat");
     const url = new URL(window.location.href);
@@ -201,6 +245,7 @@ export function HiveChatPage() {
       setActiveDiscussionId(null);
       setActiveConversationId(conversation.id);
       setReplyTo(null);
+      setTypingAt(0);
       setThreadPanelOpen(false);
       selectSurface("chat");
       const url = new URL(window.location.href);
@@ -214,72 +259,52 @@ export function HiveChatPage() {
     },
     [selectSurface],
   );
-  const mergeMessage = useCallback(
-    (event: NostrEvent) => {
-      setMessages((current) => {
-        const byId = new Map(current.map((message) => [message.id, message]));
-        byId.set(event.id, event);
-        return [...byId.values()].sort((a, b) => a.created_at - b.created_at);
-      });
-      if (
-        agentPubkey &&
-        normalizePubkey(event.pubkey) === normalizePubkey(agentPubkey)
-      ) {
-        setPetCelebration({
-          eventId: event.id,
-          variant: celebrationForEvent(event.id),
-        });
-        setPendingSince((startedAt) => {
-          if (startedAt && event.created_at * 1000 >= startedAt - 2_000) {
-            return null;
-          }
-          return startedAt;
-        });
-        setTypingAt(0);
-      }
-    },
-    [agentPubkey],
-  );
-  const refresh = useCallback(async () => {
+  const openNewConversationDialog = useCallback(() => {
+    setNewConversationTitle("");
+    setNewConversationParticipants(new Set());
+    setNewConversationOpen(true);
+  }, []);
+  const refreshConversations = useCallback(async () => {
     if (!identity) return;
-    setError("");
+    setConversationsLoading(true);
     try {
-      const events = await queryEvents(relayWsUrl(), {
-        kinds: [9],
-        "#h": [identity.channelId],
-        limit: 200,
-      });
-      setMessages(events.sort((a, b) => a.created_at - b.created_at));
+      setConversationList(await loadPrivateChats(identity.pubkey));
     } catch (cause) {
       setError(hiveUserFacingError(cause, "load"));
+    } finally {
+      setConversationsLoading(false);
     }
   }, [identity]);
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
 
   useEffect(() => {
-    if (!identity) return;
-    return subscribeEvents(
-      relayWsUrl(),
-      { kinds: [9], "#h": [identity.channelId] },
-      (event) => {
-        setError("");
-        mergeMessage(event);
-      },
-      (cause) => setError(hiveUserFacingError(cause, "connect")),
-      (state) => {
-        setConnection(state);
-        if (state === "connected") setError("");
-      },
+    void refreshConversations();
+  }, [refreshConversations]);
+
+  useEffect(() => {
+    if (
+      !lastLiveEvent ||
+      !agentPubkey ||
+      normalizePubkey(lastLiveEvent.pubkey) !== normalizePubkey(agentPubkey)
+    ) {
+      return;
+    }
+    setPetCelebration({
+      eventId: lastLiveEvent.id,
+      variant: celebrationForEvent(lastLiveEvent.id),
+    });
+    setPendingSince((startedAt) =>
+      startedAt && lastLiveEvent.created_at * 1000 >= startedAt - 2_000
+        ? null
+        : startedAt,
     );
-  }, [identity, mergeMessage]);
+    setTypingAt(0);
+  }, [agentPubkey, lastLiveEvent]);
 
   useEffect(() => {
-    if (!identity) return;
+    if (!activeChannelId) return;
     return subscribeEvents(
       relayWsUrl(),
-      { kinds: [20002], "#h": [identity.channelId] },
+      { kinds: [20002], "#h": [activeChannelId] },
       (event) => {
         if (
           agentPubkey &&
@@ -292,16 +317,18 @@ export function HiveChatPage() {
         // Chat subscription owns the visible connection error state.
       },
     );
-  }, [agentPubkey, identity]);
+  }, [activeChannelId, agentPubkey]);
 
   useEffect(() => {
     if (!agentPubkey) return;
     let active = true;
 
-    void queryEvents(relayWsUrl(), {
-      kinds: [40902],
-      authors: [agentPubkey],
-    })
+    void queryEventsHttp([
+      {
+        kinds: [40902],
+        authors: [agentPubkey],
+      },
+    ])
       .then((events) => {
         if (!active) return;
         const snapshot = events.find(
@@ -340,11 +367,6 @@ export function HiveChatPage() {
   }, [typingAt]);
 
   useEffect(() => {
-    if (messages.length === 0) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
     if (!typingVisible) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [typingVisible]);
@@ -367,143 +389,63 @@ export function HiveChatPage() {
       );
     }
   }, [identity]);
-  useEffect(() => {
-    if (!mobileNavigationOpen) return;
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setMobileNavigationOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [mobileNavigationOpen]);
-  useEffect(() => {
-    if (!threadPanelOpen) return;
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setThreadPanelOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [threadPanelOpen]);
-  const discussionList = discussions.data ?? [];
-  const conversationList = useMemo(
-    () => conversationsFromMessages(messages),
-    [messages],
+  useCloseOnEscape(mobileNavigationOpen, setMobileNavigationOpen);
+  useCloseOnEscape(threadPanelOpen, setThreadPanelOpen);
+  const { activeRoot, visibleMessages } = useHiveVisibleMessages({
+    activeConversation,
+    activeConversationId,
+    activeDiscussion,
+    activeDiscussionId,
+    messages,
+  });
+  const replyAuthor = messageAuthorLabel(
+    replyTo,
+    identity?.pubkey ?? "",
+    agentPubkey,
+    profiles,
   );
-  const activeDiscussion =
-    discussionList.find((item) => item.id === activeDiscussionId) ?? null;
-  const activeConversation =
-    conversationList.find((item) => item.id === activeConversationId) ?? null;
-  const { activeRoot, visibleMessages } = useMemo(
-    () =>
-      selectDiscussionMessages(
-        messages,
-        activeDiscussionId,
-        activeConversationId,
-      ),
-    [activeConversationId, activeDiscussionId, messages],
+  const visibleParticipants = participantsInPrivateChat(
+    participants,
+    activeConversation?.participantPubkeys,
   );
-  const replyAuthor = replyTo
-    ? participantPresentation(
-        replyTo.pubkey,
-        identity?.pubkey ?? "",
-        agentPubkey,
-        profiles,
-      ).authorLabel
-    : "";
+  const conversationHasAgent = privateChatIncludes(
+    activeConversation?.participantPubkeys,
+    agentPubkey,
+  );
   if (!identity || !hasMantapBrowserIdentity()) return null;
 
   const connected = connection === "connected";
   const waiting = pendingSince !== null;
-  const agentState = (() => {
-    if (!connected) {
-      return {
-        label: connection === "connecting" ? "Connecting…" : "Reconnecting…",
-        detail: "Waiting for a secure connection to Hive",
-        tone: "amber" as const,
-      };
-    }
-    if (typingVisible) {
-      return {
-        label: "Writing a response…",
-        detail: "BrickO is coding and composing a reply",
-        tone: "violet" as const,
-      };
-    }
-    if (waiting) {
-      return {
-        label: "Preparing a response…",
-        detail: "Your message was received and is being processed",
-        tone: "violet" as const,
-      };
-    }
-    if (presence === "online") {
-      return {
-        label: "Online and ready",
-        detail: "BrickO is ready for the next instruction",
-        tone: "emerald" as const,
-      };
-    }
-    if (presence === "away") {
-      return {
-        label: "Idle",
-        detail: "BrickO is still connected to the workspace",
-        tone: "amber" as const,
-      };
-    }
-    if (presence === "offline") {
-      return {
-        label: "Offline",
-        detail: "Messages remain safely stored in the channel",
-        tone: "slate" as const,
-      };
-    }
-    return {
-      label: "Checking status…",
-      detail: "Hive connection is active",
-      tone: "slate" as const,
-    };
-  })();
-
-  const toneClasses = {
-    emerald: "bg-[#1FA971] shadow-[#1FA971]/30",
-    violet: "animate-pulse bg-[#2F6FED] shadow-[#2F6FED]/30",
-    amber: "bg-[#D9861C] shadow-[#D9861C]/30",
-    slate: "bg-[#8491A4] shadow-[#8491A4]/30",
-  }[agentState.tone];
-
-  const petMode: BrickOPetMode =
-    typingVisible || waiting
-      ? "thinking"
-      : petCelebration
-        ? "celebrate"
-        : connected && presence !== "offline"
-          ? "idle"
-          : "offline";
-  const petStatus = typingVisible
-    ? "BrickO is coding and composing a response…"
-    : waiting
-      ? "BrickO is thinking through the next step…"
-      : petCelebration?.variant === "check"
-        ? "Done — BrickO gives it the all-clear."
-        : petCelebration?.variant === "code"
-          ? "Done — BrickO wraps up the coding session."
-          : petCelebration
-            ? "Done — BrickO celebrates the result."
-            : connected && presence === "online"
-              ? "BrickO is ready to be your coding partner."
-              : connected && presence === "away"
-                ? "BrickO is connected but currently idle."
-                : connected
-                  ? "Chat is connected; waiting for BrickO to come online."
-                  : "Chat is reconnecting. Your messages and draft remain safe.";
+  const { agentState, petMode, petStatus, toneClasses } = deriveBrickOStatus({
+    celebration: petCelebration?.variant ?? null,
+    connected,
+    connection,
+    presence,
+    typing: typingVisible,
+    waiting,
+  });
 
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const content = text.trim();
     if (!content || busy) return;
+    if (activeDiscussionId && !activeDiscussion) {
+      setError(
+        "This repository discussion is not available. Return to bricko-lab or refresh the discussion before sending.",
+      );
+      return;
+    }
+    if (activeConversationId && !activeConversation) {
+      setError(
+        "This private chat is not available. Return to bricko-lab or refresh your chats before sending.",
+      );
+      return;
+    }
+    if (!activeChannelId) return;
     setBusy(true);
     setError("");
     try {
-      const tags: string[][] = [["h", identity.channelId]];
+      const tags: string[][] = [["h", activeChannelId]];
       if (activeDiscussion) {
         tags.push(
           ["discussion", activeDiscussion.id],
@@ -518,7 +460,6 @@ export function HiveChatPage() {
           tags.push(["e", replyTo?.id ?? rootId, "", "reply"]);
         }
       } else if (activeConversation) {
-        tags.push(["conversation", activeConversation.id]);
         if (replyTo) {
           const replyRoot = threadRootId(replyTo);
           tags.push(["e", replyRoot, "", "root"]);
@@ -532,7 +473,9 @@ export function HiveChatPage() {
       });
       await publishEvent(relayWsUrl(), signed);
       mergeMessage(signed);
-      setPendingSince(Date.now());
+      if (!activeConversation || conversationHasAgent) {
+        setPendingSince(Date.now());
+      }
       setText("");
       setReplyTo(null);
       composerRef.current?.focus();
@@ -574,31 +517,41 @@ export function HiveChatPage() {
   const submitNewConversation = async (event: FormEvent) => {
     event.preventDefault();
     const title = newConversationTitle.trim();
-    if (!title || creatingConversation || !identity) return;
+    const participantPubkeys = [...newConversationParticipants];
+    if (
+      !title ||
+      participantPubkeys.length === 0 ||
+      participantPubkeys.length > 8 ||
+      creatingConversation ||
+      !identity
+    ) {
+      return;
+    }
     setCreatingConversation(true);
     setError("");
     try {
-      const conversation: HiveConversation = {
-        createdAt: Math.floor(Date.now() / 1000),
-        id: crypto.randomUUID(),
+      const conversation = await createPrivateChat({
+        currentPubkey: identity.pubkey,
+        participantPubkeys,
         title,
-      };
-      const signed = await signNostrEvent({
-        kind: 9,
-        tags: [
-          ["h", identity.channelId],
-          ["conversation", conversation.id],
-          ["conversation-meta", "1"],
-          ["title", conversation.title],
-        ],
-        content: "",
       });
-      await publishEvent(relayWsUrl(), signed);
-      mergeMessage(signed);
+      setConversationList((current) => [
+        conversation,
+        ...current.filter((item) => item.id !== conversation.id),
+      ]);
       setNewConversationOpen(false);
       setNewConversationTitle("");
+      setNewConversationParticipants(new Set());
       openConversation(conversation);
-      setText("@BrickO ");
+      setText(
+        agentPubkey &&
+          participantPubkeys.some(
+            (pubkey) =>
+              normalizePubkey(pubkey) === normalizePubkey(agentPubkey),
+          )
+          ? "@BrickO "
+          : "",
+      );
       requestAnimationFrame(() => composerRef.current?.focus());
     } catch (cause) {
       setError(hiveUserFacingError(cause, "create"));
@@ -635,10 +588,7 @@ export function HiveChatPage() {
         onConversation={openConversation}
         onDiscussion={openDiscussion}
         onGeneral={openGeneralConversation}
-        onNewConversation={() => {
-          setNewConversationTitle("");
-          setNewConversationOpen(true);
-        }}
+        onNewConversation={openNewConversationDialog}
         onRepositories={() => selectSurface("repositories")}
         surface={surface}
         toneClasses={toneClasses}
@@ -671,8 +621,7 @@ export function HiveChatPage() {
               onDiscussion={openDiscussion}
               onGeneral={openGeneralConversation}
               onNewConversation={() => {
-                setNewConversationTitle("");
-                setNewConversationOpen(true);
+                openNewConversationDialog();
                 setMobileNavigationOpen(false);
               }}
               onRepositories={() => selectSurface("repositories")}
@@ -704,9 +653,13 @@ export function HiveChatPage() {
                 <h1 className="min-w-0 truncate text-[15px] font-bold text-[#10233F]">
                   {surface === "repositories"
                     ? "Repositories"
-                    : (activeDiscussion?.title ??
-                      activeConversation?.title ??
-                      "bricko-lab")}
+                    : discussionRouteUnresolved || conversationRouteUnresolved
+                      ? discussions.isLoading || conversationsLoading
+                        ? "Loading conversation…"
+                        : "Conversation unavailable"
+                      : (activeDiscussion?.title ??
+                        activeConversation?.title ??
+                        "bricko-lab")}
                 </h1>
                 <span
                   className={`size-2 rounded-full shadow-sm ${toneClasses}`}
@@ -720,6 +673,14 @@ export function HiveChatPage() {
                   <>
                     <GitBranch size={10} /> BrickO-Brick
                   </>
+                ) : discussionRouteUnresolved ? (
+                  <>
+                    <CircleAlert size={10} /> Repository discussion
+                  </>
+                ) : conversationRouteUnresolved ? (
+                  <>
+                    <CircleAlert size={10} /> Private chat
+                  </>
                 ) : activeDiscussion ? (
                   <>
                     <GitBranch size={10} /> {activeDiscussion.owner}/
@@ -731,7 +692,7 @@ export function HiveChatPage() {
                   </>
                 ) : activeConversation ? (
                   <>
-                    <MessageCircle size={10} /> Group chat
+                    <MessageCircle size={10} /> Private chat
                   </>
                 ) : (
                   <>
@@ -747,7 +708,7 @@ export function HiveChatPage() {
             {surface === "chat" && (
               <HiveHeaderCollaboration
                 onThreads={() => setThreadPanelOpen((current) => !current)}
-                participants={participants}
+                participants={visibleParticipants}
                 threadCount={groupConversationThreads(visibleMessages).length}
                 threadsOpen={threadPanelOpen}
               />
@@ -801,47 +762,68 @@ export function HiveChatPage() {
           />
         ) : (
           <>
-            <div
-              className="mx-3 mt-2 flex min-h-12 shrink-0 items-center gap-2.5 rounded-lg border border-[#FFD3C9] bg-[#FFF8F5] px-3 py-1.5 sm:mx-5"
-              aria-live="polite"
-              data-testid="bricko-status-banner"
-            >
-              <div className="relative grid size-9 shrink-0 place-items-center">
-                <BrickOPet
-                  celebration={petCelebration?.variant ?? "sparkle"}
-                  key={petCelebration?.eventId ?? petMode}
-                  label={petStatus}
-                  mode={petMode}
-                  size="sm"
-                  testId="bricko-status-pet"
-                />
-                <span
-                  className={`absolute bottom-0 right-0 size-3 rounded-full border-2 border-white shadow-sm ${toneClasses}`}
-                />
+            <HiveBrickOStatusBanner
+              agentState={agentState}
+              celebration={petCelebration?.variant ?? null}
+              connected={connected}
+              petMode={petMode}
+              petStatus={petStatus}
+              toneClasses={toneClasses}
+              typing={typingVisible}
+              waiting={waiting}
+            />
+
+            {discussions.isError && !activeDiscussionId && (
+              <div
+                className="mx-3 mt-2 flex items-center justify-between gap-3 rounded-lg border border-[#F3C7C9] bg-[#FFF3F4] px-3 py-2 text-xs text-[#8F2F3A] sm:mx-5"
+                role="alert"
+              >
+                <span>
+                  Repository discussions could not be loaded. Chats remain
+                  available, but repository workspaces may be missing from the
+                  navigation.
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 rounded border border-[#E6AEB3] bg-white px-2.5 py-1.5 font-bold hover:bg-[#FFF8F8]"
+                  onClick={() => void discussions.refetch()}
+                >
+                  Retry
+                </button>
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-bold text-[#10233F]">
-                  {agentState.label}
-                </div>
-                <div className="mt-0.5 truncate text-xs text-[#526178]">
-                  {petStatus}
-                </div>
-              </div>
-              {connected && (waiting || typingVisible) && (
-                <div className="flex gap-1" aria-hidden="true">
-                  {[0, 1, 2].map((dot) => (
-                    <span
-                      key={dot}
-                      className="size-1.5 animate-bounce rounded-full bg-[#FF6F52]"
-                      style={{ animationDelay: `${dot * 120}ms` }}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+            )}
 
             <section className="min-h-0 flex-1 overflow-y-auto bg-[#F7FAFC] px-3 pb-6 pt-4 sm:px-5">
               <div className="mx-auto max-w-4xl">
+                {discussionRouteUnresolved && (
+                  <HiveUnavailableConversation
+                    kind="repository-discussion"
+                    loading={discussions.isLoading}
+                    loadFailed={discussions.isError}
+                    onRetry={() => void discussions.refetch()}
+                    onReturn={openGeneralConversation}
+                    onBrowseRepositories={() => {
+                      openGeneralConversation();
+                      selectSurface("repositories");
+                    }}
+                  />
+                )}
+                {conversationRouteUnresolved && (
+                  <HiveUnavailableConversation
+                    kind="private-chat"
+                    loading={conversationsLoading}
+                    onRetry={() => void refreshConversations()}
+                    onReturn={openGeneralConversation}
+                  />
+                )}
+                {!discussionRouteUnresolved &&
+                  !conversationRouteUnresolved &&
+                  (historyHasOlder || historyLoadingOlder) && (
+                    <HiveHistoryPagination
+                      loading={historyLoadingOlder}
+                      onLoadOlder={() => void loadOlderMessages()}
+                    />
+                  )}
                 {activeDiscussion && (
                   <HiveWorkspaceSummary
                     discussion={activeDiscussion}
@@ -854,6 +836,8 @@ export function HiveChatPage() {
                 )}
                 {visibleMessages.length === 0 &&
                   !error &&
+                  !historyLoading &&
+                  !activeDiscussionId &&
                   !activeDiscussion && (
                     <HiveChatEmptyState conversation={activeConversation} />
                   )}
@@ -940,21 +924,27 @@ export function HiveChatPage() {
               </div>
             </section>
 
-            <HiveComposer
-              activeDiscussion={activeDiscussion}
-              busy={busy}
-              composerRef={composerRef}
-              connected={connected}
-              error={error}
-              onCancelReply={() => setReplyTo(null)}
-              onChange={setText}
-              onKeyDown={handleComposerKeyDown}
-              onSubmit={send}
-              participants={participants}
-              replyAuthor={replyAuthor}
-              replyTo={replyTo}
-              text={text}
-            />
+            {discussionRouteUnresolved || conversationRouteUnresolved ? (
+              <div className="shrink-0 border-t border-[#D8DEE8] bg-[#F7FAFC] px-4 py-4 text-center text-xs font-semibold text-[#607086]">
+                Sending is disabled until this conversation is restored.
+              </div>
+            ) : (
+              <HiveComposer
+                activeDiscussion={activeDiscussion}
+                busy={busy}
+                composerRef={composerRef}
+                connected={connected}
+                error={error}
+                onCancelReply={() => setReplyTo(null)}
+                onChange={setText}
+                onKeyDown={handleComposerKeyDown}
+                onSubmit={send}
+                participants={visibleParticipants}
+                replyAuthor={replyAuthor}
+                replyTo={replyTo}
+                text={text}
+              />
+            )}
           </>
         )}
       </main>
@@ -976,8 +966,18 @@ export function HiveChatPage() {
           busy={creatingConversation}
           error={error}
           onChange={setNewConversationTitle}
-          onClose={() => setNewConversationOpen(false)}
+          onClose={() => {
+            setNewConversationOpen(false);
+            setNewConversationParticipants(new Set());
+          }}
+          onToggleParticipant={(pubkey) => {
+            setNewConversationParticipants((current) =>
+              togglePrivateChatParticipant(current, pubkey),
+            );
+          }}
           onSubmit={submitNewConversation}
+          participants={participants}
+          selectedPubkeys={newConversationParticipants}
           title={newConversationTitle}
         />
       )}

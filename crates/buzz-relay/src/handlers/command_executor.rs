@@ -317,6 +317,21 @@ async fn handle_dm_open(
             "invalid: pubkeys may contain at most 8 other participants (9 total)".into(),
         ));
     }
+    let requested_name = extract_tag(event, "name")
+        .map(|name| buzz_core::channel::canonical_channel_name(&name).to_string());
+    if requested_name.as_ref().is_some_and(|name| name.is_empty()) {
+        return Err(IngestError::Rejected(
+            "invalid: DM name must not be empty".into(),
+        ));
+    }
+    if requested_name
+        .as_ref()
+        .is_some_and(|name| name.chars().count() > 80)
+    {
+        return Err(IngestError::Rejected(
+            "invalid: DM name may contain at most 80 characters".into(),
+        ));
+    }
 
     // Decode all provided pubkeys
     let mut other_bytes: Vec<Vec<u8>> = Vec::with_capacity(p_tags.len());
@@ -330,6 +345,11 @@ async fn handle_dm_open(
         if !all_bytes.iter().any(|b| b == ob) {
             all_bytes.push(ob.clone());
         }
+    }
+    if all_bytes.len() < 2 {
+        return Err(IngestError::Rejected(
+            "invalid: DM requires at least one other participant".into(),
+        ));
     }
 
     // Persist the command event (idempotency) — returns open transaction
@@ -348,7 +368,12 @@ async fn handle_dm_open(
     let all_refs: Vec<&[u8]> = all_bytes.iter().map(|b| b.as_slice()).collect();
     let (channel, was_created) = state
         .db
-        .open_dm(tenant.community(), &all_refs, &self_bytes)
+        .open_named_dm(
+            tenant.community(),
+            &all_refs,
+            &self_bytes,
+            requested_name.as_deref(),
+        )
         .await
         .map_err(|e| IngestError::Internal(format!("error: db open_dm: {e}")))?;
 
@@ -423,6 +448,7 @@ async fn handle_dm_open(
             serde_json::json!({
                 "channel_id": channel.id.to_string(),
                 "created": was_created,
+                "name": channel.name,
             })
         ),
     })

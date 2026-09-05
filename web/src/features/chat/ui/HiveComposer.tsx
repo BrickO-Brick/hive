@@ -217,7 +217,7 @@ export function HiveComposer({
                         >
                           {participant.isAgent
                             ? "AI teammate"
-                            : participant.role}
+                            : `${participant.role} · ${participant.identityHint}`}
                         </span>
                       </span>
                       {participant.isAgent && (
@@ -231,9 +231,6 @@ export function HiveComposer({
                           Agent
                         </span>
                       )}
-                      <span className="text-[10px] font-semibold opacity-75">
-                        Available
-                      </span>
                     </button>
                   );
                 })}

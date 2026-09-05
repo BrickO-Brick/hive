@@ -21,6 +21,7 @@ export type ParticipantProfile = {
 
 export type HiveParticipant = {
   displayName: string;
+  identityHint: string;
   isAgent: boolean;
   isCurrentUser: boolean;
   pubkey: string;
@@ -58,6 +59,45 @@ export function participantPresentation(
         profiles[normalized]?.nip05 ??
         `Teammate · ${truncatePubkey(pubkey)}`);
   return { authorLabel, fromBrickO, mine };
+}
+
+export function participantsInPrivateChat(
+  participants: HiveParticipant[],
+  participantPubkeys: string[] | undefined,
+): HiveParticipant[] {
+  if (!participantPubkeys) return participants;
+  const allowed = new Set(participantPubkeys.map(normalizePubkey));
+  return participants.filter((participant) =>
+    allowed.has(normalizePubkey(participant.pubkey)),
+  );
+}
+
+export function privateChatIncludes(
+  participantPubkeys: string[] | undefined,
+  pubkey: string | null,
+): boolean {
+  return Boolean(
+    pubkey &&
+      participantPubkeys
+        ?.map(normalizePubkey)
+        .includes(normalizePubkey(pubkey)),
+  );
+}
+
+export function messageAuthorLabel(
+  message: NostrEvent | null,
+  currentPubkey: string,
+  agentPubkey: string | null,
+  profiles: Record<string, ParticipantProfile>,
+): string {
+  return message
+    ? participantPresentation(
+        message.pubkey,
+        currentPubkey,
+        agentPubkey,
+        profiles,
+      ).authorLabel
+    : "";
 }
 
 function memberRoles(event: NostrEvent): Record<string, string> {
@@ -234,11 +274,15 @@ export function useHiveParticipantDirectory(
           : isAgent
             ? "BrickO"
             : `Teammate · ${truncatePubkey(pubkey)}`;
+        const displayName =
+          profiles[pubkey]?.displayName ?? profiles[pubkey]?.nip05 ?? fallback;
+        const profileHandle = profiles[pubkey]?.nip05;
         return {
-          displayName:
-            profiles[pubkey]?.displayName ??
-            profiles[pubkey]?.nip05 ??
-            fallback,
+          displayName,
+          identityHint:
+            profileHandle && profileHandle !== displayName
+              ? profileHandle
+              : truncatePubkey(pubkey),
           isAgent,
           isCurrentUser,
           pubkey,

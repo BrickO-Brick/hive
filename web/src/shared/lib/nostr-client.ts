@@ -10,6 +10,8 @@ import {
   type SignedNostrEvent,
   signNostrEvent,
 } from "@/shared/lib/nostr-signer";
+import { makeNip98AuthHeader } from "@/shared/lib/nip98";
+import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 
 export interface NostrFilter {
   ids?: string[];
@@ -17,6 +19,7 @@ export interface NostrFilter {
   kinds?: number[];
   since?: number;
   until?: number;
+  before_id?: string;
   limit?: number;
   [tag: `#${string}`]: string[] | undefined;
 }
@@ -31,6 +34,43 @@ export type NostrSubscriptionState =
   | "authenticating"
   | "connected"
   | "reconnecting";
+
+/**
+ * Query the authenticated HTTP bridge. Use this for relay-generated snapshots
+ * such as presence that are not persisted and therefore cannot be recovered by
+ * a normal historical WebSocket REQ.
+ */
+export async function queryEventsHttp(
+  filters: NostrFilter[],
+): Promise<NostrEvent[]> {
+  const url = `${relayHttpBaseUrl().replace(/\/+$/, "")}/query`;
+  const body = JSON.stringify(filters);
+  const authorization = await makeNip98AuthHeader(url, "POST", { body });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: authorization,
+      "Content-Type": "application/json",
+    },
+    body,
+    signal: AbortSignal.timeout(QUERY_TIMEOUT_MS),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof payload.error === "string"
+        ? payload.error
+        : `Relay query failed with HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  if (!Array.isArray(payload)) {
+    throw new Error("Relay returned an invalid query response.");
+  }
+  return payload as NostrEvent[];
+}
 
 /**
  * Keep a NIP-01 subscription open after EOSE so new events arrive in real time.
@@ -307,10 +347,14 @@ export function queryEvents(
 }
 
 /** Publish one signed event over NIP-01, completing NIP-42 first when challenged. */
+export type NostrPublishAck = {
+  message: string;
+};
+
 export function publishEvent(
   wsUrl: string,
   event: SignedNostrEvent,
-): Promise<void> {
+): Promise<NostrPublishAck> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;
@@ -322,7 +366,7 @@ export function publishEvent(
       QUERY_TIMEOUT_MS,
     );
 
-    const finish = (error?: Error) => {
+    const finish = (error?: Error, message = "") => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
@@ -333,7 +377,7 @@ export function publishEvent(
         /* ignore */
       }
       if (error) reject(error);
-      else resolve();
+      else resolve({ message });
     };
     const send = () => {
       if (!sent) {
@@ -371,7 +415,7 @@ export function publishEvent(
         else
           finish(new Error(String(data[3] ?? "Relay authentication failed.")));
       } else if (data[0] === "OK" && data[1] === event.id) {
-        if (data[2] === true) finish();
+        if (data[2] === true) finish(undefined, String(data[3] ?? ""));
         else
           finish(new Error(String(data[3] ?? "Relay rejected the message.")));
       }

@@ -18,8 +18,9 @@ export function HiveChatEmptyState({
             Start {conversation.title}
           </h2>
           <p className="mt-2 text-sm leading-6 text-[#607086]">
-            This group chat is independent from a repository. Mention a teammate
-            or BrickO with @ to bring them in.
+            This private chat is independent from a repository and visible only
+            to its selected participants. Mention a teammate or BrickO with @ to
+            get their attention.
           </p>
         </div>
       </div>

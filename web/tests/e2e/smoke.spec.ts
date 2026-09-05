@@ -610,6 +610,7 @@ test("invite download falls back for mobile and non-desktop devices", async ({
 test("Hive shows BrickO realtime activity from relay signals", async ({
   page,
 }, testInfo) => {
+  testInfo.setTimeout(120_000);
   await page.setViewportSize({ width: 1536, height: 1024 });
   const consoleErrors: string[] = [];
   page.on("console", (message) => {
@@ -891,6 +892,138 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
       }),
     });
   });
+  const historyNow = Math.floor(Date.now() / 1000);
+  const oldestInitialId = (96 + 1_000).toString(16).padStart(64, "0");
+  let dmCreated = false;
+  await page.route("**/query", async (route) => {
+    expect(nip98Pubkey(route.request().headers().authorization)).toBe(
+      "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    );
+    const filters = route.request().postDataJSON() as Array<{
+      before_id?: string;
+      authors?: string[];
+      kinds?: number[];
+      limit?: number;
+      until?: number;
+      "#h"?: string[];
+      "#p"?: string[];
+    }>;
+    const filter = filters[0];
+    let events: Array<Record<string, unknown>> = [];
+    if (filter?.kinds?.includes(40902)) {
+      events = [
+        {
+          id: "c3".repeat(32),
+          pubkey: "33".repeat(32),
+          created_at: 1_788_301_210,
+          kind: 20001,
+          tags: [["p", "22".repeat(32)]],
+          content: "online",
+          sig: "00".repeat(64),
+        },
+      ];
+    } else if (filter?.kinds?.includes(39000)) {
+      expect(filter["#p"]).toEqual([
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      ]);
+      events = dmCreated
+        ? [
+            {
+              id: "d4".repeat(32),
+              pubkey: "55".repeat(32),
+              created_at: historyNow,
+              kind: 39000,
+              tags: [
+                ["d", "77777777-2222-4333-8444-555555555555"],
+                ["name", "Engineering"],
+                ["private"],
+                ["hidden"],
+                ["t", "dm"],
+                [
+                  "p",
+                  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                ],
+                ["p", "22".repeat(32)],
+                ["p", "33".repeat(32)],
+              ],
+              content: "",
+              sig: "00".repeat(64),
+            },
+          ]
+        : [];
+    } else if (
+      filter?.kinds?.includes(9) &&
+      filter["#h"]?.[0] === "62ae672f-ab7b-4619-b013-13eec0111943"
+    ) {
+      if (filter.before_id) {
+        expect(filter).toMatchObject({
+          before_id: oldestInitialId,
+          limit: 100,
+          until: historyNow - 196,
+        });
+        events = [
+          {
+            id: "0f".repeat(32),
+            pubkey: "44".repeat(32),
+            created_at: historyNow - 240,
+            kind: 9,
+            tags: [["h", "62ae672f-ab7b-4619-b013-13eec0111943"]],
+            content: "Oldest retained message",
+            sig: "00".repeat(64),
+          },
+        ];
+      } else {
+        events = [
+          {
+            id: "a1".repeat(32),
+            pubkey:
+              "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            created_at: historyNow - 60,
+            kind: 9,
+            tags: [["h", "62ae672f-ab7b-4619-b013-13eec0111943"]],
+            content: "BrickO, apakah koneksi realtime sudah aktif?",
+            sig: "00".repeat(64),
+          },
+          {
+            id: "b2".repeat(32),
+            pubkey: "22".repeat(32),
+            created_at: historyNow - 52,
+            kind: 9,
+            tags: [["h", "62ae672f-ab7b-4619-b013-13eec0111943"]],
+            content:
+              "**Sudah aktif.** Balasan sekarang muncul otomatis tanpa refresh manual.",
+            sig: "00".repeat(64),
+          },
+          {
+            id: "f6".repeat(32),
+            pubkey: "44".repeat(32),
+            created_at: historyNow - 44,
+            kind: 9,
+            tags: [["h", "62ae672f-ab7b-4619-b013-13eec0111943"]],
+            content: "Saya ikut memantau percakapan ini.",
+            sig: "00".repeat(64),
+          },
+          ...Array.from({ length: 97 }, (_, index) => ({
+            id: (index + 1_000).toString(16).padStart(64, "0"),
+            pubkey: "44".repeat(32),
+            created_at: historyNow - 100 - index,
+            kind: 9,
+            tags: [
+              ["h", "62ae672f-ab7b-4619-b013-13eec0111943"],
+              ["conversation", "legacy-pagination-fixture"],
+            ],
+            content: `History fixture ${index + 1}`,
+            sig: "00".repeat(64),
+          })),
+        ];
+      }
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(events),
+    });
+  });
 
   await page.addInitScript(() => {
     const userPubkey =
@@ -1001,7 +1134,10 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
                 },
               ]);
             }
-          } else if (filter.kinds?.includes(9)) {
+          } else if (
+            filter.kinds?.includes(9) &&
+            filter["#h"]?.includes(channelId)
+          ) {
             const now = Math.floor(Date.now() / 1000);
             const events = [
               {
@@ -1059,9 +1195,16 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
           return;
         }
         if (frame[0] === "EVENT") {
-          const event = frame[1] as { id: string };
+          const event = frame[1] as { id: string; kind?: number };
           (window as HiveWindow).__hiveLastPublished = event;
-          this.message(["OK", event.id, true, ""]);
+          this.message([
+            "OK",
+            event.id,
+            true,
+            event.kind === 41010
+              ? 'response:{"channel_id":"77777777-2222-4333-8444-555555555555","created":true,"name":"Engineering"}'
+              : "",
+          ]);
         }
       }
 
@@ -1099,6 +1242,16 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
     page.getByTestId("desktop-navigation").getByText("Chat connected"),
   ).toBeVisible();
   await expect(page.getByText("Online and ready").first()).toBeVisible();
+  await page.goto("/app?discussion=99999999-2222-4333-8444-555555555555");
+  await expect(page.getByTestId("discussion-unavailable")).toBeVisible();
+  await expect(
+    page.getByText("This repository discussion is unavailable"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("combobox", { name: "Message BrickO" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Return to bricko-lab" }).click();
+  await expect(page).toHaveURL("/app");
   await expect(page.getByText("Sudah aktif.")).toBeVisible();
   const agentMessage = page.getByRole("article", {
     name: "Message from BrickO",
@@ -1112,6 +1265,8 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toBeVisible();
   await expect(teammateMessage.getByText("Sanny Gaddafi")).toBeVisible();
   await expect(teammateMessage.getByText("BrickO")).toHaveCount(0);
+  await page.getByTestId("load-older-messages").click();
+  await expect(page.getByText("Oldest retained message")).toBeVisible();
 
   const initialComposer = page.getByRole("combobox", {
     name: "Message BrickO",
@@ -1124,12 +1279,12 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
   ).toBeVisible();
   await expect(
     mentionPicker.getByRole("option", {
-      name: /Sanny Gaddafi.*member.*Available/,
+      name: /Sanny Gaddafi.*member/,
     }),
   ).toBeVisible();
   await expect(
     mentionPicker.getByRole("option", {
-      name: /Dewi Lestari.*member.*Available/,
+      name: /Dewi Lestari.*member/,
     }),
   ).toBeVisible();
   await page.screenshot({
@@ -1142,18 +1297,72 @@ test("Hive shows BrickO realtime activity from relay signals", async ({
 
   await page.getByRole("button", { name: "New chat" }).click();
   const newChatDialog = page.getByRole("dialog", {
-    name: "Start a group conversation",
+    name: "Start a private chat",
   });
   await expect(newChatDialog).toBeVisible();
   await expect(page.getByTestId("conversation-title-input")).toBeFocused();
-  await expect(page.getByText("Start a group conversation")).toBeVisible();
+  await expect(page.getByText("Start a private chat")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("guide-03-new-chat.png"),
     fullPage: true,
   });
   await page.getByTestId("conversation-title-input").fill("Engineering");
+  await newChatDialog.getByLabel("BrickO").check();
+  await newChatDialog.getByLabel("Dewi Lestari").check();
   await page.getByRole("button", { name: "Create chat" }).click();
   await expect(page).toHaveURL(/conversation=/);
+  const dmOpenEvent = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __hiveLastPublished?: { kind: number; tags: string[][] };
+        }
+      ).__hiveLastPublished,
+  );
+  expect(dmOpenEvent?.kind).toBe(41010);
+  expect(dmOpenEvent?.tags).toContainEqual(["name", "Engineering"]);
+  expect(dmOpenEvent?.tags).toContainEqual(["p", "22".repeat(32)]);
+  expect(dmOpenEvent?.tags).toContainEqual(["p", "33".repeat(32)]);
+  expect(dmOpenEvent?.tags).not.toContainEqual(["p", "44".repeat(32)]);
+  dmCreated = true;
+  await expect(
+    page.getByRole("heading", { name: "Start Engineering" }),
+  ).toBeVisible();
+  await expect(page.getByTestId(/conversation-/)).toContainText("Engineering");
+  const privateComposer = page.getByRole("combobox", {
+    name: "Message BrickO",
+  });
+  await privateComposer.fill("Private deployment note");
+  await privateComposer.press("Enter");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __hiveLastPublished?: { kind: number };
+            }
+          ).__hiveLastPublished?.kind,
+      ),
+    )
+    .toBe(9);
+  const privateMessage = await page.evaluate(
+    () =>
+      (
+        window as Window & {
+          __hiveLastPublished?: { kind: number; tags: string[][] };
+        }
+      ).__hiveLastPublished,
+  );
+  expect(privateMessage?.kind).toBe(9);
+  expect(privateMessage?.tags).toContainEqual([
+    "h",
+    "77777777-2222-4333-8444-555555555555",
+  ]);
+  expect(privateMessage?.tags.some((tag) => tag[0] === "conversation")).toBe(
+    false,
+  );
+  await page.reload();
   await expect(
     page.getByRole("heading", { name: "Start Engineering" }),
   ).toBeVisible();

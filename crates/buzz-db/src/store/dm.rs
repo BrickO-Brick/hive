@@ -59,6 +59,27 @@ pub fn compute_participant_hash(pubkeys: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn dm_channel_name(participant_count: usize, requested_name: Option<&str>) -> Result<String> {
+    if let Some(requested_name) = requested_name {
+        let name = buzz_core::channel::canonical_channel_name(requested_name);
+        if name.is_empty() {
+            return Err(DbError::InvalidData("DM name is required".to_string()));
+        }
+        if name.chars().count() > 80 {
+            return Err(DbError::InvalidData(
+                "DM name must contain at most 80 characters".to_string(),
+            ));
+        }
+        return Ok(name.to_string());
+    }
+
+    Ok(if participant_count == 2 {
+        "DM".to_string()
+    } else {
+        format!("Group DM ({participant_count})")
+    })
+}
+
 // -- DB functions -------------------------------------------------------------
 
 /// Find an existing DM by its participant hash.
@@ -106,6 +127,18 @@ pub async fn create_dm(
     participants: &[&[u8]],
     created_by: &[u8],
 ) -> Result<ChannelRecord> {
+    create_named_dm(pool, community_id, participants, created_by, None).await
+}
+
+/// Create a DM with an optional human-readable name in the same transaction as
+/// the channel and immutable participant set.
+pub async fn create_named_dm(
+    pool: &PgPool,
+    community_id: CommunityId,
+    participants: &[&[u8]],
+    created_by: &[u8],
+    requested_name: Option<&str>,
+) -> Result<ChannelRecord> {
     if participants.len() < 2 {
         return Err(DbError::InvalidData(
             "DM requires at least 2 participants".to_string(),
@@ -124,6 +157,7 @@ pub async fn create_dm(
             )));
         }
     }
+    let name = dm_channel_name(participants.len(), requested_name)?;
 
     let hash = compute_participant_hash(participants);
 
@@ -155,13 +189,6 @@ pub async fn create_dm(
         tx.commit().await?;
         return row_to_channel_record(row);
     }
-
-    // Name the DM based on participant count.
-    let name = if participants.len() == 2 {
-        "DM".to_string()
-    } else {
-        format!("Group DM ({})", participants.len())
-    };
 
     let id = Uuid::new_v4();
 
@@ -361,6 +388,19 @@ pub async fn open_dm(
     pubkeys: &[&[u8]],
     created_by: &[u8],
 ) -> Result<(ChannelRecord, bool)> {
+    open_named_dm(pool, community_id, pubkeys, created_by, None).await
+}
+
+/// Open or retrieve a DM, storing `requested_name` atomically when a new
+/// participant set creates a channel. Existing participant sets retain their
+/// established name.
+pub async fn open_named_dm(
+    pool: &PgPool,
+    community_id: CommunityId,
+    pubkeys: &[&[u8]],
+    created_by: &[u8],
+    requested_name: Option<&str>,
+) -> Result<(ChannelRecord, bool)> {
     // Merge created_by into the participant set (dedup handled by compute_participant_hash).
     let mut all: Vec<&[u8]> = pubkeys.to_vec();
     if !all.contains(&created_by) {
@@ -373,6 +413,9 @@ pub async fn open_dm(
             "DM supports at most 9 participants".to_string(),
         ));
     }
+    if requested_name.is_some() {
+        dm_channel_name(all.len(), requested_name)?;
+    }
 
     let hash = compute_participant_hash(&all);
 
@@ -384,7 +427,7 @@ pub async fn open_dm(
     }
 
     // Create new DM.
-    let channel = create_dm(pool, community_id, &all, created_by).await?;
+    let channel = create_named_dm(pool, community_id, &all, created_by, requested_name).await?;
 
     Ok((channel, true))
 }
@@ -563,6 +606,26 @@ impl Db {
         crate::dm::open_dm(&self.pool, community_id, pubkeys, created_by).await
     }
 
+    /// Open or retrieve a named DM. The requested name only applies when the
+    /// immutable participant set creates a new channel.
+    #[datastore_span(name = "open_named_dm", system = "postgresql")]
+    pub async fn open_named_dm(
+        &self,
+        community_id: CommunityId,
+        pubkeys: &[&[u8]],
+        created_by: &[u8],
+        requested_name: Option<&str>,
+    ) -> Result<(ChannelRecord, bool)> {
+        crate::dm::open_named_dm(
+            &self.pool,
+            community_id,
+            pubkeys,
+            created_by,
+            requested_name,
+        )
+        .await
+    }
+
     /// Hide a DM channel for a specific user.
     ///
     /// The DM is not deleted — it can be restored by opening a new DM with
@@ -638,5 +701,20 @@ mod tests {
         let b = [255u8; 32];
         let h = compute_participant_hash(&[&a, &b]);
         assert_eq!(h.len(), 32);
+    }
+
+    #[test]
+    fn dm_names_are_canonical_bounded_and_have_safe_defaults() {
+        assert_eq!(dm_channel_name(2, None).expect("default name"), "DM");
+        assert_eq!(
+            dm_channel_name(4, None).expect("group name"),
+            "Group DM (4)"
+        );
+        assert_eq!(
+            dm_channel_name(3, Some("  # Engineering  ")).expect("custom name"),
+            "Engineering"
+        );
+        assert!(dm_channel_name(3, Some("   #  ")).is_err());
+        assert!(dm_channel_name(3, Some(&"a".repeat(81))).is_err());
     }
 }
